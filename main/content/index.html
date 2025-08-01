@@ -1,7 +1,6 @@
 <!-- part HTML_SETTINGS_HEADER -->
 <!DOCTYPE html>
 <html lang="en">
-
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
@@ -18,14 +17,12 @@
       background-color: #f5f5f7;
       color: #1d1d1f;
     }
-
     h1 {
       font-size: 1.8rem;
       font-weight: 600;
       text-align: center;
       margin-bottom: 2rem;
     }
-
     .container {
       max-width: 480px;
       margin: 4rem auto;
@@ -34,13 +31,11 @@
       border-radius: 20px;
       box-shadow: 0 12px 24px rgba(0, 0, 0, 0.05);
     }
-
     label {
       display: block;
       margin-bottom: 0.5rem;
       font-weight: 500;
     }
-
     input[type=text],
     input[type=password] {
       width: 100%;
@@ -53,14 +48,12 @@
       background-color: #f9f9f9;
       transition: border 0.3s ease;
     }
-
     input[type=text]:focus,
     input[type=password]:focus {
       outline: none;
       border-color: #007aff;
       background-color: #fff;
     }
-
     input[type=submit] {
       width: 100%;
       font-size: 1rem;
@@ -71,13 +64,11 @@
       transition: background-color 0.3s ease;
       cursor: pointer;
     }
-
     input[type=submit]#refresh {
       background-color: #0071e3;
       color: white;
       margin-bottom: 1rem;
     }
-
     input[type=submit]#join {
       background-color: #34c759;
       color: white;
@@ -86,19 +77,16 @@
     input[type=submit]:hover:not([disabled]) {
       opacity: 0.9;
     }
-
     input[type=submit][disabled] {
       background-color: #e5e5ea !important;
       color: #b1b1b1;
       cursor: not-allowed;
     }
-
     .networks {
       list-style: none;
       padding: 0;
       margin: 1rem 0 2rem 0;
     }
-
     .networks li {
       display: block;
       padding: 0.75rem 1rem 0.75rem 2.5rem;
@@ -110,15 +98,12 @@
       cursor: pointer;
       transition: background 0.2s ease;
     }
-
     .networks li:hover {
       background-color: #e0e0e5;
     }
-
     .networks li.secure {
       position: relative;
     }
-
     .networks li.secure::after {
       content: "";
       position: absolute;
@@ -131,13 +116,11 @@
       background-repeat: no-repeat;
       background-size: contain;
     }
-
     .networks li {
       position: relative;
       padding-left: 2.5rem;
       /* ruimte voor icoon */
     }
-
     .networks li:not(.other)::before {
       content: "";
       position: absolute;
@@ -150,80 +133,29 @@
       background-size: contain;
       background-repeat: no-repeat;
     }
-
     .networks li.selected {
       background-color: #d6eaff;
       font-weight: 600;
     }
-
     .networks li.other {
       text-align: center;
       margin-top: 2rem;
     }
-
     .nonetworks {
       text-align: center;
       margin: 2rem 0;
       color: #999;
       font-size: 0.95rem;
     }
-
     .field {
       margin-bottom: 1.5rem;
     }
-
     .field.required label::before {
       content: "* ";
       color: red;
     }
-
-    .switch-label {
-      display: inline-flex;
-      align-items: center;
-      gap: 8px;
-      /* Adjust spacing as needed */
-      cursor: pointer;
-      /* makes the entire label clickable */
-      user-select: none;
-    }
-
-    input.apple-switch {
-      position: relative;
-      -webkit-appearance: none;
-      outline: none;
-      width: 25px;
-      height: 15px;
-      background-color: #fff;
-      border: 0.5px solid #D9DADC;
-      border-radius: 25px;
-      box-shadow: inset -10px 0 0 0 #fff;
-      cursor: pointer;
-    }
-
-    input.apple-switch:after {
-      content: "";
-      position: absolute;
-      top: 0.5px;
-      left: 0.5px;
-      background: transparent;
-      width: 13px;
-      height: 13px;
-      border-radius: 50%;
-      box-shadow: 1px 2px 3px rgba(0, 0, 0, 0.2);
-    }
-
-    input.apple-switch:checked {
-      box-shadow: inset 10px 0 0 0 #4ed164;
-      border-color: #4ed164;
-    }
-
-    input.apple-switch:checked:after {
-      left: 10px;
-      box-shadow: -1px 2px 1.5px rgba(0, 0, 0, 0.05);
-    }
   </style>
 </head>
-
 <body>
   <div class="container">
     <!-- part HTML_SETTINGS_CUSTOM_HTML -->
@@ -236,40 +168,21 @@
     <form action="/settings" method="post">
       <div class="nonetworks" style="display: none;">No networks found</div>
       <ul id="networks" class="networks">
-        <!-- part HTML_NETWORK_ITEM -->
+          <!-- part HTML_NETWORK_ITEM -->
         {% for network in networks %}
         <li class="{{ network.secure | ternary('secure', 'unsecure') }}">{{ network.ssid }}</li>
         {% endfor %}
         <!-- part HTML_SETTINGS_FOOTER -->
         <li class="other">Choose Another Network</li>
       </ul>
-
       <div class="field required ssid" style="display: none;">
         <label for="ssid">SSID:</label>
         <input type="text" id="ssid" name="ssid" />
       </div>
-
       <div class="field required password" style="display: none;">
         <label for="password">Password:</label>
         <input type="password" id="password" name="password" />
       </div>
-      <!-- part HTML_SETTINGS_OTAPARAMETERS -->
-      <div>
-        <label for="repo">GitHub OTA Repository URL:</label><br>
-        <input type="text" id="github" value="https://github.com/AchimPieters/esp32-test/releases"><br><br>
-      </div>
-      <div>
-        <label for="otafile">OTA binary file:</label>
-        <input type="text" id="binary" value="main.bin" />
-      </div>
-
-      <div class="form-checkbox unchecked">
-        <label class="switch-label">
-          <span>Use pre-releases</span>
-          <input class="apple-switch" type="checkbox" value="1" name="beta" id="beta" />
-        </label>
-      </div>
-      <br>
       <input type="submit" id="join" value="Join" disabled />
     </form>
     <p style="text-align:center"><sub><sup>Copyright © 2025 | StudioPieters® | All rights reserved.</sub></sup></p>
@@ -281,23 +194,18 @@
     const password_block = document.querySelector('.field.password');
     const password_field = document.getElementById('password');
     const join_button = document.getElementById('join');
-
     function enable(el) {
       el.disabled = false;
     }
-
     function disable(el) {
       el.disabled = true;
     }
-
     function show(el) {
       el.style.display = 'block';
     }
-
     function hide(el) {
       el.style.display = 'none';
     }
-
     function selectNetwork(el) {
       document.querySelectorAll('ul.networks li').forEach(n => n.classList.remove('selected'));
       el.classList.add('selected');
@@ -355,5 +263,4 @@
     });
   </script>
 </body>
-
 </html>
