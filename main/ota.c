@@ -26,20 +26,28 @@
 static const char *TAG = "ota";
 
 static char *nvs_get_string(nvs_handle_t handle, const char *key) {
+    ESP_LOGD(TAG, "Reading NVS key '%s'", key);
     size_t required = 0;
     if (nvs_get_str(handle, key, NULL, &required) != ESP_OK || required == 0) {
+        ESP_LOGD(TAG, "Key '%s' not found", key);
         return NULL;
     }
     char *value = malloc(required);
-    if (!value) return NULL;
+    if (!value) {
+        ESP_LOGE(TAG, "Failed to allocate memory for key '%s'", key);
+        return NULL;
+    }
     if (nvs_get_str(handle, key, value, &required) != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to read key '%s'", key);
         free(value);
         return NULL;
     }
+    ESP_LOGD(TAG, "Key '%s' value '%s'", key, value);
     return value;
 }
 
 static char *http_get(const char *url) {
+    ESP_LOGI(TAG, "HTTP GET: %s", url);
     esp_http_client_config_t config = {
         .url = url,
         .timeout_ms = 10000,
@@ -48,9 +56,13 @@ static char *http_get(const char *url) {
         .user_agent = "esp32-lcm",
     };
     esp_http_client_handle_t client = esp_http_client_init(&config);
-    if (!client) return NULL;
+    if (!client) {
+        ESP_LOGE(TAG, "Failed to init HTTP client");
+        return NULL;
+    }
 
     if (esp_http_client_open(client, 0) != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to open HTTP connection");
         esp_http_client_cleanup(client);
         return NULL;
     }
@@ -60,6 +72,7 @@ static char *http_get(const char *url) {
 
     char *buffer = malloc(content_length + 1);
     if (!buffer) {
+        ESP_LOGE(TAG, "Failed to allocate HTTP buffer");
         esp_http_client_close(client);
         esp_http_client_cleanup(client);
         return NULL;
@@ -67,6 +80,7 @@ static char *http_get(const char *url) {
 
     int read_len = esp_http_client_read_response(client, buffer, content_length);
     if (read_len < 0) {
+        ESP_LOGE(TAG, "HTTP read failed");
         free(buffer);
         esp_http_client_close(client);
         esp_http_client_cleanup(client);
@@ -75,20 +89,30 @@ static char *http_get(const char *url) {
     buffer[read_len] = '\0';
     esp_http_client_close(client);
     esp_http_client_cleanup(client);
+    ESP_LOGI(TAG, "HTTP GET done (%d bytes)", read_len);
     return buffer;
 }
 
 static bool download_sig(const char *url, uint8_t *out_hash) {
+    ESP_LOGI(TAG, "Downloading signature: %s", url);
     char *sig = http_get(url);
-    if (!sig) return false;
+    if (!sig) {
+        ESP_LOGE(TAG, "Signature download failed");
+        return false;
+    }
     bool ok = false;
-    if (strlen(sig) >= 96) {
+    size_t len = strlen(sig);
+    ESP_LOGD(TAG, "Signature length: %zu", len);
+    if (len >= 96) {
         for (int i = 0; i < 48; i++) {
             sscanf(sig + 2 * i, "%2hhx", &out_hash[i]);
         }
         ok = true;
     }
     free(sig);
+    if (!ok) {
+        ESP_LOGE(TAG, "Signature parse failed");
+    }
     return ok;
 }
 
@@ -129,6 +153,7 @@ static esp_err_t http_event_handler(esp_http_client_event_t *evt) {
 }
 
 static bool download_and_flash(const char *bin_url, const uint8_t *expected_hash) {
+    ESP_LOGI(TAG, "Starting firmware download: %s", bin_url);
     ota_hash_ctx_t hash_ctx;
     mbedtls_sha512_init(&hash_ctx.sha_ctx);
     mbedtls_sha512_starts_ret(&hash_ctx.sha_ctx, 1);
@@ -149,6 +174,7 @@ static bool download_and_flash(const char *bin_url, const uint8_t *expected_hash
 
     esp_https_ota_handle_t https_ota_handle = NULL;
     if (esp_https_ota_begin(&ota_config, &https_ota_handle) != ESP_OK) {
+        ESP_LOGE(TAG, "OTA begin failed");
         mbedtls_sha512_free(&hash_ctx.sha_ctx);
         return false;
     }
@@ -160,6 +186,7 @@ static bool download_and_flash(const char *bin_url, const uint8_t *expected_hash
 
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Error during OTA perform: %s", esp_err_to_name(err));
+        ESP_LOGE(TAG, "OTA perform failed");
         esp_https_ota_abort(https_ota_handle);
         mbedtls_sha512_free(&hash_ctx.sha_ctx);
         return false;
@@ -174,6 +201,7 @@ static bool download_and_flash(const char *bin_url, const uint8_t *expected_hash
         esp_https_ota_abort(https_ota_handle);
         return false;
     }
+    ESP_LOGI(TAG, "Firmware hash verified");
 
     if (esp_https_ota_finish(https_ota_handle) != ESP_OK) {
         ESP_LOGE(TAG, "OTA finish failed");
@@ -207,10 +235,12 @@ static bool is_version_newer(const char *current, const char *latest) {
 }
 
 static void perform_update(nvs_handle_t handle, const char *repo_url, bool prerelease) {
+    ESP_LOGI(TAG, "Checking repository %s (prerelease=%d)", repo_url, prerelease);
     char current_version[64] = {0};
     char *stored_version = nvs_get_string(handle, "current_version");
     if (stored_version) {
         sanitize_version_str(stored_version, current_version, sizeof(current_version));
+        ESP_LOGI(TAG, "Stored version %s", current_version);
         if (strcmp(stored_version, current_version) != 0) {
             nvs_set_str(handle, "current_version", current_version);
             nvs_commit(handle);
@@ -223,6 +253,7 @@ static void perform_update(nvs_handle_t handle, const char *repo_url, bool prere
             nvs_set_str(handle, "current_version", current_version);
             nvs_commit(handle);
         }
+        ESP_LOGI(TAG, "Current firmware version %s", current_version);
     }
 
     char api_base[256];
@@ -234,6 +265,7 @@ static void perform_update(nvs_handle_t handle, const char *repo_url, bool prere
         ESP_LOGE(TAG, "API URL truncated");
         return;
     }
+    ESP_LOGI(TAG, "Fetching release info from %s", api_url);
 
     char *json = http_get(api_url);
     if (!json) {
@@ -277,6 +309,7 @@ static void perform_update(nvs_handle_t handle, const char *repo_url, bool prere
     }
 
     const char *tag_name = tag->valuestring;
+    ESP_LOGI(TAG, "Latest tag %s", tag_name);
     if (*current_version && !is_version_newer(current_version, tag_name)) {
         ESP_LOGI(TAG, "Geen update beschikbaar");
         cJSON_Delete(root);
@@ -307,6 +340,8 @@ static void perform_update(nvs_handle_t handle, const char *repo_url, bool prere
         free(json);
         return;
     }
+    ESP_LOGI(TAG, "Binary URL %s", bin_url);
+    ESP_LOGI(TAG, "Signature URL %s", sig_url);
 
     uint8_t expected_hash[48];
     if (!download_sig(sig_url, expected_hash)) {
@@ -333,6 +368,7 @@ static void perform_update(nvs_handle_t handle, const char *repo_url, bool prere
 }
 
 void ota_check_and_install(void) {
+    ESP_LOGI(TAG, "Checking and installing OTA updates");
     nvs_handle_t handle;
     if (nvs_open(OTA_NAMESPACE, NVS_READWRITE, &handle) != ESP_OK) {
         ESP_LOGE(TAG, "Failed to open NVS");
@@ -345,6 +381,7 @@ void ota_check_and_install(void) {
         nvs_close(handle);
         return;
     }
+    ESP_LOGI(TAG, "Repo URL: %s", repo_url);
 
     char *prerelease_str = nvs_get_string(handle, "prerelease");
     bool prerelease = prerelease_str && strcmp(prerelease_str, "1") == 0;
@@ -355,6 +392,7 @@ void ota_check_and_install(void) {
     if (nvs_get_str(handle, "installed", NULL, &dummy) == ESP_OK) {
         installed = true;
     }
+    ESP_LOGI(TAG, "Firmware installed flag: %d", installed);
 
     if (!installed) {
         ESP_LOGI(TAG, "No firmware installed; performing initial OTA");
@@ -368,6 +406,7 @@ void ota_check_and_install(void) {
 }
 
 void firmware_update(void) {
+    ESP_LOGI(TAG, "Performing firmware update check");
     nvs_handle_t handle;
     if (nvs_open(OTA_NAMESPACE, NVS_READWRITE, &handle) != ESP_OK) {
         ESP_LOGE(TAG, "Failed to open NVS");
@@ -380,6 +419,7 @@ void firmware_update(void) {
         nvs_close(handle);
         return;
     }
+    ESP_LOGI(TAG, "Repo URL: %s", repo_url);
 
     char *prerelease_str = nvs_get_string(handle, "prerelease");
     bool prerelease = prerelease_str && strcmp(prerelease_str, "1") == 0;
@@ -392,14 +432,19 @@ void firmware_update(void) {
 }
 
 static void ota_task(void *pv) {
+    ESP_LOGI(TAG, "OTA task started");
     /* give WiFi some time to stabilize */
     vTaskDelay(pdMS_TO_TICKS(2000));
+    ESP_LOGI(TAG, "Checking for firmware updates");
     ota_check_and_install();
+    ESP_LOGI(TAG, "Initial OTA check complete");
     firmware_update();
+    ESP_LOGI(TAG, "OTA task finished");
     vTaskDelete(NULL);
 }
 
 void ota_start(void) {
+    ESP_LOGI(TAG, "Starting OTA task");
     xTaskCreate(ota_task, "ota_task", 8192, NULL, 5, NULL);
 }
 
