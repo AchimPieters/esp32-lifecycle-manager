@@ -454,16 +454,22 @@ static void wifi_config_server_on_settings_update(client_t *client) {
         sysparam_set_string("wifi_password", "");
     }
 
-    if (repo_param) {
-        sysparam_set_string("ota.repo_url", repo_param->value);
-    } else {
-        sysparam_set_string("ota.repo_url", "");
-    }
+    nvs_handle ota_handle;
+    if (nvs_open("ota", NVS_READWRITE, &ota_handle) == ESP_OK) {
+        if (repo_param) {
+            nvs_set_str(ota_handle, "repo_url", repo_param->value);
+        } else {
+            nvs_set_str(ota_handle, "repo_url", "");
+        }
 
-    if (prerelease_param) {
-        sysparam_set_string("ota.prerelease", "1");
-    } else {
-        sysparam_set_string("ota.prerelease", "0");
+        if (prerelease_param) {
+            nvs_set_str(ota_handle, "prerelease", "1");
+        } else {
+            nvs_set_str(ota_handle, "prerelease", "0");
+        }
+
+        nvs_commit(ota_handle);
+        nvs_close(ota_handle);
     }
 
     form_params_free(form);

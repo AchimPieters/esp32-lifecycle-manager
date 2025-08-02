@@ -316,8 +316,9 @@ void ota_check_and_install(void) {
         return;
     }
 
-    uint8_t prerelease = 0;
-    nvs_get_u8(handle, "prerelease", &prerelease);
+    char *prerelease_str = nvs_get_string(handle, "prerelease");
+    bool prerelease = prerelease_str && strcmp(prerelease_str, "1") == 0;
+    free(prerelease_str);
 
     bool installed = false;
     size_t dummy = 0;
@@ -350,8 +351,9 @@ void firmware_update(void) {
         return;
     }
 
-    uint8_t prerelease = 0;
-    nvs_get_u8(handle, "prerelease", &prerelease);
+    char *prerelease_str = nvs_get_string(handle, "prerelease");
+    bool prerelease = prerelease_str && strcmp(prerelease_str, "1") == 0;
+    free(prerelease_str);
 
     perform_update(handle, repo_url, prerelease);
 
