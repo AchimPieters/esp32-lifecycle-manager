@@ -44,6 +44,7 @@ void led_write(bool on) {
 }
 
 void gpio_init() {
+    ESP_LOGI(TAG, "Initializing GPIOs");
     // LED setup
     gpio_reset_pin(LED_GPIO);
     gpio_set_direction(LED_GPIO, GPIO_MODE_OUTPUT);
@@ -58,6 +59,7 @@ void gpio_init() {
         .intr_type = GPIO_INTR_DISABLE
     };
     gpio_config(&io_conf);
+    ESP_LOGI(TAG, "GPIOs initialized");
 }
 
 // Task factory_reset
@@ -75,7 +77,11 @@ void factory_reset_task(void *pvParameter) {
 
 void factory_reset() {
     ESP_LOGI("RESET", "Resetting device configuration");
-    xTaskCreate(factory_reset_task, "factory_reset", 4096, NULL, 2, NULL);
+    if (xTaskCreate(factory_reset_task, "factory_reset", 4096, NULL, 2, NULL) == pdPASS) {
+        ESP_LOGI("RESET", "Factory reset task created");
+    } else {
+        ESP_LOGE("RESET", "Failed to create factory reset task");
+    }
 }
 
 // Task button
@@ -85,6 +91,10 @@ void button_task(void *pvParameter) {
 
     while (1) {
         bool current_state = gpio_get_level(BUTTON_GPIO);
+
+        if (last_state != current_state) {
+            ESP_LOGI(TAG, "Button state: %d", current_state);
+        }
 
         // Detecteer overgang van HIGH naar LOW (knop ingedrukt)
         if (last_state && !current_state) {
@@ -103,8 +113,18 @@ static void on_wifi_ready(void) {
 }
 
 void app_main(void) {
+    ESP_LOGI(TAG, "Application start");
+    ESP_LOGI(TAG, "Initializing NVS");
     ESP_ERROR_CHECK(nvs_flash_init());
+    ESP_LOGI(TAG, "NVS initialized");
     gpio_init();
-    xTaskCreate(button_task, "button_task", 2048, NULL, 10, NULL);
+    ESP_LOGI(TAG, "GPIO initialized");
+    if (xTaskCreate(button_task, "button_task", 2048, NULL, 10, NULL) == pdPASS) {
+        ESP_LOGI(TAG, "Button task created");
+    } else {
+        ESP_LOGE(TAG, "Failed to create button task");
+    }
+    ESP_LOGI(TAG, "Initializing WiFi config");
     wifi_config_init("LCM", NULL, on_wifi_ready);
+    ESP_LOGI(TAG, "WiFi config initialized");
 }
