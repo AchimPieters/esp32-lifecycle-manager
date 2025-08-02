@@ -442,7 +442,7 @@ static void wifi_config_server_on_settings_update(client_t *client) {
     client_send(client, payload, sizeof(payload)-1);
 
     DEBUG("Setting wifi_ssid param = %s", ssid_param->value);
-    DEBUG("Setting wifi_password param = %s", password_param ? password_param->value : "(none)");
+    DEBUG("wifi_password param updated");
     DEBUG("Setting ota.repo_url param = %s", repo_param ? repo_param->value : "(none)");
     DEBUG("Setting ota.prerelease param = %s", prerelease_param ? prerelease_param->value : "(none)");
 
