@@ -225,10 +225,11 @@ static void perform_update(nvs_handle_t handle, const char *repo_url, bool prere
     char api_base[256];
     normalize_repo_api(repo_url, api_base, sizeof(api_base));
     char api_url[256];
-    if (prerelease) {
-        snprintf(api_url, sizeof(api_url), "%s/releases", api_base);
-    } else {
-        snprintf(api_url, sizeof(api_url), "%s/releases/latest", api_base);
+    strlcpy(api_url, api_base, sizeof(api_url));
+    const char *suffix = prerelease ? "/releases" : "/releases/latest";
+    if (strlcat(api_url, suffix, sizeof(api_url)) >= sizeof(api_url)) {
+        ESP_LOGE(TAG, "API URL truncated");
+        return;
     }
 
     char *json = http_get(api_url);
