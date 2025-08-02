@@ -9,6 +9,8 @@
 #include <esp_app_desc.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
+#include <driver/ledc.h>
+#include <stdbool.h>
 #include <cJSON.h>
 #include <mbedtls/sha512.h>
 #include <mbedtls/version.h>
@@ -24,6 +26,70 @@
 #endif
 
 static const char *TAG = "ota";
+
+extern void led_write(bool on);
+
+#define LEDC_TIMER      LEDC_TIMER_0
+#define LEDC_MODE       LEDC_LOW_SPEED_MODE
+#define LEDC_CHANNEL    LEDC_CHANNEL_0
+#define LEDC_DUTY_RES   LEDC_TIMER_8_BIT
+#define LEDC_FREQUENCY  5000
+
+static TaskHandle_t led_task_handle = NULL;
+
+static void led_fade_task(void *pv) {
+    int duty = 0;
+    int step = 5;
+    int direction = 1;
+    while (1) {
+        ledc_set_duty(LEDC_MODE, LEDC_CHANNEL, duty);
+        ledc_update_duty(LEDC_MODE, LEDC_CHANNEL);
+        duty += step * direction;
+        if (duty >= 255) {
+            duty = 255;
+            direction = -1;
+        } else if (duty <= 0) {
+            duty = 0;
+            direction = 1;
+        }
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
+}
+
+static void ota_led_start(void) {
+    if (led_task_handle) return;
+
+    ledc_timer_config_t timer = {
+        .speed_mode = LEDC_MODE,
+        .timer_num = LEDC_TIMER,
+        .duty_resolution = LEDC_DUTY_RES,
+        .freq_hz = LEDC_FREQUENCY,
+        .clk_cfg = LEDC_AUTO_CLK,
+    };
+    ledc_timer_config(&timer);
+
+    ledc_channel_config_t channel = {
+        .speed_mode = LEDC_MODE,
+        .channel = LEDC_CHANNEL,
+        .timer_sel = LEDC_TIMER,
+        .intr_type = LEDC_INTR_DISABLE,
+        .gpio_num = CONFIG_ESP_LED_GPIO,
+        .duty = 0,
+        .hpoint = 0,
+    };
+    ledc_channel_config(&channel);
+
+    xTaskCreate(led_fade_task, "ota_led", 1024, NULL, 1, &led_task_handle);
+}
+
+static void ota_led_stop(void) {
+    if (led_task_handle) {
+        vTaskDelete(led_task_handle);
+        led_task_handle = NULL;
+    }
+    ledc_stop(LEDC_MODE, LEDC_CHANNEL, 0);
+    led_write(false);
+}
 
 static char *nvs_get_string(nvs_handle_t handle, const char *key) {
     ESP_LOGD(TAG, "Reading NVS key '%s'", key);
@@ -154,6 +220,7 @@ static esp_err_t http_event_handler(esp_http_client_event_t *evt) {
 
 static bool download_and_flash(const char *bin_url, const uint8_t *expected_hash) {
     ESP_LOGI(TAG, "Starting firmware download: %s", bin_url);
+    ota_led_start();
     ota_hash_ctx_t hash_ctx;
     mbedtls_sha512_init(&hash_ctx.sha_ctx);
     mbedtls_sha512_starts_ret(&hash_ctx.sha_ctx, 1);
@@ -176,6 +243,7 @@ static bool download_and_flash(const char *bin_url, const uint8_t *expected_hash
     if (esp_https_ota_begin(&ota_config, &https_ota_handle) != ESP_OK) {
         ESP_LOGE(TAG, "OTA begin failed");
         mbedtls_sha512_free(&hash_ctx.sha_ctx);
+        ota_led_stop();
         return false;
     }
 
@@ -189,6 +257,7 @@ static bool download_and_flash(const char *bin_url, const uint8_t *expected_hash
         ESP_LOGE(TAG, "OTA perform failed");
         esp_https_ota_abort(https_ota_handle);
         mbedtls_sha512_free(&hash_ctx.sha_ctx);
+        ota_led_stop();
         return false;
     }
 
@@ -202,15 +271,18 @@ static bool download_and_flash(const char *bin_url, const uint8_t *expected_hash
     if (memcmp(hash, expected_hash, 48) != 0) {
         ESP_LOGE(TAG, "Firmware hash mismatch");
         esp_https_ota_abort(https_ota_handle);
+        ota_led_stop();
         return false;
     }
     ESP_LOGI(TAG, "Firmware hash verified");
 
     if (esp_https_ota_finish(https_ota_handle) != ESP_OK) {
         ESP_LOGE(TAG, "OTA finish failed");
+        ota_led_stop();
         return false;
     }
 
+    ota_led_stop();
     ESP_LOGI(TAG, "OTA update successful");
     return true;
 }
@@ -357,6 +429,7 @@ static void perform_update(nvs_handle_t handle, const char *repo_url, bool prere
     if (download_and_flash(bin_url, expected_hash)) {
         char cleaned_tag[64];
         sanitize_version_str(tag_name, cleaned_tag, sizeof(cleaned_tag));
+        nvs_set_blob(handle, "main_sig", expected_hash, sizeof(expected_hash));
         nvs_set_str(handle, "current_version", cleaned_tag);
         nvs_set_str(handle, "installed", "1");
         nvs_commit(handle);
@@ -370,8 +443,36 @@ static void perform_update(nvs_handle_t handle, const char *repo_url, bool prere
     free(json);
 }
 
+void ota_install_latest_if_missing(void) {
+    ESP_LOGI(TAG, "Checking for installed signature");
+    nvs_handle_t handle;
+    if (nvs_open(OTA_NAMESPACE, NVS_READWRITE, &handle) != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to open NVS");
+        return;
+    }
+
+    char *repo_url = nvs_get_string(handle, "repo_url");
+    if (!repo_url) {
+        ESP_LOGW(TAG, "No repository URL set in NVS");
+        nvs_close(handle);
+        return;
+    }
+
+    size_t sig_len = 0;
+    if (nvs_get_blob(handle, "main_sig", NULL, &sig_len) != ESP_OK || sig_len != 48) {
+        ESP_LOGI(TAG, "No main.sig installed; installing latest release");
+        perform_update(handle, repo_url, false);
+    } else {
+        ESP_LOGI(TAG, "main.sig already present");
+    }
+
+    free(repo_url);
+    nvs_close(handle);
+}
+
 void ota_check_and_install(void) {
     ESP_LOGI(TAG, "Starting OTA update process...");
+    ota_install_latest_if_missing();
     nvs_handle_t handle;
     if (nvs_open(OTA_NAMESPACE, NVS_READWRITE, &handle) != ESP_OK) {
         ESP_LOGE(TAG, "Failed to open NVS");
