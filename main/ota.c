@@ -219,7 +219,7 @@ static void perform_update(nvs_handle_t handle, const char *repo_url, bool prere
 
     const char *tag_name = tag->valuestring;
     if (*current_version && !is_version_newer(current_version, tag_name)) {
-        ESP_LOGI(TAG, "Firmware up-to-date (%s)", current_version);
+        ESP_LOGI(TAG, "Geen update beschikbaar");
         cJSON_Delete(root);
         free(json);
         return;
