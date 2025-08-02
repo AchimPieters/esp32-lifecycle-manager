@@ -20,7 +20,7 @@ idf_component_register(
         esp_http_client
         app_update
         mbedtls
-        cJSON
+        json
         http_parser
     EMBED_TXTFILES
         "content/index.html"
