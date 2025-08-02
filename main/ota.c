@@ -138,6 +138,19 @@ static bool download_and_flash(const char *bin_url, const uint8_t *expected_hash
     return false;
 }
 
+static bool is_version_newer(const char *current, const char *latest) {
+    int cur_major = 0, cur_minor = 0, cur_patch = 0;
+    int lat_major = 0, lat_minor = 0, lat_patch = 0;
+    sscanf(current, "%d.%d.%d", &cur_major, &cur_minor, &cur_patch);
+    sscanf(latest, "%d.%d.%d", &lat_major, &lat_minor, &lat_patch);
+    if (lat_major > cur_major) return true;
+    if (lat_major < cur_major) return false;
+    if (lat_minor > cur_minor) return true;
+    if (lat_minor < cur_minor) return false;
+    if (lat_patch > cur_patch) return true;
+    return false;
+}
+
 static void perform_update(nvs_handle_t handle, const char *repo_url, bool prerelease) {
     char current_version[64] = {0};
     char *stored_version = nvs_get_string(handle, "current_version");
@@ -163,7 +176,17 @@ static void perform_update(nvs_handle_t handle, const char *repo_url, bool prere
     cJSON *release = NULL;
     if (prerelease) {
         if (cJSON_IsArray(root)) {
-            release = cJSON_GetArrayItem(root, 0);
+            cJSON *item = NULL;
+            cJSON_ArrayForEach(item, root) {
+                cJSON *pre = cJSON_GetObjectItem(item, "prerelease");
+                if (cJSON_IsBool(pre) && cJSON_IsTrue(pre)) {
+                    release = item;
+                    break;
+                }
+            }
+            if (!release) {
+                release = cJSON_GetArrayItem(root, 0);
+            }
         }
     } else {
         release = root;
@@ -185,8 +208,8 @@ static void perform_update(nvs_handle_t handle, const char *repo_url, bool prere
     }
 
     const char *tag_name = tag->valuestring;
-    if (strcmp(tag_name, current_version) == 0) {
-        ESP_LOGI(TAG, "Firmware up-to-date (%s)", tag_name);
+    if (*current_version && !is_version_newer(current_version, tag_name)) {
+        ESP_LOGI(TAG, "Firmware up-to-date (%s)", current_version);
         cJSON_Delete(root);
         free(json);
         return;
