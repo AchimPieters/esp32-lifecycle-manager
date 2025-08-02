@@ -163,7 +163,17 @@ static void perform_update(nvs_handle_t handle, const char *repo_url, bool prere
     cJSON *release = NULL;
     if (prerelease) {
         if (cJSON_IsArray(root)) {
-            release = cJSON_GetArrayItem(root, 0);
+            cJSON *item = NULL;
+            cJSON_ArrayForEach(item, root) {
+                cJSON *pre = cJSON_GetObjectItem(item, "prerelease");
+                if (cJSON_IsBool(pre) && cJSON_IsTrue(pre)) {
+                    release = item;
+                    break;
+                }
+            }
+            if (!release) {
+                release = cJSON_GetArrayItem(root, 0);
+            }
         }
     } else {
         release = root;
