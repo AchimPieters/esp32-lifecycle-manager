@@ -185,12 +185,15 @@ static bool download_and_flash(const char *bin_url, const uint8_t *expected_hash
     } while (err == ESP_ERR_HTTPS_OTA_IN_PROGRESS);
 
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Error during OTA perform: %s", esp_err_to_name(err));
+        ESP_LOGE(TAG, "Download failed: %s", esp_err_to_name(err));
         ESP_LOGE(TAG, "OTA perform failed");
         esp_https_ota_abort(https_ota_handle);
         mbedtls_sha512_free(&hash_ctx.sha_ctx);
         return false;
     }
+
+    int image_len = esp_https_ota_get_image_len_read(https_ota_handle);
+    ESP_LOGI(TAG, "Total firmware written: %d bytes", image_len);
 
     uint8_t hash[48];
     mbedtls_sha512_finish_ret(&hash_ctx.sha_ctx, hash);
@@ -368,7 +371,7 @@ static void perform_update(nvs_handle_t handle, const char *repo_url, bool prere
 }
 
 void ota_check_and_install(void) {
-    ESP_LOGI(TAG, "Checking and installing OTA updates");
+    ESP_LOGI(TAG, "Starting OTA update process...");
     nvs_handle_t handle;
     if (nvs_open(OTA_NAMESPACE, NVS_READWRITE, &handle) != ESP_OK) {
         ESP_LOGE(TAG, "Failed to open NVS");
@@ -377,11 +380,11 @@ void ota_check_and_install(void) {
 
     char *repo_url = nvs_get_string(handle, "repo_url");
     if (!repo_url) {
-        ESP_LOGW(TAG, "ota.repo_url not set");
+        ESP_LOGW(TAG, "No repository URL set in NVS");
         nvs_close(handle);
         return;
     }
-    ESP_LOGI(TAG, "Repo URL: %s", repo_url);
+    ESP_LOGI(TAG, "Loaded OTA repository URL from NVS: %s", repo_url);
 
     char *prerelease_str = nvs_get_string(handle, "prerelease");
     bool prerelease = prerelease_str && strcmp(prerelease_str, "1") == 0;
@@ -406,7 +409,7 @@ void ota_check_and_install(void) {
 }
 
 void firmware_update(void) {
-    ESP_LOGI(TAG, "Performing firmware update check");
+    ESP_LOGI(TAG, "Checking for new firmware...");
     nvs_handle_t handle;
     if (nvs_open(OTA_NAMESPACE, NVS_READWRITE, &handle) != ESP_OK) {
         ESP_LOGE(TAG, "Failed to open NVS");
@@ -415,11 +418,11 @@ void firmware_update(void) {
 
     char *repo_url = nvs_get_string(handle, "repo_url");
     if (!repo_url) {
-        ESP_LOGW(TAG, "ota.repo_url not set");
+        ESP_LOGW(TAG, "No repository URL set in NVS");
         nvs_close(handle);
         return;
     }
-    ESP_LOGI(TAG, "Repo URL: %s", repo_url);
+    ESP_LOGI(TAG, "Loaded OTA repository URL from NVS: %s", repo_url);
 
     char *prerelease_str = nvs_get_string(handle, "prerelease");
     bool prerelease = prerelease_str && strcmp(prerelease_str, "1") == 0;

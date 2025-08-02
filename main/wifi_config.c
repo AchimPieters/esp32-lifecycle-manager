@@ -58,6 +58,7 @@ enum {
 
 static nvs_handle_t wifi_cfg_handle;
 static volatile bool sta_got_ip = false;
+static void (*wifi_ready_cb)(void) = NULL;
 
 static void normalize_repo_url(const char *input, char *output, size_t len) {
         if (!input || !*input) {
@@ -158,8 +159,12 @@ static void sysparam_get_string(const char *key, char **value) {
 
 static void wifi_event_handler(void *arg, esp_event_base_t event_base,
                                int32_t event_id, void *event_data) {
-        if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
+        if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_CONNECTED) {
+                ESP_LOGI("wifi_config", "Connected to WiFi network");
+        } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
                 sta_got_ip = true;
+                ESP_LOGI("wifi_config", "WiFi is fully ready!");
+                if (wifi_ready_cb) wifi_ready_cb();
         } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
                 sta_got_ip = false;
         }
@@ -1038,6 +1043,7 @@ void wifi_config_init(const char *ssid_prefix, const char *password, void (*on_w
                 context->password = strdup(password);
 
         context->on_wifi_ready = on_wifi_ready;
+        wifi_ready_cb = on_wifi_ready;
         context->on_event = wifi_config_legacy_support_on_event;
 
         wifi_config_start();
