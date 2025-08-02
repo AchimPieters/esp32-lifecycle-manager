@@ -1,6 +1,7 @@
 idf_component_register(
     SRCS
         "main.c"
+        "ota.c"
         "wifi_config.c"
         "wifi_config_util.c"
         "form_urlencoded.c"
@@ -16,6 +17,10 @@ idf_component_register(
         esp_event
         esp_netif
         esp_timer
+        esp_http_client
+        app_update
+        mbedtls
+        cJSON
         http_parser
     EMBED_TXTFILES
         "content/index.html"

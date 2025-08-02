@@ -28,6 +28,7 @@
 #include <freertos/task.h>
 #include <driver/gpio.h>
 #include <wifi_config.h>
+#include "ota.h"
 
 // GPIO-definities
 #define LED_GPIO CONFIG_ESP_LED_GPIO
@@ -96,9 +97,13 @@ void button_task(void *pvParameter) {
     }
 }
 
+static void on_wifi_ready(void) {
+    ota_check_and_install();
+}
+
 void app_main(void) {
     ESP_ERROR_CHECK(nvs_flash_init());
     gpio_init();
     xTaskCreate(button_task, "button_task", 2048, NULL, 10, NULL);
-    wifi_config_init("LCM", NULL, NULL);
+    wifi_config_init("LCM", NULL, on_wifi_ready);
 }

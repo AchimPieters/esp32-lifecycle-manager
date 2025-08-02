@@ -1,0 +1,274 @@
+#include "ota.h"
+#include <string.h>
+#include <esp_log.h>
+#include <nvs.h>
+#include <nvs_flash.h>
+#include <esp_http_client.h>
+#include <esp_ota_ops.h>
+#include <cJSON.h>
+#include <mbedtls/sha256.h>
+
+#define OTA_NAMESPACE "ota"
+
+static const char *TAG = "ota";
+
+static char *nvs_get_string(nvs_handle_t handle, const char *key) {
+    size_t required = 0;
+    if (nvs_get_str(handle, key, NULL, &required) != ESP_OK || required == 0) {
+        return NULL;
+    }
+    char *value = malloc(required);
+    if (!value) return NULL;
+    if (nvs_get_str(handle, key, value, &required) != ESP_OK) {
+        free(value);
+        return NULL;
+    }
+    return value;
+}
+
+static char *http_get(const char *url) {
+    esp_http_client_config_t config = {
+        .url = url,
+        .timeout_ms = 10000,
+    };
+    esp_http_client_handle_t client = esp_http_client_init(&config);
+    if (!client) return NULL;
+
+    if (esp_http_client_open(client, 0) != ESP_OK) {
+        esp_http_client_cleanup(client);
+        return NULL;
+    }
+
+    int content_length = esp_http_client_fetch_headers(client);
+    if (content_length <= 0) content_length = 1024; // default buffer
+
+    char *buffer = malloc(content_length + 1);
+    if (!buffer) {
+        esp_http_client_close(client);
+        esp_http_client_cleanup(client);
+        return NULL;
+    }
+
+    int read_len = esp_http_client_read_response(client, buffer, content_length);
+    if (read_len < 0) {
+        free(buffer);
+        esp_http_client_close(client);
+        esp_http_client_cleanup(client);
+        return NULL;
+    }
+    buffer[read_len] = '\0';
+    esp_http_client_close(client);
+    esp_http_client_cleanup(client);
+    return buffer;
+}
+
+static bool download_sig(const char *url, uint8_t *out_hash) {
+    char *sig = http_get(url);
+    if (!sig) return false;
+    bool ok = false;
+    if (strlen(sig) >= 64) {
+        for (int i = 0; i < 32; i++) {
+            sscanf(sig + 2 * i, "%2hhx", &out_hash[i]);
+        }
+        ok = true;
+    }
+    free(sig);
+    return ok;
+}
+
+static bool download_and_flash(const char *bin_url, const uint8_t *expected_hash) {
+    esp_http_client_config_t config = {
+        .url = bin_url,
+        .timeout_ms = 10000,
+    };
+    esp_http_client_handle_t client = esp_http_client_init(&config);
+    if (!client) return false;
+
+    if (esp_http_client_open(client, 0) != ESP_OK) {
+        esp_http_client_cleanup(client);
+        return false;
+    }
+
+    const esp_partition_t *partition = esp_ota_get_next_update_partition(NULL);
+    esp_ota_handle_t ota_handle = 0;
+    if (esp_ota_begin(partition, OTA_SIZE_UNKNOWN, &ota_handle) != ESP_OK) {
+        esp_http_client_close(client);
+        esp_http_client_cleanup(client);
+        return false;
+    }
+
+    mbedtls_sha256_context ctx;
+    mbedtls_sha256_init(&ctx);
+    mbedtls_sha256_starts_ret(&ctx, 0);
+
+    bool ok = true;
+    while (1) {
+        uint8_t buffer[1024];
+        int data_read = esp_http_client_read(client, (char *)buffer, sizeof(buffer));
+        if (data_read < 0) {
+            ok = false;
+            break;
+        } else if (data_read == 0) {
+            break; // finished
+        }
+        mbedtls_sha256_update_ret(&ctx, buffer, data_read);
+        if (esp_ota_write(ota_handle, buffer, data_read) != ESP_OK) {
+            ok = false;
+            break;
+        }
+    }
+
+    uint8_t hash[32];
+    mbedtls_sha256_finish_ret(&ctx, hash);
+    mbedtls_sha256_free(&ctx);
+
+    esp_http_client_close(client);
+    esp_http_client_cleanup(client);
+
+    if (ok && memcmp(hash, expected_hash, 32) == 0) {
+        if (esp_ota_end(ota_handle) == ESP_OK &&
+            esp_ota_set_boot_partition(partition) == ESP_OK) {
+            ESP_LOGI(TAG, "OTA update successful");
+            return true;
+        }
+    }
+
+    ESP_LOGE(TAG, "OTA update failed");
+    esp_ota_abort(ota_handle);
+    return false;
+}
+
+static void perform_update(nvs_handle_t handle, const char *repo_url, bool prerelease) {
+    char current_version[64] = {0};
+    char *stored_version = nvs_get_string(handle, "current_version");
+    if (stored_version) {
+        strlcpy(current_version, stored_version, sizeof(current_version));
+        free(stored_version);
+    }
+
+    char api_url[256];
+    if (prerelease) {
+        snprintf(api_url, sizeof(api_url), "%s/releases", repo_url);
+    } else {
+        snprintf(api_url, sizeof(api_url), "%s/releases/latest", repo_url);
+    }
+
+    char *json = http_get(api_url);
+    if (!json) {
+        ESP_LOGE(TAG, "Failed to fetch release info");
+        return;
+    }
+
+    cJSON *root = cJSON_Parse(json);
+    cJSON *release = NULL;
+    if (prerelease) {
+        if (cJSON_IsArray(root)) {
+            release = cJSON_GetArrayItem(root, 0);
+        }
+    } else {
+        release = root;
+    }
+
+    if (!release) {
+        cJSON_Delete(root);
+        free(json);
+        ESP_LOGE(TAG, "Invalid release data");
+        return;
+    }
+
+    const cJSON *tag = cJSON_GetObjectItem(release, "tag_name");
+    if (!cJSON_IsString(tag)) {
+        cJSON_Delete(root);
+        free(json);
+        ESP_LOGE(TAG, "tag_name missing");
+        return;
+    }
+
+    const char *tag_name = tag->valuestring;
+    if (strcmp(tag_name, current_version) == 0) {
+        ESP_LOGI(TAG, "Firmware up-to-date (%s)", tag_name);
+        cJSON_Delete(root);
+        free(json);
+        return;
+    }
+
+    cJSON *assets = cJSON_GetObjectItem(release, "assets");
+    const char *bin_url = NULL;
+    const char *sig_url = NULL;
+    if (cJSON_IsArray(assets)) {
+        cJSON *asset = NULL;
+        cJSON_ArrayForEach(asset, assets) {
+            cJSON *name = cJSON_GetObjectItem(asset, "name");
+            cJSON *url = cJSON_GetObjectItem(asset, "browser_download_url");
+            if (cJSON_IsString(name) && cJSON_IsString(url)) {
+                if (strcmp(name->valuestring, "main.bin") == 0) {
+                    bin_url = url->valuestring;
+                } else if (strcmp(name->valuestring, "main.bin.sig") == 0) {
+                    sig_url = url->valuestring;
+                }
+            }
+        }
+    }
+    if (!bin_url || !sig_url) {
+        ESP_LOGE(TAG, "Required assets not found");
+        cJSON_Delete(root);
+        free(json);
+        return;
+    }
+
+    uint8_t expected_hash[32];
+    if (!download_sig(sig_url, expected_hash)) {
+        ESP_LOGE(TAG, "Failed to download signature");
+        cJSON_Delete(root);
+        free(json);
+        return;
+    }
+
+    if (download_and_flash(bin_url, expected_hash)) {
+        nvs_set_str(handle, "current_version", tag_name);
+        nvs_set_str(handle, "installed", "1");
+        nvs_commit(handle);
+        ESP_LOGI(TAG, "Rebooting to new firmware");
+        esp_restart();
+    } else {
+        ESP_LOGE(TAG, "OTA update failed");
+    }
+
+    cJSON_Delete(root);
+    free(json);
+}
+
+void ota_check_and_install(void) {
+    nvs_handle_t handle;
+    if (nvs_open(OTA_NAMESPACE, NVS_READWRITE, &handle) != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to open NVS");
+        return;
+    }
+
+    char *repo_url = nvs_get_string(handle, "repo_url");
+    if (!repo_url) {
+        ESP_LOGW(TAG, "ota.repo_url not set");
+        nvs_close(handle);
+        return;
+    }
+
+    uint8_t prerelease = 0;
+    nvs_get_u8(handle, "prerelease", &prerelease);
+
+    bool installed = false;
+    size_t dummy = 0;
+    if (nvs_get_str(handle, "installed", NULL, &dummy) == ESP_OK) {
+        installed = true;
+    }
+
+    if (!installed) {
+        ESP_LOGI(TAG, "No firmware installed; performing initial OTA");
+        perform_update(handle, repo_url, prerelease);
+    } else {
+        ESP_LOGI(TAG, "Existing firmware present; skipping initial OTA");
+    }
+
+    free(repo_url);
+    nvs_close(handle);
+}
+
