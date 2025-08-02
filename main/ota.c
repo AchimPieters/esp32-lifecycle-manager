@@ -30,6 +30,9 @@ static char *http_get(const char *url) {
     esp_http_client_config_t config = {
         .url = url,
         .timeout_ms = 10000,
+        .transport_type = HTTP_TRANSPORT_OVER_SSL,
+        .skip_cert_common_name_check = true,
+        .user_agent = "esp32-lcm",
     };
     esp_http_client_handle_t client = esp_http_client_init(&config);
     if (!client) return NULL;
@@ -80,6 +83,9 @@ static bool download_and_flash(const char *bin_url, const uint8_t *expected_hash
     esp_http_client_config_t config = {
         .url = bin_url,
         .timeout_ms = 10000,
+        .transport_type = HTTP_TRANSPORT_OVER_SSL,
+        .skip_cert_common_name_check = true,
+        .user_agent = "esp32-lcm",
     };
     esp_http_client_handle_t client = esp_http_client_init(&config);
     if (!client) return false;
