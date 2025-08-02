@@ -8,16 +8,17 @@
 #include <esp_https_ota.h>
 #include <esp_app_desc.h>
 #include <cJSON.h>
-#include <mbedtls/sha256.h>
+#include <mbedtls/sha512.h>
 #include <mbedtls/version.h>
 #include <ctype.h>
+#include "esp_crt_bundle.h"
 
 #define OTA_NAMESPACE "ota"
 
 #if defined(MBEDTLS_VERSION_NUMBER) && MBEDTLS_VERSION_NUMBER >= 0x03000000
-#define mbedtls_sha256_starts_ret mbedtls_sha256_starts
-#define mbedtls_sha256_update_ret mbedtls_sha256_update
-#define mbedtls_sha256_finish_ret mbedtls_sha256_finish
+#define mbedtls_sha512_starts_ret mbedtls_sha512_starts
+#define mbedtls_sha512_update_ret mbedtls_sha512_update
+#define mbedtls_sha512_finish_ret mbedtls_sha512_finish
 #endif
 
 static const char *TAG = "ota";
@@ -41,7 +42,7 @@ static char *http_get(const char *url) {
         .url = url,
         .timeout_ms = 10000,
         .transport_type = HTTP_TRANSPORT_OVER_SSL,
-        .skip_cert_common_name_check = true,
+        .crt_bundle_attach = esp_crt_bundle_attach,
         .user_agent = "esp32-lcm",
     };
     esp_http_client_handle_t client = esp_http_client_init(&config);
@@ -79,8 +80,8 @@ static bool download_sig(const char *url, uint8_t *out_hash) {
     char *sig = http_get(url);
     if (!sig) return false;
     bool ok = false;
-    if (strlen(sig) >= 64) {
-        for (int i = 0; i < 32; i++) {
+    if (strlen(sig) >= 96) {
+        for (int i = 0; i < 48; i++) {
             sscanf(sig + 2 * i, "%2hhx", &out_hash[i]);
         }
         ok = true;
@@ -90,7 +91,7 @@ static bool download_sig(const char *url, uint8_t *out_hash) {
 }
 
 typedef struct {
-    mbedtls_sha256_context sha_ctx;
+    mbedtls_sha512_context sha_ctx;
 } ota_hash_ctx_t;
 
 static void sanitize_version_str(const char *in, char *out, size_t len) {
@@ -120,21 +121,21 @@ static void normalize_repo_api(const char *input, char *output, size_t len) {
 static esp_err_t http_event_handler(esp_http_client_event_t *evt) {
     if (evt->event_id == HTTP_EVENT_ON_DATA && evt->user_data) {
         ota_hash_ctx_t *ctx = (ota_hash_ctx_t *)evt->user_data;
-        mbedtls_sha256_update_ret(&ctx->sha_ctx, (const unsigned char *)evt->data, evt->data_len);
+        mbedtls_sha512_update_ret(&ctx->sha_ctx, (const unsigned char *)evt->data, evt->data_len);
     }
     return ESP_OK;
 }
 
 static bool download_and_flash(const char *bin_url, const uint8_t *expected_hash) {
     ota_hash_ctx_t hash_ctx;
-    mbedtls_sha256_init(&hash_ctx.sha_ctx);
-    mbedtls_sha256_starts_ret(&hash_ctx.sha_ctx, 0);
+    mbedtls_sha512_init(&hash_ctx.sha_ctx);
+    mbedtls_sha512_starts_ret(&hash_ctx.sha_ctx, 1);
 
     esp_http_client_config_t http_config = {
         .url = bin_url,
         .timeout_ms = 10000,
         .transport_type = HTTP_TRANSPORT_OVER_SSL,
-        .skip_cert_common_name_check = true,
+        .crt_bundle_attach = esp_crt_bundle_attach,
         .user_agent = "esp32-lcm",
         .event_handler = http_event_handler,
         .user_data = &hash_ctx,
@@ -146,7 +147,7 @@ static bool download_and_flash(const char *bin_url, const uint8_t *expected_hash
 
     esp_https_ota_handle_t https_ota_handle = NULL;
     if (esp_https_ota_begin(&ota_config, &https_ota_handle) != ESP_OK) {
-        mbedtls_sha256_free(&hash_ctx.sha_ctx);
+        mbedtls_sha512_free(&hash_ctx.sha_ctx);
         return false;
     }
 
@@ -158,15 +159,15 @@ static bool download_and_flash(const char *bin_url, const uint8_t *expected_hash
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Error during OTA perform: %s", esp_err_to_name(err));
         esp_https_ota_abort(https_ota_handle);
-        mbedtls_sha256_free(&hash_ctx.sha_ctx);
+        mbedtls_sha512_free(&hash_ctx.sha_ctx);
         return false;
     }
 
-    uint8_t hash[32];
-    mbedtls_sha256_finish_ret(&hash_ctx.sha_ctx, hash);
-    mbedtls_sha256_free(&hash_ctx.sha_ctx);
+    uint8_t hash[48];
+    mbedtls_sha512_finish_ret(&hash_ctx.sha_ctx, hash);
+    mbedtls_sha512_free(&hash_ctx.sha_ctx);
 
-    if (memcmp(hash, expected_hash, 32) != 0) {
+    if (memcmp(hash, expected_hash, 48) != 0) {
         ESP_LOGE(TAG, "Firmware hash mismatch");
         esp_https_ota_abort(https_ota_handle);
         return false;
@@ -305,7 +306,7 @@ static void perform_update(nvs_handle_t handle, const char *repo_url, bool prere
         return;
     }
 
-    uint8_t expected_hash[32];
+    uint8_t expected_hash[48];
     if (!download_sig(sig_url, expected_hash)) {
         ESP_LOGE(TAG, "Failed to download signature");
         cJSON_Delete(root);
