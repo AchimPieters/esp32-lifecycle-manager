@@ -7,6 +7,8 @@
 #include <esp_ota_ops.h>
 #include <esp_https_ota.h>
 #include <esp_app_desc.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 #include <cJSON.h>
 #include <mbedtls/sha512.h>
 #include <mbedtls/version.h>
@@ -387,5 +389,17 @@ void firmware_update(void) {
 
     free(repo_url);
     nvs_close(handle);
+}
+
+static void ota_task(void *pv) {
+    /* give WiFi some time to stabilize */
+    vTaskDelay(pdMS_TO_TICKS(2000));
+    ota_check_and_install();
+    firmware_update();
+    vTaskDelete(NULL);
+}
+
+void ota_start(void) {
+    xTaskCreate(ota_task, "ota_task", 8192, NULL, 5, NULL);
 }
 
