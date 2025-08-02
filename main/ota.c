@@ -184,6 +184,10 @@ static void perform_update(nvs_handle_t handle, const char *repo_url, bool prere
     char *stored_version = nvs_get_string(handle, "current_version");
     if (stored_version) {
         sanitize_version_str(stored_version, current_version, sizeof(current_version));
+        if (strcmp(stored_version, current_version) != 0) {
+            nvs_set_str(handle, "current_version", current_version);
+            nvs_commit(handle);
+        }
         free(stored_version);
     } else {
         const esp_app_desc_t *desc = esp_app_get_description();
