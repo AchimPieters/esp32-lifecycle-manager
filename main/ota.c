@@ -295,3 +295,26 @@ void ota_check_and_install(void) {
     nvs_close(handle);
 }
 
+void firmware_update(void) {
+    nvs_handle_t handle;
+    if (nvs_open(OTA_NAMESPACE, NVS_READWRITE, &handle) != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to open NVS");
+        return;
+    }
+
+    char *repo_url = nvs_get_string(handle, "repo_url");
+    if (!repo_url) {
+        ESP_LOGW(TAG, "ota.repo_url not set");
+        nvs_close(handle);
+        return;
+    }
+
+    uint8_t prerelease = 0;
+    nvs_get_u8(handle, "prerelease", &prerelease);
+
+    perform_update(handle, repo_url, prerelease);
+
+    free(repo_url);
+    nvs_close(handle);
+}
+

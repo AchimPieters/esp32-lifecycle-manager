@@ -99,6 +99,7 @@ void button_task(void *pvParameter) {
 
 static void on_wifi_ready(void) {
     ota_check_and_install();
+    firmware_update();
 }
 
 void app_main(void) {
