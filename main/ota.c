@@ -9,6 +9,7 @@
 #include <esp_app_desc.h>
 #include <cJSON.h>
 #include <mbedtls/sha256.h>
+#include <ctype.h>
 
 #define OTA_NAMESPACE "ota"
 
@@ -85,6 +86,13 @@ typedef struct {
     mbedtls_sha256_context sha_ctx;
 } ota_hash_ctx_t;
 
+static void sanitize_version_str(const char *in, char *out, size_t len) {
+    while (*in && !isdigit((unsigned char)*in)) {
+        in++;
+    }
+    strlcpy(out, in, len);
+}
+
 static esp_err_t http_event_handler(esp_http_client_event_t *evt) {
     if (evt->event_id == HTTP_EVENT_ON_DATA && evt->user_data) {
         ota_hash_ctx_t *ctx = (ota_hash_ctx_t *)evt->user_data;
@@ -149,11 +157,20 @@ static bool download_and_flash(const char *bin_url, const uint8_t *expected_hash
     return true;
 }
 
+static void parse_version(const char *str, int *major, int *minor, int *patch) {
+    *major = *minor = *patch = 0;
+    if (!str) return;
+    while (*str && !isdigit((unsigned char)*str)) {
+        str++;
+    }
+    sscanf(str, "%d.%d.%d", major, minor, patch);
+}
+
 static bool is_version_newer(const char *current, const char *latest) {
-    int cur_major = 0, cur_minor = 0, cur_patch = 0;
-    int lat_major = 0, lat_minor = 0, lat_patch = 0;
-    sscanf(current, "%d.%d.%d", &cur_major, &cur_minor, &cur_patch);
-    sscanf(latest, "%d.%d.%d", &lat_major, &lat_minor, &lat_patch);
+    int cur_major, cur_minor, cur_patch;
+    int lat_major, lat_minor, lat_patch;
+    parse_version(current, &cur_major, &cur_minor, &cur_patch);
+    parse_version(latest, &lat_major, &lat_minor, &lat_patch);
     if (lat_major > cur_major) return true;
     if (lat_major < cur_major) return false;
     if (lat_minor > cur_minor) return true;
@@ -166,12 +183,12 @@ static void perform_update(nvs_handle_t handle, const char *repo_url, bool prere
     char current_version[64] = {0};
     char *stored_version = nvs_get_string(handle, "current_version");
     if (stored_version) {
-        strlcpy(current_version, stored_version, sizeof(current_version));
+        sanitize_version_str(stored_version, current_version, sizeof(current_version));
         free(stored_version);
     } else {
         const esp_app_desc_t *desc = esp_app_get_description();
         if (desc) {
-            strlcpy(current_version, desc->version, sizeof(current_version));
+            sanitize_version_str(desc->version, current_version, sizeof(current_version));
             nvs_set_str(handle, "current_version", current_version);
             nvs_commit(handle);
         }
@@ -266,7 +283,9 @@ static void perform_update(nvs_handle_t handle, const char *repo_url, bool prere
     }
 
     if (download_and_flash(bin_url, expected_hash)) {
-        nvs_set_str(handle, "current_version", tag_name);
+        char cleaned_tag[64];
+        sanitize_version_str(tag_name, cleaned_tag, sizeof(cleaned_tag));
+        nvs_set_str(handle, "current_version", cleaned_tag);
         nvs_set_str(handle, "installed", "1");
         nvs_commit(handle);
         ESP_LOGI(TAG, "Rebooting to new firmware");
