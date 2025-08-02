@@ -1,5 +1,7 @@
 #include "ota.h"
 #include <string.h>
+#include <stdlib.h>
+#include <stdint.h>
 #include <esp_log.h>
 #include <nvs.h>
 #include <nvs_flash.h>
@@ -159,27 +161,68 @@ static char *http_get(const char *url) {
     return buffer;
 }
 
-static bool download_sig(const char *url, uint8_t *out_hash) {
+static uint8_t *http_get_binary(const char *url, size_t *out_len) {
+    ESP_LOGI(TAG, "HTTP GET (binary): %s", url);
+    esp_http_client_config_t config = {
+        .url = url,
+        .timeout_ms = 10000,
+        .transport_type = HTTP_TRANSPORT_OVER_SSL,
+        .crt_bundle_attach = esp_crt_bundle_attach,
+        .user_agent = "esp32-lcm",
+    };
+    esp_http_client_handle_t client = esp_http_client_init(&config);
+    if (!client) {
+        ESP_LOGE(TAG, "Failed to init HTTP client");
+        return NULL;
+    }
+    if (esp_http_client_open(client, 0) != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to open HTTP connection");
+        esp_http_client_cleanup(client);
+        return NULL;
+    }
+    int content_length = esp_http_client_fetch_headers(client);
+    if (content_length <= 0) content_length = 1024;
+    uint8_t *buffer = malloc(content_length);
+    if (!buffer) {
+        ESP_LOGE(TAG, "Failed to allocate HTTP buffer");
+        esp_http_client_close(client);
+        esp_http_client_cleanup(client);
+        return NULL;
+    }
+    int read_len = esp_http_client_read_response(client, (char *)buffer, content_length);
+    if (read_len < 0) {
+        ESP_LOGE(TAG, "HTTP read failed");
+        free(buffer);
+        esp_http_client_close(client);
+        esp_http_client_cleanup(client);
+        return NULL;
+    }
+    *out_len = read_len;
+    esp_http_client_close(client);
+    esp_http_client_cleanup(client);
+    ESP_LOGI(TAG, "HTTP GET binary done (%d bytes)", read_len);
+    return buffer;
+}
+
+static bool download_sig(const char *url, uint8_t *out_hash, uint32_t *out_size) {
     ESP_LOGI(TAG, "Downloading signature: %s", url);
-    char *sig = http_get(url);
+    size_t len = 0;
+    uint8_t *sig = http_get_binary(url, &len);
     if (!sig) {
         ESP_LOGE(TAG, "Signature download failed");
         return false;
     }
-    bool ok = false;
-    size_t len = strlen(sig);
-    ESP_LOGD(TAG, "Signature length: %zu", len);
-    if (len >= 96) {
-        for (int i = 0; i < 48; i++) {
-            sscanf(sig + 2 * i, "%2hhx", &out_hash[i]);
-        }
-        ok = true;
-    }
-    free(sig);
-    if (!ok) {
+    if (len < 52) {
         ESP_LOGE(TAG, "Signature parse failed");
+        free(sig);
+        return false;
     }
-    return ok;
+    memcpy(out_hash, sig, 48);
+    uint32_t size = ((uint32_t)sig[48] << 24) | ((uint32_t)sig[49] << 16) |
+                    ((uint32_t)sig[50] << 8) | (uint32_t)sig[51];
+    *out_size = size;
+    free(sig);
+    return true;
 }
 
 typedef struct {
@@ -218,7 +261,8 @@ static esp_err_t http_event_handler(esp_http_client_event_t *evt) {
     return ESP_OK;
 }
 
-static bool download_and_flash(const char *bin_url, const uint8_t *expected_hash) {
+static bool download_and_flash(const char *bin_url, const uint8_t *expected_hash,
+                               uint32_t expected_size) {
     ESP_LOGI(TAG, "Starting firmware download: %s", bin_url);
     ota_led_start();
     ota_hash_ctx_t hash_ctx;
@@ -264,12 +308,20 @@ static bool download_and_flash(const char *bin_url, const uint8_t *expected_hash
     int image_len = esp_https_ota_get_image_len_read(https_ota_handle);
     ESP_LOGI(TAG, "Total firmware written: %d bytes", image_len);
 
+    if (expected_size && image_len != (int)expected_size) {
+        ESP_LOGE(TAG, "Handtekening ongeldig (size mismatch)");
+        esp_https_ota_abort(https_ota_handle);
+        mbedtls_sha512_free(&hash_ctx.sha_ctx);
+        ota_led_stop();
+        return false;
+    }
+
     uint8_t hash[48];
     mbedtls_sha512_finish_ret(&hash_ctx.sha_ctx, hash);
     mbedtls_sha512_free(&hash_ctx.sha_ctx);
 
     if (memcmp(hash, expected_hash, 48) != 0) {
-        ESP_LOGE(TAG, "Firmware hash mismatch");
+        ESP_LOGE(TAG, "Handtekening ongeldig (hash mismatch)");
         esp_https_ota_abort(https_ota_handle);
         ota_led_stop();
         return false;
@@ -379,7 +431,7 @@ static void perform_update(nvs_handle_t handle, const char *repo_url, bool prere
     if (!cJSON_IsString(tag)) {
         cJSON_Delete(root);
         free(json);
-        ESP_LOGE(TAG, "tag_name missing");
+        ESP_LOGE(TAG, "Geen release gevonden op GitHub API URL: %s", api_url);
         return;
     }
 
@@ -419,14 +471,15 @@ static void perform_update(nvs_handle_t handle, const char *repo_url, bool prere
     ESP_LOGI(TAG, "Signature URL %s", sig_url);
 
     uint8_t expected_hash[48];
-    if (!download_sig(sig_url, expected_hash)) {
+    uint32_t expected_size = 0;
+    if (!download_sig(sig_url, expected_hash, &expected_size)) {
         ESP_LOGE(TAG, "Failed to download signature");
         cJSON_Delete(root);
         free(json);
         return;
     }
 
-    if (download_and_flash(bin_url, expected_hash)) {
+    if (download_and_flash(bin_url, expected_hash, expected_size)) {
         char cleaned_tag[64];
         sanitize_version_str(tag_name, cleaned_tag, sizeof(cleaned_tag));
         nvs_set_blob(handle, "main_sig", expected_hash, sizeof(expected_hash));
