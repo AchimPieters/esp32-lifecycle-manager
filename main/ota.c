@@ -392,14 +392,18 @@ void firmware_update(void) {
 }
 
 static void ota_task(void *pv) {
+    ESP_LOGI(TAG, "OTA task started");
     /* give WiFi some time to stabilize */
     vTaskDelay(pdMS_TO_TICKS(2000));
+    ESP_LOGI(TAG, "Checking for firmware updates");
     ota_check_and_install();
     firmware_update();
+    ESP_LOGI(TAG, "OTA task finished");
     vTaskDelete(NULL);
 }
 
 void ota_start(void) {
+    ESP_LOGI(TAG, "Starting OTA task");
     xTaskCreate(ota_task, "ota_task", 8192, NULL, 5, NULL);
 }
 

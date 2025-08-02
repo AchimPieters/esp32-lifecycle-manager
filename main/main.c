@@ -98,6 +98,7 @@ void button_task(void *pvParameter) {
 }
 
 static void on_wifi_ready(void) {
+    ESP_LOGI(TAG, "WiFi ready - starting OTA");
     ota_start();
 }
 
