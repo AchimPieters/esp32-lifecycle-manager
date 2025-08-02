@@ -9,9 +9,16 @@
 #include <esp_app_desc.h>
 #include <cJSON.h>
 #include <mbedtls/sha256.h>
+#include <mbedtls/version.h>
 #include <ctype.h>
 
 #define OTA_NAMESPACE "ota"
+
+#if defined(MBEDTLS_VERSION_NUMBER) && MBEDTLS_VERSION_NUMBER >= 0x03000000
+#define mbedtls_sha256_starts_ret mbedtls_sha256_starts
+#define mbedtls_sha256_update_ret mbedtls_sha256_update
+#define mbedtls_sha256_finish_ret mbedtls_sha256_finish
+#endif
 
 static const char *TAG = "ota";
 
