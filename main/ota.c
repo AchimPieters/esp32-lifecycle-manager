@@ -93,6 +93,23 @@ static void sanitize_version_str(const char *in, char *out, size_t len) {
     strlcpy(out, in, len);
 }
 
+static void normalize_repo_api(const char *input, char *output, size_t len) {
+    if (!input || !*input) {
+        if (len) output[0] = '\0';
+        return;
+    }
+    const char *repo_part = input;
+    const char *p = NULL;
+    if ((p = strstr(input, "api.github.com/repos/"))) {
+        strlcpy(output, input, len);
+        return;
+    }
+    if ((p = strstr(input, "github.com/"))) {
+        repo_part = p + strlen("github.com/");
+    }
+    snprintf(output, len, "https://api.github.com/repos/%s", repo_part);
+}
+
 static esp_err_t http_event_handler(esp_http_client_event_t *evt) {
     if (evt->event_id == HTTP_EVENT_ON_DATA && evt->user_data) {
         ota_hash_ctx_t *ctx = (ota_hash_ctx_t *)evt->user_data;
@@ -198,11 +215,13 @@ static void perform_update(nvs_handle_t handle, const char *repo_url, bool prere
         }
     }
 
+    char api_base[256];
+    normalize_repo_api(repo_url, api_base, sizeof(api_base));
     char api_url[256];
     if (prerelease) {
-        snprintf(api_url, sizeof(api_url), "%s/releases", repo_url);
+        snprintf(api_url, sizeof(api_url), "%s/releases", api_base);
     } else {
-        snprintf(api_url, sizeof(api_url), "%s/releases/latest", repo_url);
+        snprintf(api_url, sizeof(api_url), "%s/releases/latest", api_base);
     }
 
     char *json = http_get(api_url);

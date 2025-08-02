@@ -59,6 +59,23 @@ enum {
 static nvs_handle_t wifi_cfg_handle;
 static volatile bool sta_got_ip = false;
 
+static void normalize_repo_url(const char *input, char *output, size_t len) {
+        if (!input || !*input) {
+                if (len) output[0] = '\0';
+                return;
+        }
+        const char *repo_part = input;
+        const char *p = NULL;
+        if ((p = strstr(input, "api.github.com/repos/"))) {
+                strlcpy(output, input, len);
+                return;
+        }
+        if ((p = strstr(input, "github.com/"))) {
+                repo_part = p + strlen("github.com/");
+        }
+        snprintf(output, len, "https://api.github.com/repos/%s", repo_part);
+}
+
 static wifi_mode_t opmode_to_wifi_mode(int mode) {
         switch (mode) {
         case STATION_MODE: return WIFI_MODE_STA;
@@ -443,7 +460,6 @@ static void wifi_config_server_on_settings_update(client_t *client) {
 
     DEBUG("Setting wifi_ssid param = %s", ssid_param->value);
     DEBUG("wifi_password param updated");
-    DEBUG("Setting ota.repo_url param = %s", repo_param ? repo_param->value : "(none)");
     DEBUG("Setting ota.prerelease param = %s", prerelease_param ? prerelease_param->value : "(none)");
 
     sysparam_set_string("wifi_ssid", ssid_param->value);
@@ -457,8 +473,12 @@ static void wifi_config_server_on_settings_update(client_t *client) {
     nvs_handle ota_handle;
     if (nvs_open("ota", NVS_READWRITE, &ota_handle) == ESP_OK) {
         if (repo_param) {
-            nvs_set_str(ota_handle, "repo_url", repo_param->value);
+            char api_repo[256];
+            normalize_repo_url(repo_param->value, api_repo, sizeof(api_repo));
+            DEBUG("Setting ota.repo_url param = %s", api_repo);
+            nvs_set_str(ota_handle, "repo_url", api_repo);
         } else {
+            DEBUG("Setting ota.repo_url param = (none)");
             nvs_set_str(ota_handle, "repo_url", "");
         }
 
