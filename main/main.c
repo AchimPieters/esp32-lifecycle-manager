@@ -107,9 +107,17 @@ void button_task(void *pvParameter) {
     }
 }
 
+void ota_task(void *pvParameter) {
+    while (1) {
+        ESP_LOGI("OTA_TASK", "Checking for firmware updates...");
+        ota_start();
+        vTaskDelay(pdMS_TO_TICKS(3600000));
+    }
+}
+
 static void on_wifi_ready(void) {
-    ESP_LOGI(TAG, "WiFi ready - starting OTA");
-    ota_start();
+    ESP_LOGI("MAIN", "WiFi connected! Starting OTA task...");
+    xTaskCreate(ota_task, "ota_task", 8192, NULL, 5, NULL);
 }
 
 void app_main(void) {
