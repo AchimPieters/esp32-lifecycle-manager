@@ -5,6 +5,7 @@
 #include <nvs_flash.h>
 #include <esp_http_client.h>
 #include <esp_ota_ops.h>
+#include <esp_https_ota.h>
 #include <cJSON.h>
 #include <mbedtls/sha256.h>
 
@@ -79,69 +80,72 @@ static bool download_sig(const char *url, uint8_t *out_hash) {
     return ok;
 }
 
+typedef struct {
+    mbedtls_sha256_context sha_ctx;
+} ota_hash_ctx_t;
+
+static esp_err_t http_event_handler(esp_http_client_event_t *evt) {
+    if (evt->event_id == HTTP_EVENT_ON_DATA && evt->user_data) {
+        ota_hash_ctx_t *ctx = (ota_hash_ctx_t *)evt->user_data;
+        mbedtls_sha256_update_ret(&ctx->sha_ctx, (const unsigned char *)evt->data, evt->data_len);
+    }
+    return ESP_OK;
+}
+
 static bool download_and_flash(const char *bin_url, const uint8_t *expected_hash) {
-    esp_http_client_config_t config = {
+    ota_hash_ctx_t hash_ctx;
+    mbedtls_sha256_init(&hash_ctx.sha_ctx);
+    mbedtls_sha256_starts_ret(&hash_ctx.sha_ctx, 0);
+
+    esp_http_client_config_t http_config = {
         .url = bin_url,
         .timeout_ms = 10000,
         .transport_type = HTTP_TRANSPORT_OVER_SSL,
         .skip_cert_common_name_check = true,
         .user_agent = "esp32-lcm",
+        .event_handler = http_event_handler,
+        .user_data = &hash_ctx,
     };
-    esp_http_client_handle_t client = esp_http_client_init(&config);
-    if (!client) return false;
 
-    if (esp_http_client_open(client, 0) != ESP_OK) {
-        esp_http_client_cleanup(client);
+    esp_https_ota_config_t ota_config = {
+        .http_config = &http_config,
+    };
+
+    esp_https_ota_handle_t https_ota_handle = NULL;
+    if (esp_https_ota_begin(&ota_config, &https_ota_handle) != ESP_OK) {
+        mbedtls_sha256_free(&hash_ctx.sha_ctx);
         return false;
     }
 
-    const esp_partition_t *partition = esp_ota_get_next_update_partition(NULL);
-    esp_ota_handle_t ota_handle = 0;
-    if (esp_ota_begin(partition, OTA_SIZE_UNKNOWN, &ota_handle) != ESP_OK) {
-        esp_http_client_close(client);
-        esp_http_client_cleanup(client);
+    esp_err_t err;
+    do {
+        err = esp_https_ota_perform(https_ota_handle);
+    } while (err == ESP_ERR_HTTPS_OTA_IN_PROGRESS);
+
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Error during OTA perform: %s", esp_err_to_name(err));
+        esp_https_ota_abort(https_ota_handle);
+        mbedtls_sha256_free(&hash_ctx.sha_ctx);
         return false;
-    }
-
-    mbedtls_sha256_context ctx;
-    mbedtls_sha256_init(&ctx);
-    mbedtls_sha256_starts_ret(&ctx, 0);
-
-    bool ok = true;
-    while (1) {
-        uint8_t buffer[1024];
-        int data_read = esp_http_client_read(client, (char *)buffer, sizeof(buffer));
-        if (data_read < 0) {
-            ok = false;
-            break;
-        } else if (data_read == 0) {
-            break; // finished
-        }
-        mbedtls_sha256_update_ret(&ctx, buffer, data_read);
-        if (esp_ota_write(ota_handle, buffer, data_read) != ESP_OK) {
-            ok = false;
-            break;
-        }
     }
 
     uint8_t hash[32];
-    mbedtls_sha256_finish_ret(&ctx, hash);
-    mbedtls_sha256_free(&ctx);
+    mbedtls_sha256_finish_ret(&hash_ctx.sha_ctx, hash);
+    mbedtls_sha256_free(&hash_ctx.sha_ctx);
 
-    esp_http_client_close(client);
-    esp_http_client_cleanup(client);
-
-    if (ok && memcmp(hash, expected_hash, 32) == 0) {
-        if (esp_ota_end(ota_handle) == ESP_OK &&
-            esp_ota_set_boot_partition(partition) == ESP_OK) {
-            ESP_LOGI(TAG, "OTA update successful");
-            return true;
-        }
+    if (memcmp(hash, expected_hash, 32) != 0) {
+        ESP_LOGE(TAG, "Firmware hash mismatch");
+        esp_https_ota_abort(https_ota_handle);
+        return false;
     }
 
-    ESP_LOGE(TAG, "OTA update failed");
-    esp_ota_abort(ota_handle);
-    return false;
+    if (esp_https_ota_finish(https_ota_handle) != ESP_OK) {
+        ESP_LOGE(TAG, "OTA finish failed");
+        return false;
+    }
+
+    ESP_LOGI(TAG, "OTA update successful");
+    return true;
 }
 
 static bool is_version_newer(const char *current, const char *latest) {
