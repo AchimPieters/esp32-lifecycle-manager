@@ -9,6 +9,8 @@ idf_component_register(
         "."
         "include"
         "content"
+    PRIV_REQUIRES
+        esp_https_ota
     REQUIRES
         freertos
         esp_wifi
