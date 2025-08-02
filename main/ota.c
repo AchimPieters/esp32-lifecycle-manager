@@ -6,6 +6,7 @@
 #include <esp_http_client.h>
 #include <esp_ota_ops.h>
 #include <esp_https_ota.h>
+#include <esp_app_desc.h>
 #include <cJSON.h>
 #include <mbedtls/sha256.h>
 
@@ -167,6 +168,13 @@ static void perform_update(nvs_handle_t handle, const char *repo_url, bool prere
     if (stored_version) {
         strlcpy(current_version, stored_version, sizeof(current_version));
         free(stored_version);
+    } else {
+        const esp_app_desc_t *desc = esp_app_get_description();
+        if (desc) {
+            strlcpy(current_version, desc->version, sizeof(current_version));
+            nvs_set_str(handle, "current_version", current_version);
+            nvs_commit(handle);
+        }
     }
 
     char api_url[256];
