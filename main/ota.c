@@ -144,7 +144,7 @@ static char *http_get(const char *url) {
       .transport_type = HTTP_TRANSPORT_OVER_SSL,
       .crt_bundle_attach = esp_crt_bundle_attach,
       .user_agent = "esp32-lcm",
-      .disable_auto_redirect = false,
+      .disable_auto_redirect = false, // follow GitHub's 302 redirect to S3
   };
   esp_http_client_handle_t client = esp_http_client_init(&config);
   if (!client) {
@@ -193,7 +193,7 @@ static uint8_t *http_get_binary(const char *url, size_t *out_len) {
       .transport_type = HTTP_TRANSPORT_OVER_SSL,
       .crt_bundle_attach = esp_crt_bundle_attach,
       .user_agent = "esp32-lcm",
-      .disable_auto_redirect = false,
+      .disable_auto_redirect = false, // follow GitHub's 302 redirect to S3
   };
   esp_http_client_handle_t client = esp_http_client_init(&config);
   if (!client) {
@@ -308,7 +308,7 @@ static bool download_and_flash(const char *bin_url,
       .user_agent = "esp32-lcm",
       .event_handler = http_event_handler,
       .user_data = &hash_ctx,
-      .disable_auto_redirect = false,
+      .disable_auto_redirect = false, // follow GitHub's 302 redirect to S3
   };
 
   esp_https_ota_config_t ota_config = {
