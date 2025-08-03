@@ -358,7 +358,7 @@ static bool download_and_flash(const char *url, const uint8_t *expected_hash,
     return false;
   }
 
-  int content_length = esp_http_client_fetch_headers(client);
+  esp_http_client_fetch_headers(client);
   int status = esp_http_client_get_status_code(client);
   if (status != 200) {
     ESP_LOGE(TAG, "HTTP status %d", status);
@@ -367,78 +367,96 @@ static bool download_and_flash(const char *url, const uint8_t *expected_hash,
     ota_led_stop();
     return false;
   }
-  if (content_length <= 0) {
-    content_length = expected_size;
-  }
-  uint8_t *fw = malloc(content_length);
-  if (!fw) {
-    ESP_LOGE(TAG, "Failed to allocate firmware buffer");
+
+  const esp_partition_t *update_part = esp_ota_get_next_update_partition(NULL);
+  esp_ota_handle_t ota_handle;
+  if (esp_ota_begin(update_part, expected_size, &ota_handle) != ESP_OK) {
+    ESP_LOGE(TAG, "OTA begin failed");
     esp_http_client_close(client);
     esp_http_client_cleanup(client);
     ota_led_stop();
     return false;
   }
 
-  int total = 0;
-  while (total < content_length) {
-    int read = esp_http_client_read(client, (char *)fw + total,
-                                    content_length - total);
-    if (read <= 0) {
-      break;
-    }
-    total += read;
-  }
-  esp_http_client_close(client);
-  esp_http_client_cleanup(client);
-
-  ESP_LOGI(TAG, "Downloaded %d bytes", total);
-
-  if (expected_size && total != (int)expected_size) {
-    ESP_LOGE(TAG, "Handtekening ongeldig (size mismatch)");
-    free(fw);
+  const int buf_len = 4096;
+  uint8_t *buf = malloc(buf_len);
+  if (!buf) {
+    ESP_LOGE(TAG, "Failed to allocate firmware buffer");
+    esp_ota_abort(ota_handle);
+    esp_http_client_close(client);
+    esp_http_client_cleanup(client);
     ota_led_stop();
     return false;
   }
 
+  mbedtls_sha512_context ctx;
+  mbedtls_sha512_init(&ctx);
+  mbedtls_sha512_starts_ret(&ctx, 1);
+
+  int total = 0;
+  while (1) {
+    int read = esp_http_client_read(client, (char *)buf, buf_len);
+    if (read < 0) {
+      ESP_LOGE(TAG, "HTTP read failed");
+      mbedtls_sha512_free(&ctx);
+      free(buf);
+      esp_ota_abort(ota_handle);
+      esp_http_client_close(client);
+      esp_http_client_cleanup(client);
+      ota_led_stop();
+      return false;
+    }
+    if (read == 0)
+      break;
+    total += read;
+    mbedtls_sha512_update_ret(&ctx, buf, read);
+    if (esp_ota_write(ota_handle, buf, read) != ESP_OK) {
+      ESP_LOGE(TAG, "OTA write failed");
+      mbedtls_sha512_free(&ctx);
+      free(buf);
+      esp_ota_abort(ota_handle);
+      esp_http_client_close(client);
+      esp_http_client_cleanup(client);
+      ota_led_stop();
+      return false;
+    }
+  }
+
+  esp_http_client_close(client);
+  esp_http_client_cleanup(client);
+
+  ESP_LOGI(TAG, "Firmware file received: %d bytes", total);
+
   uint8_t hash[48];
-  calculate_sha384(fw, total, hash);
+  mbedtls_sha512_finish_ret(&ctx, hash);
+  mbedtls_sha512_free(&ctx);
+  free(buf);
+
+  if (expected_size && total != (int)expected_size) {
+    ESP_LOGE(TAG, "Handtekening ongeldig (size mismatch)");
+    esp_ota_abort(ota_handle);
+    ota_led_stop();
+    return false;
+  }
   if (memcmp(hash, expected_hash, 48) != 0) {
     ESP_LOGE(TAG, "Handtekening ongeldig (hash mismatch)");
-    free(fw);
+    esp_ota_abort(ota_handle);
     ota_led_stop();
     return false;
   }
   ESP_LOGI(TAG, "Firmware hash verified");
 
-  const esp_partition_t *update_part = esp_ota_get_next_update_partition(NULL);
-  esp_ota_handle_t ota_handle;
-  if (esp_ota_begin(update_part, total, &ota_handle) != ESP_OK) {
-    ESP_LOGE(TAG, "OTA begin failed");
-    free(fw);
-    ota_led_stop();
-    return false;
-  }
-  if (esp_ota_write(ota_handle, fw, total) != ESP_OK) {
-    ESP_LOGE(TAG, "OTA write failed");
-    esp_ota_abort(ota_handle);
-    free(fw);
-    ota_led_stop();
-    return false;
-  }
   if (esp_ota_end(ota_handle) != ESP_OK) {
     ESP_LOGE(TAG, "OTA end failed");
-    free(fw);
     ota_led_stop();
     return false;
   }
   if (esp_ota_set_boot_partition(update_part) != ESP_OK) {
     ESP_LOGE(TAG, "Failed to set boot partition");
-    free(fw);
     ota_led_stop();
     return false;
   }
 
-  free(fw);
   ota_led_stop();
   ESP_LOGI(TAG, "OTA update successful");
   return true;
