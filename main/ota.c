@@ -183,33 +183,6 @@ static void normalize_repo_api(const char *input, char *output, size_t len) {
   }
 }
 
-static void normalize_repo_base(const char *input, char *output, size_t len) {
-  if (!input || !*input) {
-    if (len)
-      output[0] = '\0';
-    return;
-  }
-  char temp[256];
-  strlcpy(temp, input, sizeof(temp));
-  size_t l = strlen(temp);
-  while (l > 0 && temp[l - 1] == '/') {
-    temp[--l] = '\0';
-  }
-  if (l > 4 && strcmp(&temp[l - 4], ".git") == 0) {
-    temp[l - 4] = '\0';
-  }
-  const char *repo_part = temp;
-  const char *p = NULL;
-  if ((p = strstr(temp, "github.com/"))) {
-    repo_part = p + strlen("github.com/");
-  } else if ((p = strstr(temp, "api.github.com/repos/"))) {
-    repo_part = p + strlen("api.github.com/repos/");
-  }
-  char repo_part_limited[200];
-  strlcpy(repo_part_limited, repo_part, sizeof(repo_part_limited));
-  snprintf(output, len, "https://github.com/%s", repo_part_limited);
-}
-
 static char *http_get(const char *url, const char *auth, int *out_status) {
   ESP_LOGI(TAG, "HTTP GET: %s", url);
   esp_http_client_config_t config = {
@@ -573,14 +546,29 @@ static void perform_update(nvs_handle_t handle, const char *repo_url,
     return;
   }
 
-  char repo_base[512];
-  normalize_repo_base(repo_url, repo_base, sizeof(repo_base));
-  char sig_url[1024];
-  char fw_url[1024];
-  snprintf(sig_url, sizeof(sig_url),
-           "%s/releases/download/%s/main.bin.sig", repo_base, tag_name);
-  snprintf(fw_url, sizeof(fw_url), "%s/releases/download/%s/main.bin",
-           repo_base, tag_name);
+  char sig_url[1024] = {0};
+  char fw_url[1024] = {0};
+  cJSON *assets = cJSON_GetObjectItem(release, "assets");
+  if (cJSON_IsArray(assets)) {
+    cJSON *asset = NULL;
+    cJSON_ArrayForEach(asset, assets) {
+      cJSON *name = cJSON_GetObjectItem(asset, "name");
+      cJSON *url = cJSON_GetObjectItem(asset, "browser_download_url");
+      if (cJSON_IsString(name) && cJSON_IsString(url)) {
+        if (strcmp(name->valuestring, "main.bin") == 0) {
+          strlcpy(fw_url, url->valuestring, sizeof(fw_url));
+        } else if (strcmp(name->valuestring, "main.bin.sig") == 0) {
+          strlcpy(sig_url, url->valuestring, sizeof(sig_url));
+        }
+      }
+    }
+  }
+  if (!fw_url[0] || !sig_url[0]) {
+    cJSON_Delete(root);
+    free(json);
+    ESP_LOGE(TAG, "Required assets not found in release");
+    return;
+  }
 
   uint8_t expected_hash[48];
   uint32_t expected_size = 0;
