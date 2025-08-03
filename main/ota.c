@@ -276,7 +276,7 @@ static bool download_sig(const char *url, const char *auth, uint8_t *out_hash,
     esp_http_client_cleanup(client);
     return false;
   }
-  int content_length = esp_http_client_fetch_headers(client);
+  esp_http_client_fetch_headers(client);
   int status = esp_http_client_get_status_code(client);
   if (status != 200) {
     ESP_LOGE(TAG, "HTTP status %d", status);
@@ -284,27 +284,33 @@ static bool download_sig(const char *url, const char *auth, uint8_t *out_hash,
     esp_http_client_cleanup(client);
     return false;
   }
-  if (content_length <= 0)
-    content_length = 1024;
-  uint8_t *sig = malloc(content_length);
+  const int sig_buf_len = 256;
+  uint8_t *sig = malloc(sig_buf_len);
   if (!sig) {
     ESP_LOGE(TAG, "Failed to allocate HTTP buffer");
     esp_http_client_close(client);
     esp_http_client_cleanup(client);
     return false;
   }
-  int read_len =
-      esp_http_client_read_response(client, (char *)sig, content_length);
-  if (read_len < 0) {
-    ESP_LOGE(TAG, "HTTP read failed");
-    free(sig);
-    esp_http_client_close(client);
-    esp_http_client_cleanup(client);
-    return false;
+  int total_read = 0;
+  while (total_read < 52) {
+    int read_len = esp_http_client_read(client, (char *)sig + total_read,
+                                        sig_buf_len - total_read);
+    if (read_len < 0) {
+      ESP_LOGE(TAG, "HTTP read failed");
+      free(sig);
+      esp_http_client_close(client);
+      esp_http_client_cleanup(client);
+      return false;
+    }
+    if (read_len == 0)
+      break;
+    total_read += read_len;
   }
   esp_http_client_close(client);
   esp_http_client_cleanup(client);
-  if (read_len != 52) {
+  ESP_LOGI(TAG, "Signature file received: %d bytes", total_read);
+  if (total_read != 52) {
     ESP_LOGE(TAG, "Signature parse failed");
     free(sig);
     return false;
@@ -404,8 +410,7 @@ static bool download_and_flash(const char *url, const uint8_t *expected_hash,
   }
   ESP_LOGI(TAG, "Firmware hash verified");
 
-  const esp_partition_t *update_part =
-      esp_ota_get_next_update_partition(NULL);
+  const esp_partition_t *update_part = esp_ota_get_next_update_partition(NULL);
   esp_ota_handle_t ota_handle;
   if (esp_ota_begin(update_part, total, &ota_handle) != ESP_OK) {
     ESP_LOGE(TAG, "OTA begin failed");
