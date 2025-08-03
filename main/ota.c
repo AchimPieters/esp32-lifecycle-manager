@@ -190,8 +190,9 @@ static char *http_get(const char *url) {
   return buffer;
 }
 
-static uint8_t *http_get_binary(const char *url, size_t *out_len) {
-  ESP_LOGI(TAG, "HTTP GET (binary): %s", url);
+static bool download_sig(const char *url, uint8_t *out_hash,
+                         uint32_t *out_size) {
+  ESP_LOGI(TAG, "Downloading signature: %s", url);
   esp_http_client_config_t config = {
       .url = url,
       .timeout_ms = 10000,
@@ -207,49 +208,35 @@ static uint8_t *http_get_binary(const char *url, size_t *out_len) {
   esp_http_client_handle_t client = esp_http_client_init(&config);
   if (!client) {
     ESP_LOGE(TAG, "Failed to init HTTP client");
-    return NULL;
+    return false;
   }
   if (esp_http_client_open(client, 0) != ESP_OK) {
     ESP_LOGE(TAG, "Failed to open HTTP connection");
     esp_http_client_cleanup(client);
-    return NULL;
+    return false;
   }
   int content_length = esp_http_client_fetch_headers(client);
   if (content_length <= 0)
     content_length = 1024;
-  uint8_t *buffer = malloc(content_length);
-  if (!buffer) {
+  uint8_t *sig = malloc(content_length);
+  if (!sig) {
     ESP_LOGE(TAG, "Failed to allocate HTTP buffer");
     esp_http_client_close(client);
     esp_http_client_cleanup(client);
-    return NULL;
-  }
-  int read_len =
-      esp_http_client_read_response(client, (char *)buffer, content_length);
-  if (read_len < 0) {
-    ESP_LOGE(TAG, "HTTP read failed");
-    free(buffer);
-    esp_http_client_close(client);
-    esp_http_client_cleanup(client);
-    return NULL;
-  }
-  *out_len = read_len;
-  esp_http_client_close(client);
-  esp_http_client_cleanup(client);
-  ESP_LOGI(TAG, "HTTP GET binary done (%d bytes)", read_len);
-  return buffer;
-}
-
-static bool download_sig(const char *url, uint8_t *out_hash,
-                         uint32_t *out_size) {
-  ESP_LOGI(TAG, "Downloading signature: %s", url);
-  size_t len = 0;
-  uint8_t *sig = http_get_binary(url, &len);
-  if (!sig) {
-    ESP_LOGE(TAG, "Signature download failed");
     return false;
   }
-  if (len < 52) {
+  int read_len =
+      esp_http_client_read_response(client, (char *)sig, content_length);
+  if (read_len < 0) {
+    ESP_LOGE(TAG, "HTTP read failed");
+    free(sig);
+    esp_http_client_close(client);
+    esp_http_client_cleanup(client);
+    return false;
+  }
+  esp_http_client_close(client);
+  esp_http_client_cleanup(client);
+  if (read_len < 52) {
     ESP_LOGE(TAG, "Signature parse failed");
     free(sig);
     return false;
