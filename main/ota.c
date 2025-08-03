@@ -40,7 +40,11 @@ static bool ota_partition_has_valid_firmware(void) {
     return false;
   }
   esp_image_metadata_t data;
-  if (esp_image_verify(ESP_IMAGE_VERIFY, part, &data) == ESP_OK) {
+  esp_partition_pos_t pos = {
+      .offset = part->address,
+      .size = part->size,
+  };
+  if (esp_image_verify(ESP_IMAGE_VERIFY, &pos, &data) == ESP_OK) {
     ESP_LOGI(TAG, "OTA partition ota_0 has valid firmware");
     return true;
   }
