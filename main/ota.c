@@ -135,8 +135,53 @@ static char *nvs_get_string(nvs_handle_t handle, const char *key) {
   ESP_LOGD(TAG, "Key '%s' value '%s'", key, value);
   return value;
 }
+static void calculate_sha384(const uint8_t *data, size_t len,
+                             uint8_t out_hash[48]) {
+  mbedtls_sha512_context ctx;
+  mbedtls_sha512_init(&ctx);
+  mbedtls_sha512_starts_ret(&ctx, 1);
+  mbedtls_sha512_update_ret(&ctx, data, len);
+  mbedtls_sha512_finish_ret(&ctx, out_hash);
+  mbedtls_sha512_free(&ctx);
+}
 
-static char *http_get(const char *url) {
+static void sanitize_version_str(const char *in, char *out, size_t len) {
+  while (*in && !isdigit((unsigned char)*in)) {
+    in++;
+  }
+  strlcpy(out, in, len);
+}
+
+static void normalize_repo_api(const char *input, char *output, size_t len) {
+  if (!input || !*input) {
+    if (len)
+      output[0] = '\0';
+    return;
+  }
+  char temp[256];
+  strlcpy(temp, input, sizeof(temp));
+  size_t l = strlen(temp);
+  while (l > 0 && temp[l - 1] == '/') {
+    temp[--l] = '\0';
+  }
+  if (l > 4 && strcmp(&temp[l - 4], ".git") == 0) {
+    temp[l - 4] = '\0';
+  }
+  const char *repo_part = temp;
+  const char *p = NULL;
+  if ((p = strstr(temp, "api.github.com/repos/"))) {
+    strlcpy(output, temp, len);
+    return;
+  }
+  if ((p = strstr(temp, "github.com/"))) {
+    repo_part = p + strlen("github.com/");
+    snprintf(output, len, "https://api.github.com/repos/%s", repo_part);
+  } else {
+    strlcpy(output, temp, len);
+  }
+}
+
+static char *http_get(const char *url, const char *auth, int *out_status) {
   ESP_LOGI(TAG, "HTTP GET: %s", url);
   esp_http_client_config_t config = {
       .url = url,
@@ -152,6 +197,12 @@ static char *http_get(const char *url) {
     return NULL;
   }
   esp_http_client_set_header(client, "Accept", "application/vnd.github+json");
+  esp_http_client_set_header(client, "X-GitHub-Api-Version", "2022-11-28");
+  if (auth && *auth) {
+    char header[160];
+    snprintf(header, sizeof(header), "token %s", auth);
+    esp_http_client_set_header(client, "Authorization", header);
+  }
   if (esp_http_client_open(client, 0) != ESP_OK) {
     ESP_LOGE(TAG, "Failed to open HTTP connection");
     esp_http_client_cleanup(client);
@@ -159,6 +210,14 @@ static char *http_get(const char *url) {
   }
 
   int content_length = esp_http_client_fetch_headers(client);
+  if (out_status)
+    *out_status = esp_http_client_get_status_code(client);
+  if (out_status && *out_status != 200) {
+    ESP_LOGE(TAG, "HTTP status %d", *out_status);
+    esp_http_client_close(client);
+    esp_http_client_cleanup(client);
+    return NULL;
+  }
   if (content_length <= 0)
     content_length = 1024; // default buffer
 
@@ -185,11 +244,11 @@ static char *http_get(const char *url) {
   return buffer;
 }
 
-static bool download_sig(uint8_t *out_hash, uint32_t *out_size) {
+static bool download_sig(const char *url, const char *auth, uint8_t *out_hash,
+                         uint32_t *out_size) {
   ESP_LOGI(TAG, "Downloading signature");
   esp_http_client_config_t config = {
-      .url =
-          "https://github.com/AchimPieters/esp32-test/releases/download/0.0.3/main.bin.sig",
+      .url = url,
       .timeout_ms = 10000,
       .transport_type = HTTP_TRANSPORT_OVER_SSL,
       .crt_bundle_attach = esp_crt_bundle_attach,
@@ -201,12 +260,26 @@ static bool download_sig(uint8_t *out_hash, uint32_t *out_size) {
     ESP_LOGE(TAG, "Failed to init HTTP client");
     return false;
   }
+  esp_http_client_set_header(client, "Accept", "application/octet-stream");
+  esp_http_client_set_header(client, "X-GitHub-Api-Version", "2022-11-28");
+  if (auth && *auth) {
+    char header[160];
+    snprintf(header, sizeof(header), "token %s", auth);
+    esp_http_client_set_header(client, "Authorization", header);
+  }
   if (esp_http_client_open(client, 0) != ESP_OK) {
     ESP_LOGE(TAG, "Failed to open HTTP connection");
     esp_http_client_cleanup(client);
     return false;
   }
   int content_length = esp_http_client_fetch_headers(client);
+  int status = esp_http_client_get_status_code(client);
+  if (status != 200) {
+    ESP_LOGE(TAG, "HTTP status %d", status);
+    esp_http_client_close(client);
+    esp_http_client_cleanup(client);
+    return false;
+  }
   if (content_length <= 0)
     content_length = 1024;
   uint8_t *sig = malloc(content_length);
@@ -239,49 +312,14 @@ static bool download_sig(uint8_t *out_hash, uint32_t *out_size) {
   free(sig);
   return true;
 }
-static void calculate_sha384(const uint8_t *data, size_t len,
-                             uint8_t out_hash[48]) {
-  mbedtls_sha512_context ctx;
-  mbedtls_sha512_init(&ctx);
-  mbedtls_sha512_starts_ret(&ctx, 1);
-  mbedtls_sha512_update_ret(&ctx, data, len);
-  mbedtls_sha512_finish_ret(&ctx, out_hash);
-  mbedtls_sha512_free(&ctx);
-}
 
-static void sanitize_version_str(const char *in, char *out, size_t len) {
-  while (*in && !isdigit((unsigned char)*in)) {
-    in++;
-  }
-  strlcpy(out, in, len);
-}
-
-static void normalize_repo_api(const char *input, char *output, size_t len) {
-  if (!input || !*input) {
-    if (len)
-      output[0] = '\0';
-    return;
-  }
-  const char *repo_part = input;
-  const char *p = NULL;
-  if ((p = strstr(input, "api.github.com/repos/"))) {
-    strlcpy(output, input, len);
-    return;
-  }
-  if ((p = strstr(input, "github.com/"))) {
-    repo_part = p + strlen("github.com/");
-  }
-  snprintf(output, len, "https://api.github.com/repos/%s", repo_part);
-}
-
-static bool download_and_flash(const uint8_t *expected_hash,
-                               uint32_t expected_size) {
+static bool download_and_flash(const char *url, const uint8_t *expected_hash,
+                               uint32_t expected_size, const char *auth) {
   ESP_LOGI(TAG, "Starting firmware download");
   ota_led_start();
 
   esp_http_client_config_t config = {
-      .url =
-          "https://github.com/AchimPieters/esp32-test/releases/download/0.0.3/main.bin",
+      .url = url,
       .timeout_ms = 10000,
       .transport_type = HTTP_TRANSPORT_OVER_SSL,
       .crt_bundle_attach = esp_crt_bundle_attach,
@@ -295,6 +333,13 @@ static bool download_and_flash(const uint8_t *expected_hash,
     ota_led_stop();
     return false;
   }
+  esp_http_client_set_header(client, "Accept", "application/octet-stream");
+  esp_http_client_set_header(client, "X-GitHub-Api-Version", "2022-11-28");
+  if (auth && *auth) {
+    char header[160];
+    snprintf(header, sizeof(header), "token %s", auth);
+    esp_http_client_set_header(client, "Authorization", header);
+  }
   if (esp_http_client_open(client, 0) != ESP_OK) {
     ESP_LOGE(TAG, "Failed to open HTTP connection");
     esp_http_client_cleanup(client);
@@ -303,6 +348,14 @@ static bool download_and_flash(const uint8_t *expected_hash,
   }
 
   int content_length = esp_http_client_fetch_headers(client);
+  int status = esp_http_client_get_status_code(client);
+  if (status != 200) {
+    ESP_LOGE(TAG, "HTTP status %d", status);
+    esp_http_client_close(client);
+    esp_http_client_cleanup(client);
+    ota_led_stop();
+    return false;
+  }
   if (content_length <= 0) {
     content_length = expected_size;
   }
@@ -410,7 +463,8 @@ static bool is_version_newer(const char *current, const char *latest) {
 }
 
 static void perform_update(nvs_handle_t handle, const char *repo_url,
-                           bool prerelease, bool force_update) {
+                           bool prerelease, bool force_update,
+                           const char *auth) {
   ESP_LOGI(TAG, "Checking repository %s (prerelease=%d, force=%d)", repo_url,
            prerelease, force_update);
   char current_version[64] = {0};
@@ -435,9 +489,10 @@ static void perform_update(nvs_handle_t handle, const char *repo_url,
   }
   ESP_LOGI(TAG, "Fetching release info from %s", api_url);
 
-  char *json = http_get(api_url);
+  int status = 0;
+  char *json = http_get(api_url, auth, &status);
   if (!json) {
-    ESP_LOGE(TAG, "Failed to fetch release info");
+    ESP_LOGE(TAG, "Failed to fetch release info (status %d)", status);
     return;
   }
 
@@ -486,15 +541,39 @@ static void perform_update(nvs_handle_t handle, const char *repo_url,
     return;
   }
 
+  const cJSON *assets = cJSON_GetObjectItem(release, "assets");
+  const char *sig_url = NULL;
+  const char *fw_url = NULL;
+  if (cJSON_IsArray(assets)) {
+    cJSON *asset = NULL;
+    cJSON_ArrayForEach(asset, assets) {
+      const cJSON *name = cJSON_GetObjectItem(asset, "name");
+      const cJSON *url = cJSON_GetObjectItem(asset, "browser_download_url");
+      if (cJSON_IsString(name) && cJSON_IsString(url)) {
+        if (strcmp(name->valuestring, "main.bin.sig") == 0) {
+          sig_url = url->valuestring;
+        } else if (strcmp(name->valuestring, "main.bin") == 0) {
+          fw_url = url->valuestring;
+        }
+      }
+    }
+  }
+  if (!sig_url || !fw_url) {
+    ESP_LOGE(TAG, "Required assets not found in release");
+    cJSON_Delete(root);
+    free(json);
+    return;
+  }
+
   uint8_t expected_hash[48];
   uint32_t expected_size = 0;
-  if (!download_sig(expected_hash, &expected_size)) {
+  if (!download_sig(sig_url, auth, expected_hash, &expected_size)) {
     ESP_LOGE(TAG, "Failed to download signature");
     cJSON_Delete(root);
     free(json);
     return;
   }
-  if (download_and_flash(expected_hash, expected_size)) {
+  if (download_and_flash(fw_url, expected_hash, expected_size, auth)) {
     char cleaned_tag[64];
     sanitize_version_str(tag_name, cleaned_tag, sizeof(cleaned_tag));
     nvs_set_blob(handle, "main_sig", expected_hash, sizeof(expected_hash));
@@ -535,17 +614,20 @@ void ota_check_and_install(void) {
   bool has_version =
       nvs_get_str(handle, "current_version", NULL, &dummy) == ESP_OK;
 
+  char *token = nvs_get_string(handle, "github_token");
+
   if (!has_valid) {
     ESP_LOGI(TAG, "OTA partition empty; installing latest release");
-    perform_update(handle, repo_url, prerelease, true);
+    perform_update(handle, repo_url, prerelease, true, token);
   } else if (!has_version) {
     ESP_LOGI(TAG, "No current_version in NVS; installing latest release");
-    perform_update(handle, repo_url, prerelease, true);
+    perform_update(handle, repo_url, prerelease, true, token);
   } else {
     ESP_LOGI(TAG, "Valid firmware found; checking for updates");
-    perform_update(handle, repo_url, prerelease, false);
+    perform_update(handle, repo_url, prerelease, false, token);
   }
 
+  free(token);
   free(repo_url);
   nvs_close(handle);
 }
@@ -569,9 +651,11 @@ void firmware_update(void) {
   char *prerelease_str = nvs_get_string(handle, "prerelease");
   bool prerelease = prerelease_str && strcmp(prerelease_str, "1") == 0;
   free(prerelease_str);
+  char *token = nvs_get_string(handle, "github_token");
 
-  perform_update(handle, repo_url, prerelease, false);
+  perform_update(handle, repo_url, prerelease, false, token);
 
+  free(token);
   free(repo_url);
   nvs_close(handle);
 }
