@@ -4,7 +4,6 @@
 #include <ctype.h>
 #include <driver/ledc.h>
 #include <esp_http_client.h>
-#include <esp_https_ota.h>
 #include <esp_idf_version.h>
 #include <esp_image_format.h>
 #include <esp_log.h>
@@ -234,16 +233,21 @@ static bool download_sig(uint8_t *out_hash, uint32_t *out_size) {
     return false;
   }
   memcpy(out_hash, sig, 48);
-  uint32_t size = ((uint32_t)sig[48] << 24) | ((uint32_t)sig[49] << 16) |
-                  ((uint32_t)sig[50] << 8) | (uint32_t)sig[51];
+  uint32_t size = ((uint32_t)sig[48]) | ((uint32_t)sig[49] << 8) |
+                  ((uint32_t)sig[50] << 16) | ((uint32_t)sig[51] << 24);
   *out_size = size;
   free(sig);
   return true;
 }
-
-typedef struct {
-  mbedtls_sha512_context sha_ctx;
-} ota_hash_ctx_t;
+static void calculate_sha384(const uint8_t *data, size_t len,
+                             uint8_t out_hash[48]) {
+  mbedtls_sha512_context ctx;
+  mbedtls_sha512_init(&ctx);
+  mbedtls_sha512_starts_ret(&ctx, 1);
+  mbedtls_sha512_update_ret(&ctx, data, len);
+  mbedtls_sha512_finish_ret(&ctx, out_hash);
+  mbedtls_sha512_free(&ctx);
+}
 
 static void sanitize_version_str(const char *in, char *out, size_t len) {
   while (*in && !isdigit((unsigned char)*in)) {
@@ -270,90 +274,108 @@ static void normalize_repo_api(const char *input, char *output, size_t len) {
   snprintf(output, len, "https://api.github.com/repos/%s", repo_part);
 }
 
-static esp_err_t http_event_handler(esp_http_client_event_t *evt) {
-  if (evt->event_id == HTTP_EVENT_ON_DATA && evt->user_data) {
-    ota_hash_ctx_t *ctx = (ota_hash_ctx_t *)evt->user_data;
-    mbedtls_sha512_update_ret(&ctx->sha_ctx, (const unsigned char *)evt->data,
-                              evt->data_len);
-  }
-  return ESP_OK;
-}
-
 static bool download_and_flash(const uint8_t *expected_hash,
                                uint32_t expected_size) {
   ESP_LOGI(TAG, "Starting firmware download");
   ota_led_start();
-  ota_hash_ctx_t hash_ctx;
-  mbedtls_sha512_init(&hash_ctx.sha_ctx);
-  mbedtls_sha512_starts_ret(&hash_ctx.sha_ctx, 1);
 
-  esp_http_client_config_t http_config = {
+  esp_http_client_config_t config = {
       .url =
           "https://github.com/AchimPieters/esp32-test/releases/download/0.0.3/main.bin",
       .timeout_ms = 10000,
       .transport_type = HTTP_TRANSPORT_OVER_SSL,
       .crt_bundle_attach = esp_crt_bundle_attach,
       .user_agent = "esp32-lcm",
-      .event_handler = http_event_handler,
-      .user_data = &hash_ctx,
       .disable_auto_redirect = false, // follow GitHub's 302 redirect to S3
   };
 
-  esp_https_ota_config_t ota_config = {
-      .http_config = &http_config,
-  };
-
-  esp_https_ota_handle_t https_ota_handle = NULL;
-  if (esp_https_ota_begin(&ota_config, &https_ota_handle) != ESP_OK) {
-    ESP_LOGE(TAG, "OTA begin failed");
-    mbedtls_sha512_free(&hash_ctx.sha_ctx);
+  esp_http_client_handle_t client = esp_http_client_init(&config);
+  if (!client) {
+    ESP_LOGE(TAG, "Failed to init HTTP client");
+    ota_led_stop();
+    return false;
+  }
+  if (esp_http_client_open(client, 0) != ESP_OK) {
+    ESP_LOGE(TAG, "Failed to open HTTP connection");
+    esp_http_client_cleanup(client);
     ota_led_stop();
     return false;
   }
 
-  esp_err_t err;
-  do {
-    err = esp_https_ota_perform(https_ota_handle);
-  } while (err == ESP_ERR_HTTPS_OTA_IN_PROGRESS);
-
-  if (err != ESP_OK) {
-    ESP_LOGE(TAG, "Download failed: %s", esp_err_to_name(err));
-    ESP_LOGE(TAG, "OTA perform failed");
-    esp_https_ota_abort(https_ota_handle);
-    mbedtls_sha512_free(&hash_ctx.sha_ctx);
+  int content_length = esp_http_client_fetch_headers(client);
+  if (content_length <= 0) {
+    content_length = expected_size;
+  }
+  uint8_t *fw = malloc(content_length);
+  if (!fw) {
+    ESP_LOGE(TAG, "Failed to allocate firmware buffer");
+    esp_http_client_close(client);
+    esp_http_client_cleanup(client);
     ota_led_stop();
     return false;
   }
 
-  int image_len = esp_https_ota_get_image_len_read(https_ota_handle);
-  ESP_LOGI(TAG, "Total firmware written: %d bytes", image_len);
+  int total = 0;
+  while (total < content_length) {
+    int read = esp_http_client_read(client, (char *)fw + total,
+                                    content_length - total);
+    if (read <= 0) {
+      break;
+    }
+    total += read;
+  }
+  esp_http_client_close(client);
+  esp_http_client_cleanup(client);
 
-  if (expected_size && image_len != (int)expected_size) {
+  ESP_LOGI(TAG, "Downloaded %d bytes", total);
+
+  if (expected_size && total != (int)expected_size) {
     ESP_LOGE(TAG, "Handtekening ongeldig (size mismatch)");
-    esp_https_ota_abort(https_ota_handle);
-    mbedtls_sha512_free(&hash_ctx.sha_ctx);
+    free(fw);
     ota_led_stop();
     return false;
   }
 
   uint8_t hash[48];
-  mbedtls_sha512_finish_ret(&hash_ctx.sha_ctx, hash);
-  mbedtls_sha512_free(&hash_ctx.sha_ctx);
-
+  calculate_sha384(fw, total, hash);
   if (memcmp(hash, expected_hash, 48) != 0) {
     ESP_LOGE(TAG, "Handtekening ongeldig (hash mismatch)");
-    esp_https_ota_abort(https_ota_handle);
+    free(fw);
     ota_led_stop();
     return false;
   }
   ESP_LOGI(TAG, "Firmware hash verified");
 
-  if (esp_https_ota_finish(https_ota_handle) != ESP_OK) {
-    ESP_LOGE(TAG, "OTA finish failed");
+  const esp_partition_t *update_part =
+      esp_ota_get_next_update_partition(NULL);
+  esp_ota_handle_t ota_handle;
+  if (esp_ota_begin(update_part, total, &ota_handle) != ESP_OK) {
+    ESP_LOGE(TAG, "OTA begin failed");
+    free(fw);
+    ota_led_stop();
+    return false;
+  }
+  if (esp_ota_write(ota_handle, fw, total) != ESP_OK) {
+    ESP_LOGE(TAG, "OTA write failed");
+    esp_ota_abort(ota_handle);
+    free(fw);
+    ota_led_stop();
+    return false;
+  }
+  if (esp_ota_end(ota_handle) != ESP_OK) {
+    ESP_LOGE(TAG, "OTA end failed");
+    free(fw);
+    ota_led_stop();
+    return false;
+  }
+  if (esp_ota_set_boot_partition(update_part) != ESP_OK) {
+    ESP_LOGE(TAG, "Failed to set boot partition");
+    free(fw);
     ota_led_stop();
     return false;
   }
 
+  free(fw);
   ota_led_stop();
   ESP_LOGI(TAG, "OTA update successful");
   return true;
