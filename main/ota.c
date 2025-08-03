@@ -175,7 +175,9 @@ static void normalize_repo_api(const char *input, char *output, size_t len) {
   }
   if ((p = strstr(temp, "github.com/"))) {
     repo_part = p + strlen("github.com/");
-    snprintf(output, len, "https://api.github.com/repos/%s", repo_part);
+    char repo_part_limited[200];
+    strlcpy(repo_part_limited, repo_part, sizeof(repo_part_limited));
+    snprintf(output, len, "https://api.github.com/repos/%s", repo_part_limited);
   } else {
     strlcpy(output, temp, len);
   }
@@ -203,7 +205,9 @@ static void normalize_repo_base(const char *input, char *output, size_t len) {
   } else if ((p = strstr(temp, "api.github.com/repos/"))) {
     repo_part = p + strlen("api.github.com/repos/");
   }
-  snprintf(output, len, "https://github.com/%s", repo_part);
+  char repo_part_limited[200];
+  strlcpy(repo_part_limited, repo_part, sizeof(repo_part_limited));
+  snprintf(output, len, "https://github.com/%s", repo_part_limited);
 }
 
 static char *http_get(const char *url, const char *auth, int *out_status) {
@@ -506,9 +510,9 @@ static void perform_update(nvs_handle_t handle, const char *repo_url,
     ESP_LOGI(TAG, "No current_version in NVS; forcing update");
   }
 
-  char api_base[256];
+  char api_base[512];
   normalize_repo_api(repo_url, api_base, sizeof(api_base));
-  char api_url[256];
+  char api_url[1024];
   strlcpy(api_url, api_base, sizeof(api_url));
   const char *suffix = prerelease ? "/releases" : "/releases/latest";
   if (strlcat(api_url, suffix, sizeof(api_url)) >= sizeof(api_url)) {
@@ -569,10 +573,10 @@ static void perform_update(nvs_handle_t handle, const char *repo_url,
     return;
   }
 
-  char repo_base[256];
+  char repo_base[512];
   normalize_repo_base(repo_url, repo_base, sizeof(repo_base));
-  char sig_url[512];
-  char fw_url[512];
+  char sig_url[1024];
+  char fw_url[1024];
   snprintf(sig_url, sizeof(sig_url),
            "%s/releases/download/%s/main.bin.sig", repo_base, tag_name);
   snprintf(fw_url, sizeof(fw_url), "%s/releases/download/%s/main.bin",
