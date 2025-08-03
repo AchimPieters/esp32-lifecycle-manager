@@ -128,7 +128,7 @@ static char *http_get(const char *url) {
         ESP_LOGE(TAG, "Failed to init HTTP client");
         return NULL;
     }
-
+    esp_http_client_set_header(client, "Accept", "application/vnd.github+json");
     if (esp_http_client_open(client, 0) != ESP_OK) {
         ESP_LOGE(TAG, "Failed to open HTTP connection");
         esp_http_client_cleanup(client);
