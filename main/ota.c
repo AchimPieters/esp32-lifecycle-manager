@@ -166,6 +166,19 @@ static void normalize_repo_api(const char *input, char *output, size_t len) {
   }
   if (l > 4 && strcmp(&temp[l - 4], ".git") == 0) {
     temp[l - 4] = '\0';
+    l -= 4;
+  }
+  const char *suffixes[] = {"/releases/latest", "/releases"};
+  for (size_t i = 0; i < sizeof(suffixes) / sizeof(suffixes[0]); ++i) {
+    size_t sl = strlen(suffixes[i]);
+    if (l >= sl && strcmp(&temp[l - sl], suffixes[i]) == 0) {
+      temp[l - sl] = '\0';
+      l -= sl;
+      while (l > 0 && temp[l - 1] == '/') {
+        temp[--l] = '\0';
+      }
+      break;
+    }
   }
   const char *repo_part = temp;
   const char *p = NULL;
@@ -515,7 +528,7 @@ static void perform_update(nvs_handle_t handle, const char *repo_url,
     ESP_LOGE(TAG, "API URL truncated");
     return;
   }
-  ESP_LOGI(TAG, "Fetching release info from %s", api_url);
+  ESP_LOGI(TAG, "GitHub API URL: %s", api_url);
 
   int status = 0;
   char *json = http_get(api_url, auth, &status);
