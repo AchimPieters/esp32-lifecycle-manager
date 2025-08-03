@@ -181,6 +181,31 @@ static void normalize_repo_api(const char *input, char *output, size_t len) {
   }
 }
 
+static void normalize_repo_base(const char *input, char *output, size_t len) {
+  if (!input || !*input) {
+    if (len)
+      output[0] = '\0';
+    return;
+  }
+  char temp[256];
+  strlcpy(temp, input, sizeof(temp));
+  size_t l = strlen(temp);
+  while (l > 0 && temp[l - 1] == '/') {
+    temp[--l] = '\0';
+  }
+  if (l > 4 && strcmp(&temp[l - 4], ".git") == 0) {
+    temp[l - 4] = '\0';
+  }
+  const char *repo_part = temp;
+  const char *p = NULL;
+  if ((p = strstr(temp, "github.com/"))) {
+    repo_part = p + strlen("github.com/");
+  } else if ((p = strstr(temp, "api.github.com/repos/"))) {
+    repo_part = p + strlen("api.github.com/repos/");
+  }
+  snprintf(output, len, "https://github.com/%s", repo_part);
+}
+
 static char *http_get(const char *url, const char *auth, int *out_status) {
   ESP_LOGI(TAG, "HTTP GET: %s", url);
   esp_http_client_config_t config = {
@@ -188,6 +213,7 @@ static char *http_get(const char *url, const char *auth, int *out_status) {
       .timeout_ms = 10000,
       .transport_type = HTTP_TRANSPORT_OVER_SSL,
       .crt_bundle_attach = esp_crt_bundle_attach,
+      .skip_cert_common_name_check = true,
       .user_agent = "esp32-lcm",
       .disable_auto_redirect = false, // follow GitHub's 302 redirect to S3
   };
@@ -252,6 +278,7 @@ static bool download_sig(const char *url, const char *auth, uint8_t *out_hash,
       .timeout_ms = 10000,
       .transport_type = HTTP_TRANSPORT_OVER_SSL,
       .crt_bundle_attach = esp_crt_bundle_attach,
+      .skip_cert_common_name_check = true,
       .user_agent = "esp32-lcm",
       .disable_auto_redirect = false, // follow GitHub's 302 redirect to S3
   };
@@ -300,7 +327,7 @@ static bool download_sig(const char *url, const char *auth, uint8_t *out_hash,
   }
   esp_http_client_close(client);
   esp_http_client_cleanup(client);
-  if (read_len < 52) {
+  if (read_len != 52) {
     ESP_LOGE(TAG, "Signature parse failed");
     free(sig);
     return false;
@@ -323,6 +350,7 @@ static bool download_and_flash(const char *url, const uint8_t *expected_hash,
       .timeout_ms = 10000,
       .transport_type = HTTP_TRANSPORT_OVER_SSL,
       .crt_bundle_attach = esp_crt_bundle_attach,
+      .skip_cert_common_name_check = true,
       .user_agent = "esp32-lcm",
       .disable_auto_redirect = false, // follow GitHub's 302 redirect to S3
   };
@@ -541,29 +569,14 @@ static void perform_update(nvs_handle_t handle, const char *repo_url,
     return;
   }
 
-  const cJSON *assets = cJSON_GetObjectItem(release, "assets");
-  const char *sig_url = NULL;
-  const char *fw_url = NULL;
-  if (cJSON_IsArray(assets)) {
-    cJSON *asset = NULL;
-    cJSON_ArrayForEach(asset, assets) {
-      const cJSON *name = cJSON_GetObjectItem(asset, "name");
-      const cJSON *url = cJSON_GetObjectItem(asset, "browser_download_url");
-      if (cJSON_IsString(name) && cJSON_IsString(url)) {
-        if (strcmp(name->valuestring, "main.bin.sig") == 0) {
-          sig_url = url->valuestring;
-        } else if (strcmp(name->valuestring, "main.bin") == 0) {
-          fw_url = url->valuestring;
-        }
-      }
-    }
-  }
-  if (!sig_url || !fw_url) {
-    ESP_LOGE(TAG, "Required assets not found in release");
-    cJSON_Delete(root);
-    free(json);
-    return;
-  }
+  char repo_base[256];
+  normalize_repo_base(repo_url, repo_base, sizeof(repo_base));
+  char sig_url[512];
+  char fw_url[512];
+  snprintf(sig_url, sizeof(sig_url),
+           "%s/releases/download/%s/main.bin.sig", repo_base, tag_name);
+  snprintf(fw_url, sizeof(fw_url), "%s/releases/download/%s/main.bin",
+           repo_base, tag_name);
 
   uint8_t expected_hash[48];
   uint32_t expected_size = 0;
