@@ -145,11 +145,7 @@ static char *http_get(const char *url) {
       .transport_type = HTTP_TRANSPORT_OVER_SSL,
       .crt_bundle_attach = esp_crt_bundle_attach,
       .user_agent = "esp32-lcm",
-#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 0, 0)
       .disable_auto_redirect = false, // follow GitHub's 302 redirect to S3
-#else
-      .follow_redirects = true,
-#endif
   };
   esp_http_client_handle_t client = esp_http_client_init(&config);
   if (!client) {
@@ -190,20 +186,16 @@ static char *http_get(const char *url) {
   return buffer;
 }
 
-static bool download_sig(const char *url, uint8_t *out_hash,
-                         uint32_t *out_size) {
-  ESP_LOGI(TAG, "Downloading signature: %s", url);
+static bool download_sig(uint8_t *out_hash, uint32_t *out_size) {
+  ESP_LOGI(TAG, "Downloading signature");
   esp_http_client_config_t config = {
-      .url = url,
+      .url =
+          "https://github.com/AchimPieters/esp32-test/releases/download/0.0.3/main.bin.sig",
       .timeout_ms = 10000,
       .transport_type = HTTP_TRANSPORT_OVER_SSL,
       .crt_bundle_attach = esp_crt_bundle_attach,
       .user_agent = "esp32-lcm",
-#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 0, 0)
       .disable_auto_redirect = false, // follow GitHub's 302 redirect to S3
-#else
-      .follow_redirects = true,
-#endif
   };
   esp_http_client_handle_t client = esp_http_client_init(&config);
   if (!client) {
@@ -287,28 +279,24 @@ static esp_err_t http_event_handler(esp_http_client_event_t *evt) {
   return ESP_OK;
 }
 
-static bool download_and_flash(const char *bin_url,
-                               const uint8_t *expected_hash,
+static bool download_and_flash(const uint8_t *expected_hash,
                                uint32_t expected_size) {
-  ESP_LOGI(TAG, "Starting firmware download: %s", bin_url);
+  ESP_LOGI(TAG, "Starting firmware download");
   ota_led_start();
   ota_hash_ctx_t hash_ctx;
   mbedtls_sha512_init(&hash_ctx.sha_ctx);
   mbedtls_sha512_starts_ret(&hash_ctx.sha_ctx, 1);
 
   esp_http_client_config_t http_config = {
-      .url = bin_url,
+      .url =
+          "https://github.com/AchimPieters/esp32-test/releases/download/0.0.3/main.bin",
       .timeout_ms = 10000,
       .transport_type = HTTP_TRANSPORT_OVER_SSL,
       .crt_bundle_attach = esp_crt_bundle_attach,
       .user_agent = "esp32-lcm",
       .event_handler = http_event_handler,
       .user_data = &hash_ctx,
-#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 0, 0)
       .disable_auto_redirect = false, // follow GitHub's 302 redirect to S3
-#else
-      .follow_redirects = true,
-#endif
   };
 
   esp_https_ota_config_t ota_config = {
@@ -476,42 +464,15 @@ static void perform_update(nvs_handle_t handle, const char *repo_url,
     return;
   }
 
-  cJSON *assets = cJSON_GetObjectItem(release, "assets");
-  const char *bin_url = NULL;
-  const char *sig_url = NULL;
-  if (cJSON_IsArray(assets)) {
-    cJSON *asset = NULL;
-    cJSON_ArrayForEach(asset, assets) {
-      cJSON *name = cJSON_GetObjectItem(asset, "name");
-      cJSON *url = cJSON_GetObjectItem(asset, "browser_download_url");
-      if (cJSON_IsString(name) && cJSON_IsString(url)) {
-        if (strcmp(name->valuestring, "main.bin") == 0) {
-          bin_url = url->valuestring;
-        } else if (strcmp(name->valuestring, "main.bin.sig") == 0) {
-          sig_url = url->valuestring;
-        }
-      }
-    }
-  }
-  if (!bin_url || !sig_url) {
-    ESP_LOGE(TAG, "Required assets not found");
-    cJSON_Delete(root);
-    free(json);
-    return;
-  }
-  ESP_LOGI(TAG, "Binary URL %s", bin_url);
-  ESP_LOGI(TAG, "Signature URL %s", sig_url);
-
   uint8_t expected_hash[48];
   uint32_t expected_size = 0;
-  if (!download_sig(sig_url, expected_hash, &expected_size)) {
+  if (!download_sig(expected_hash, &expected_size)) {
     ESP_LOGE(TAG, "Failed to download signature");
     cJSON_Delete(root);
     free(json);
     return;
   }
-
-  if (download_and_flash(bin_url, expected_hash, expected_size)) {
+  if (download_and_flash(expected_hash, expected_size)) {
     char cleaned_tag[64];
     sanitize_version_str(tag_name, cleaned_tag, sizeof(cleaned_tag));
     nvs_set_blob(handle, "main_sig", expected_hash, sizeof(expected_hash));
