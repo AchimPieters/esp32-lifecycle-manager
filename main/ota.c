@@ -40,7 +40,7 @@ static bool ota_partition_has_valid_firmware(void) {
     return false;
   }
   esp_image_metadata_t data;
-  esp_partition_pos_t pos = {
+  const esp_partition_pos_t pos = {
       .offset = part->address,
       .size = part->size,
   };
