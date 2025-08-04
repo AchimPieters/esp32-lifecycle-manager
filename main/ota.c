@@ -203,9 +203,10 @@ static char *http_get(const char *url, const char *auth, int *out_status) {
       .timeout_ms = 10000,
       .transport_type = HTTP_TRANSPORT_OVER_SSL,
       .crt_bundle_attach = esp_crt_bundle_attach,
-      .skip_cert_common_name_check = true,
+      .skip_cert_common_name_check = false,
       .user_agent = "esp32-lcm",
       .disable_auto_redirect = false, // follow GitHub's 302 redirect to S3
+      .keep_alive_enable = true,
   };
   esp_http_client_handle_t client = esp_http_client_init(&config);
   if (!client) {
@@ -268,9 +269,10 @@ static bool download_sig(const char *url, const char *auth, uint8_t *out_hash,
       .timeout_ms = 10000,
       .transport_type = HTTP_TRANSPORT_OVER_SSL,
       .crt_bundle_attach = esp_crt_bundle_attach,
-      .skip_cert_common_name_check = true,
+      .skip_cert_common_name_check = false,
       .user_agent = "esp32-lcm",
       .disable_auto_redirect = false, // follow GitHub's 302 redirect to S3
+      .keep_alive_enable = true,
   };
   esp_http_client_handle_t client = esp_http_client_init(&config);
   if (!client) {
@@ -346,9 +348,10 @@ static bool download_and_flash(const char *url, const uint8_t *expected_hash,
       .timeout_ms = 10000,
       .transport_type = HTTP_TRANSPORT_OVER_SSL,
       .crt_bundle_attach = esp_crt_bundle_attach,
-      .skip_cert_common_name_check = true,
+      .skip_cert_common_name_check = false,
       .user_agent = "esp32-lcm",
       .disable_auto_redirect = false, // follow GitHub's 302 redirect to S3
+      .keep_alive_enable = true,
   };
 
   esp_http_client_handle_t client = esp_http_client_init(&config);
@@ -617,17 +620,24 @@ static void perform_update(nvs_handle_t handle, const char *repo_url,
   if (download_and_flash(fw_url, expected_hash, expected_size, auth)) {
     char cleaned_tag[64];
     sanitize_version_str(tag_name, cleaned_tag, sizeof(cleaned_tag));
-    nvs_set_blob(handle, "main_sig", expected_hash, sizeof(expected_hash));
-    nvs_set_str(handle, "current_version", cleaned_tag);
-    nvs_commit(handle);
+    nvs_handle_t nvs;
+    if (nvs_open(OTA_NAMESPACE, NVS_READWRITE, &nvs) == ESP_OK) {
+      nvs_set_blob(nvs, "main_sig", expected_hash, sizeof(expected_hash));
+      nvs_set_str(nvs, "current_version", cleaned_tag);
+      nvs_commit(nvs);
+      nvs_close(nvs);
+    } else {
+      ESP_LOGE(TAG, "Failed to open NVS to save current version");
+    }
+    cJSON_Delete(root);
+    free(json);
     ESP_LOGI(TAG, "Rebooting to new firmware");
     esp_restart();
   } else {
     ESP_LOGE(TAG, "OTA update failed");
+    cJSON_Delete(root);
+    free(json);
   }
-
-  cJSON_Delete(root);
-  free(json);
 }
 
 void ota_check_and_install(void) {
