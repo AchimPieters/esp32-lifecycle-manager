@@ -32,6 +32,8 @@ static const char *TAG = "ota";
 
 extern void led_write(bool on);
 
+volatile bool ota_in_progress = false;
+
 static bool ota_partition_has_valid_firmware(void) {
   const esp_partition_t *part = esp_partition_find_first(
       ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_OTA_0, NULL);
@@ -511,6 +513,7 @@ static void perform_update(nvs_handle_t handle, const char *repo_url,
                            const char *auth) {
   ESP_LOGI(TAG, "Checking repository %s (prerelease=%d, force=%d)", repo_url,
            prerelease, force_update);
+  ota_in_progress = true;
   char current_version[64] = {0};
   char *stored_version = nvs_get_string(handle, "current_version");
   if (stored_version) {
@@ -529,6 +532,7 @@ static void perform_update(nvs_handle_t handle, const char *repo_url,
   const char *suffix = prerelease ? "/releases" : "/releases/latest";
   if (strlcat(api_url, suffix, sizeof(api_url)) >= sizeof(api_url)) {
     ESP_LOGE(TAG, "API URL truncated");
+    ota_in_progress = false;
     return;
   }
   ESP_LOGI(TAG, "GitHub API URL: %s", api_url);
@@ -537,6 +541,7 @@ static void perform_update(nvs_handle_t handle, const char *repo_url,
   char *json = http_get(api_url, auth, &status);
   if (!json) {
     ESP_LOGE(TAG, "Failed to fetch release info (status %d)", status);
+    ota_in_progress = false;
     return;
   }
 
@@ -564,6 +569,7 @@ static void perform_update(nvs_handle_t handle, const char *repo_url,
     cJSON_Delete(root);
     free(json);
     ESP_LOGE(TAG, "Invalid release data");
+    ota_in_progress = false;
     return;
   }
 
@@ -572,6 +578,7 @@ static void perform_update(nvs_handle_t handle, const char *repo_url,
     cJSON_Delete(root);
     free(json);
     ESP_LOGE(TAG, "Geen release gevonden op GitHub API URL: %s", api_url);
+    ota_in_progress = false;
     return;
   }
 
@@ -582,6 +589,7 @@ static void perform_update(nvs_handle_t handle, const char *repo_url,
     ESP_LOGI(TAG, "Geen update beschikbaar");
     cJSON_Delete(root);
     free(json);
+    ota_in_progress = false;
     return;
   }
 
@@ -606,6 +614,7 @@ static void perform_update(nvs_handle_t handle, const char *repo_url,
     cJSON_Delete(root);
     free(json);
     ESP_LOGE(TAG, "Required assets not found in release");
+    ota_in_progress = false;
     return;
   }
 
@@ -615,6 +624,7 @@ static void perform_update(nvs_handle_t handle, const char *repo_url,
     ESP_LOGE(TAG, "Failed to download signature");
     cJSON_Delete(root);
     free(json);
+    ota_in_progress = false;
     return;
   }
   if (download_and_flash(fw_url, expected_hash, expected_size, auth)) {
@@ -631,12 +641,14 @@ static void perform_update(nvs_handle_t handle, const char *repo_url,
     }
     cJSON_Delete(root);
     free(json);
+    ota_in_progress = false;
     ESP_LOGI(TAG, "Rebooting to new firmware");
     esp_restart();
   } else {
     ESP_LOGE(TAG, "OTA update failed");
     cJSON_Delete(root);
     free(json);
+    ota_in_progress = false;
   }
 }
 
