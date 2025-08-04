@@ -45,6 +45,7 @@
 
 #include "wifi_config.h"
 #include "form_urlencoded.h"
+#include "ota.h"
 
 enum {
         STATION_MODE = 1,
@@ -902,6 +903,11 @@ static void wifi_config_monitor_callback(TimerHandle_t xTimer) {
 
                 // Connected to station, all is dandy
                 INFO("Connected to WiFi network");
+
+                if (ota_in_progress) {
+                        INFO("OTA in progress; keeping captive portal active");
+                        return;
+                }
 
                 wifi_config_softap_stop();
                 sdk_wifi_station_set_auto_connect(false);
