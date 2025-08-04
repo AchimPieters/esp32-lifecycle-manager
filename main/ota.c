@@ -137,15 +137,6 @@ static char *nvs_get_string(nvs_handle_t handle, const char *key) {
   ESP_LOGD(TAG, "Key '%s' value '%s'", key, value);
   return value;
 }
-static void calculate_sha384(const uint8_t *data, size_t len,
-                             uint8_t out_hash[48]) {
-  mbedtls_sha512_context ctx;
-  mbedtls_sha512_init(&ctx);
-  mbedtls_sha512_starts_ret(&ctx, 1);
-  mbedtls_sha512_update_ret(&ctx, data, len);
-  mbedtls_sha512_finish_ret(&ctx, out_hash);
-  mbedtls_sha512_free(&ctx);
-}
 
 static void sanitize_version_str(const char *in, char *out, size_t len) {
   while (*in && !isdigit((unsigned char)*in)) {
