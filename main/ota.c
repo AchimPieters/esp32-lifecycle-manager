@@ -595,13 +595,20 @@ static void perform_update(nvs_handle_t handle, const char *repo_url,
       if (cJSON_IsString(name) && cJSON_IsString(url)) {
         if (strcmp(name->valuestring, "main.bin") == 0) {
           strlcpy(fw_url, url->valuestring, sizeof(fw_url));
-        } else if (strcmp(name->valuestring, "main.bin.sig") == 0) {
+        } else if (strstr(name->valuestring, ".sig") != NULL) {
           strlcpy(sig_url, url->valuestring, sizeof(sig_url));
         }
       }
     }
   }
-  if (!fw_url[0] || !sig_url[0]) {
+  if (!sig_url[0]) {
+    cJSON_Delete(root);
+    free(json);
+    ESP_LOGE(TAG, "No .sig file found in GitHub release assets");
+    ota_in_progress = false;
+    return;
+  }
+  if (!fw_url[0]) {
     cJSON_Delete(root);
     free(json);
     ESP_LOGE(TAG, "Required assets not found in release");
