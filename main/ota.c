@@ -568,7 +568,7 @@ static void perform_update(nvs_handle_t handle, const char *repo_url,
   if (!cJSON_IsString(tag)) {
     cJSON_Delete(root);
     free(json);
-    ESP_LOGE(TAG, "Geen release gevonden op GitHub API URL: %s", api_url);
+    ESP_LOGE(TAG, "No release found at GitHub API URL: %s", api_url);
     ota_in_progress = false;
     return;
   }
@@ -577,7 +577,7 @@ static void perform_update(nvs_handle_t handle, const char *repo_url,
   ESP_LOGI(TAG, "Latest tag %s", tag_name);
   if (!force_update && *current_version &&
       !is_version_newer(current_version, tag_name)) {
-    ESP_LOGI(TAG, "Geen update beschikbaar");
+    ESP_LOGI(TAG, "No update available");
     cJSON_Delete(root);
     free(json);
     ota_in_progress = false;
