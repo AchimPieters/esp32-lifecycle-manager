@@ -19,6 +19,11 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
+
+#if ESP_IDF_VERSION < ESP_IDF_VERSION_VAL(5, 4, 0)
+#error "This project requires ESP-IDF v5.4 or higher"
+#endif
 
 #define OTA_NAMESPACE "ota"
 
@@ -499,9 +504,9 @@ static bool is_version_newer(const char *current, const char *latest) {
   return false;
 }
 
-static void perform_update(nvs_handle_t handle, const char *repo_url,
-                           bool prerelease, bool force_update,
-                           const char *auth) {
+static bool perform_update(nvs_handle_t handle, const char *repo_url,
+                          bool prerelease, bool force_update,
+                          const char *auth) {
   ESP_LOGI(TAG, "Checking repository %s (prerelease=%d, force=%d)", repo_url,
            prerelease, force_update);
   ota_in_progress = true;
@@ -524,7 +529,7 @@ static void perform_update(nvs_handle_t handle, const char *repo_url,
   if (strlcat(api_url, suffix, sizeof(api_url)) >= sizeof(api_url)) {
     ESP_LOGE(TAG, "API URL truncated");
     ota_in_progress = false;
-    return;
+    return false;
   }
   ESP_LOGI(TAG, "GitHub API URL: %s", api_url);
 
@@ -533,7 +538,7 @@ static void perform_update(nvs_handle_t handle, const char *repo_url,
   if (!json) {
     ESP_LOGE(TAG, "Failed to fetch release info (status %d)", status);
     ota_in_progress = false;
-    return;
+    return false;
   }
 
   cJSON *root = cJSON_Parse(json);
@@ -561,7 +566,7 @@ static void perform_update(nvs_handle_t handle, const char *repo_url,
     free(json);
     ESP_LOGE(TAG, "Invalid release data");
     ota_in_progress = false;
-    return;
+    return false;
   }
 
   const cJSON *tag = cJSON_GetObjectItem(release, "tag_name");
@@ -570,7 +575,7 @@ static void perform_update(nvs_handle_t handle, const char *repo_url,
     free(json);
     ESP_LOGE(TAG, "No release found at GitHub API URL: %s", api_url);
     ota_in_progress = false;
-    return;
+    return false;
   }
 
   const char *tag_name = tag->valuestring;
@@ -581,7 +586,7 @@ static void perform_update(nvs_handle_t handle, const char *repo_url,
     cJSON_Delete(root);
     free(json);
     ota_in_progress = false;
-    return;
+    return false;
   }
 
   char sig_url[1024] = {0};
@@ -591,12 +596,23 @@ static void perform_update(nvs_handle_t handle, const char *repo_url,
     cJSON *asset = NULL;
     cJSON_ArrayForEach(asset, assets) {
       cJSON *name = cJSON_GetObjectItem(asset, "name");
-      cJSON *url = cJSON_GetObjectItem(asset, "browser_download_url");
-      if (cJSON_IsString(name) && cJSON_IsString(url)) {
+      if (cJSON_IsString(name)) {
         if (strcmp(name->valuestring, "main.bin") == 0) {
-          strlcpy(fw_url, url->valuestring, sizeof(fw_url));
-        } else if (strstr(name->valuestring, ".sig") != NULL) {
-          strlcpy(sig_url, url->valuestring, sizeof(sig_url));
+          cJSON *download_url =
+              cJSON_GetObjectItem(asset, "browser_download_url");
+          if (download_url && cJSON_IsString(download_url) &&
+              download_url->valuestring) {
+            strlcpy(fw_url, download_url->valuestring, sizeof(fw_url));
+          }
+        } else if (strcasestr(name->valuestring, ".sig") != NULL) {
+          cJSON *download_url =
+              cJSON_GetObjectItem(asset, "browser_download_url");
+          if (download_url && cJSON_IsString(download_url) &&
+              download_url->valuestring) {
+            strlcpy(sig_url, download_url->valuestring, sizeof(sig_url));
+            ESP_LOGI(TAG, "Found signature asset: %s", name->valuestring);
+            ESP_LOGI(TAG, "Signature download URL: %s", sig_url);
+          }
         }
       }
     }
@@ -606,14 +622,14 @@ static void perform_update(nvs_handle_t handle, const char *repo_url,
     free(json);
     ESP_LOGE(TAG, "No .sig file found in GitHub release assets");
     ota_in_progress = false;
-    return;
+    return false;
   }
   if (!fw_url[0]) {
     cJSON_Delete(root);
     free(json);
     ESP_LOGE(TAG, "Required assets not found in release");
     ota_in_progress = false;
-    return;
+    return false;
   }
 
   uint8_t expected_hash[48];
@@ -623,7 +639,7 @@ static void perform_update(nvs_handle_t handle, const char *repo_url,
     cJSON_Delete(root);
     free(json);
     ota_in_progress = false;
-    return;
+    return false;
   }
   if (download_and_flash(fw_url, expected_hash, expected_size, auth)) {
     char cleaned_tag[64];
@@ -642,11 +658,13 @@ static void perform_update(nvs_handle_t handle, const char *repo_url,
     ota_in_progress = false;
     ESP_LOGI(TAG, "Rebooting to new firmware");
     esp_restart();
+    return true;
   } else {
     ESP_LOGE(TAG, "OTA update failed");
     cJSON_Delete(root);
     free(json);
     ota_in_progress = false;
+    return false;
   }
 }
 
@@ -679,13 +697,13 @@ void ota_check_and_install(void) {
 
   if (!has_valid) {
     ESP_LOGI(TAG, "OTA partition empty; installing latest release");
-    perform_update(handle, repo_url, prerelease, true, token);
+    (void)perform_update(handle, repo_url, prerelease, true, token);
   } else if (!has_version) {
     ESP_LOGI(TAG, "No current_version in NVS; installing latest release");
-    perform_update(handle, repo_url, prerelease, true, token);
+    (void)perform_update(handle, repo_url, prerelease, true, token);
   } else {
     ESP_LOGI(TAG, "Valid firmware found; checking for updates");
-    perform_update(handle, repo_url, prerelease, false, token);
+    (void)perform_update(handle, repo_url, prerelease, false, token);
   }
 
   free(token);
@@ -714,7 +732,7 @@ void firmware_update(void) {
   free(prerelease_str);
   char *token = nvs_get_string(handle, "github_token");
 
-  perform_update(handle, repo_url, prerelease, false, token);
+  (void)perform_update(handle, repo_url, prerelease, false, token);
 
   free(token);
   free(repo_url);
@@ -723,8 +741,8 @@ void firmware_update(void) {
 
 static void ota_task(void *pv) {
   ESP_LOGI(TAG, "OTA task started");
-  /* give WiFi some time to stabilize */
-  vTaskDelay(pdMS_TO_TICKS(2000));
+  // Give WiFi a few seconds to stabilize before OTA
+  vTaskDelay(pdMS_TO_TICKS(3000));
   ESP_LOGI(TAG, "Checking for firmware updates");
   ota_check_and_install();
   ESP_LOGI(TAG, "Initial OTA check complete");
