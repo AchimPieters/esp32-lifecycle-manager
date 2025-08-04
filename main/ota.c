@@ -21,6 +21,10 @@
 #include <string.h>
 #include <strings.h>
 
+#if ESP_IDF_VERSION < ESP_IDF_VERSION_VAL(5, 4, 0)
+#error "This project requires ESP-IDF v5.4 or higher"
+#endif
+
 #define OTA_NAMESPACE "ota"
 
 #if defined(MBEDTLS_VERSION_NUMBER) && MBEDTLS_VERSION_NUMBER >= 0x03000000
