@@ -33,6 +33,7 @@
 #include <freertos/semphr.h>
 
 #include <esp_wifi.h>
+#include <esp_idf_version.h>
 #include <esp_event.h>
 #include <esp_netif.h>
 #include <esp_system.h>
@@ -186,10 +187,15 @@ static void wifi_config_init_wifi(void) {
 
         wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
         esp_wifi_init(&cfg);
+        esp_wifi_set_mode(WIFI_MODE_STA);
         esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, wifi_event_handler, NULL);
         esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, wifi_event_handler, NULL);
         ESP_LOGI("wifi_config", "Starting WiFi...");
         esp_wifi_start();
+        safe_set_auto_connect(true);
+#if ESP_IDF_VERSION_MAJOR < 5
+        esp_wifi_connect();
+#endif
 
         wifi_inited = true;
 }
