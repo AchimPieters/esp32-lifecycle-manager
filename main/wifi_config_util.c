@@ -25,10 +25,15 @@
 #include "esp_idf_version.h"
 #include "esp_wifi.h"
 
-#if ESP_IDF_VERSION < ESP_IDF_VERSION_VAL(5, 4, 0)
-#error "ESP-IDF v5.4 or higher is required"
-#endif
-
-esp_err_t safe_set_auto_connect(bool enable) {
+esp_err_t safe_set_auto_connect(bool enable)
+{
+#if ESP_IDF_VERSION_MAJOR < 5
         return esp_wifi_set_auto_connect(enable);
+#else
+        if (enable) {
+                return esp_wifi_connect();
+        } else {
+                return esp_wifi_disconnect();
+        }
+#endif
 }
