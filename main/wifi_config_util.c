@@ -22,18 +22,12 @@
  **/
 
 #include "esp_err.h"
-#include "esp_idf_version.h"
 #include "esp_wifi.h"
 
-esp_err_t safe_set_auto_connect(bool enable)
-{
-#if ESP_IDF_VERSION_MAJOR < 5
-        return esp_wifi_set_auto_connect(enable);
-#else
+esp_err_t safe_set_auto_connect(bool enable) {
         if (enable) {
                 return esp_wifi_connect();
         } else {
                 return esp_wifi_disconnect();
         }
-#endif
 }
