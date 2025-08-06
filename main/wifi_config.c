@@ -329,10 +329,15 @@ static void wifi_scan_task(void *arg)
                 if (sdk_wifi_get_opmode() != STATIONAP_MODE)
                         break;
 
+                /* Run scan on STA interface while AP remains active. */
                 esp_wifi_scan_start(NULL, true);
 
                 uint16_t ap_num = 0;
                 esp_wifi_scan_get_ap_num(&ap_num);
+                ESP_LOGI("wifi_config", "Scan found %u networks", ap_num);
+                if (ap_num == 0) {
+                        ESP_LOGW("wifi_config", "WiFi scan returned no networks");
+                }
                 wifi_ap_record_t *records = calloc(ap_num, sizeof(wifi_ap_record_t));
                 if (records && esp_wifi_scan_get_ap_records(&ap_num, records) == ESP_OK) {
                         xSemaphoreTake(wifi_networks_mutex, portMAX_DELAY);
@@ -842,9 +847,8 @@ static void dns_stop() {
 static void wifi_config_softap_start() {
         INFO("Starting AP mode");
 
-        bool has_cfg = wifi_config_has_configuration();
-        wifi_mode_t mode = has_cfg ? WIFI_MODE_APSTA : WIFI_MODE_AP;
-        esp_wifi_set_mode(mode);
+        /* Always use APSTA mode so that scanning works while running the captive portal. */
+        esp_wifi_set_mode(WIFI_MODE_APSTA);
 
         uint8_t macaddr[6];
         sdk_wifi_get_macaddr(SOFTAP_IF, macaddr);
@@ -853,10 +857,13 @@ static void wifi_config_softap_start() {
                 .ap = {
                         .ssid = "",
                         .ssid_len = 0,
+                        /* Force channel to stay within 1-11 to avoid DFS channels on macOS. */
                         .channel = 1,
                         .password = "",
                         .max_connection = 4,
-                        .authmode = WIFI_AUTH_OPEN
+                        .authmode = WIFI_AUTH_OPEN,
+                        /* Use a shorter beacon interval for improved detection on some clients. */
+                        .beacon_interval = 100,
                 }
         };
 
@@ -870,7 +877,10 @@ static void wifi_config_softap_start() {
                 ap_cfg.ap.authmode = WIFI_AUTH_WPA2_PSK;
         }
 
+        /* Ensure both AP and STA configs are set before starting WiFi. */
+        wifi_config_t sta_cfg = { 0 };
         esp_wifi_set_config(WIFI_IF_AP, &ap_cfg);
+        esp_wifi_set_config(WIFI_IF_STA, &sta_cfg);
         esp_wifi_start();
         ESP_LOGI("wifi_config", "AP active, SSID=%s", ap_cfg.ap.ssid);
         safe_set_auto_connect(true);
