@@ -187,15 +187,8 @@ static void wifi_config_init_wifi(void) {
 
         wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
         esp_wifi_init(&cfg);
-        esp_wifi_set_mode(WIFI_MODE_STA);
         esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, wifi_event_handler, NULL);
         esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, wifi_event_handler, NULL);
-        ESP_LOGI("wifi_config", "Starting WiFi...");
-        esp_wifi_start();
-        safe_set_auto_connect(true);
-#if ESP_IDF_VERSION_MAJOR < 5
-        esp_wifi_connect();
-#endif
 
         wifi_inited = true;
 }
@@ -857,38 +850,43 @@ static void dns_stop() {
 static void wifi_config_softap_start() {
         INFO("Starting AP mode");
 
-        sdk_wifi_set_opmode(STATIONAP_MODE);
+        bool has_cfg = wifi_config_has_configuration();
+        wifi_mode_t mode = has_cfg ? WIFI_MODE_APSTA : WIFI_MODE_AP;
+        esp_wifi_set_mode(mode);
 
         uint8_t macaddr[6];
         sdk_wifi_get_macaddr(SOFTAP_IF, macaddr);
 
-        wifi_config_t ap_cfg;
-        sdk_wifi_softap_get_config(&ap_cfg);
+        wifi_config_t ap_cfg = {
+                .ap = {
+                        .ssid = "",
+                        .ssid_len = 0,
+                        .channel = 1,
+                        .password = "",
+                        .max_connection = 4,
+                        .authmode = WIFI_AUTH_OPEN
+                }
+        };
+
         ap_cfg.ap.ssid_len = snprintf(
                 (char *)ap_cfg.ap.ssid, sizeof(ap_cfg.ap.ssid),
                 "%s-%02X%02X%02X", context->ssid_prefix, macaddr[3], macaddr[4], macaddr[5]
-                );
-        ap_cfg.ap.ssid_hidden = 0;
+        );
         if (context->password) {
-                ap_cfg.ap.authmode = WIFI_AUTH_WPA_WPA2_PSK;
                 strncpy((char *)ap_cfg.ap.password,
                         context->password, sizeof(ap_cfg.ap.password));
-        } else {
-                ap_cfg.ap.authmode = WIFI_AUTH_OPEN;
+                ap_cfg.ap.authmode = WIFI_AUTH_WPA2_PSK;
         }
-        ap_cfg.ap.max_connection = 2;
-        ap_cfg.ap.beacon_interval = 100;
 
-        DEBUG("Starting AP SSID=%s", ap_cfg.ap.ssid);
-
-        sdk_wifi_softap_set_config(&ap_cfg);
+        esp_wifi_set_config(WIFI_IF_AP, &ap_cfg);
+        esp_wifi_start();
+        ESP_LOGI("wifi_config", "AP active, SSID=%s", ap_cfg.ap.ssid);
+        safe_set_auto_connect(true);
 
         wifi_networks_mutex = xSemaphoreCreateBinary();
         xSemaphoreGive(wifi_networks_mutex);
 
         xTaskCreate(wifi_scan_task, "wifi_config scan", 4096, NULL, 2, NULL);
-
-        INFO("Starting AP interface");
 
         dns_start();
         http_start();
@@ -1002,13 +1000,11 @@ static int wifi_config_station_connect() {
 
 void wifi_config_start() {
         wifi_config_init_wifi();
-        sdk_wifi_set_opmode(STATION_MODE);
 
         context->first_time = true;
 
-        if (wifi_config_station_connect()) {
-                wifi_config_softap_start();
-        }
+        wifi_config_softap_start();
+        wifi_config_station_connect();
 
         if (!context->network_monitor_timer) {
                 context->network_monitor_timer = xTimerCreate(
