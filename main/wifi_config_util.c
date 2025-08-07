@@ -23,11 +23,19 @@
 
 #include "esp_err.h"
 #include "esp_wifi.h"
+#include "esp_idf_version.h"
 
 esp_err_t safe_set_auto_connect(bool enable) {
 #if CONFIG_ESP_WIFI_ENABLED
-    return esp_wifi_set_auto_connect(enable);
+#if ESP_IDF_VERSION < ESP_IDF_VERSION_VAL(5, 4, 0)
+  return esp_wifi_set_auto_connect(enable);
 #else
-    return ESP_OK;
+  // esp_wifi_set_auto_connect was removed in ESP-IDF v5.4
+  (void)enable;
+  return ESP_OK;
+#endif
+#else
+  (void)enable;
+  return ESP_OK;
 #endif
 }
