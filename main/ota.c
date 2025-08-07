@@ -1,11 +1,10 @@
 #include "ota.h"
-#include "esp_crt_bundle.h"
+#include "version.h"
 #include <cJSON.h>
 #include <ctype.h>
 #include <driver/ledc.h>
 #include <esp_http_client.h>
 #include <esp_idf_version.h>
-#include <esp_image_format.h>
 #include <esp_log.h>
 #include <esp_ota_ops.h>
 #include <esp_partition.h>
@@ -37,27 +36,9 @@ static const char *TAG = "ota";
 
 extern void led_write(bool on);
 
-volatile bool ota_in_progress = false;
+extern const char github_root_cert[] asm("_binary_github_root_cert_pem_start");
 
-static bool ota_partition_has_valid_firmware(void) {
-  const esp_partition_t *part = esp_partition_find_first(
-      ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_OTA_0, NULL);
-  if (!part) {
-    ESP_LOGW(TAG, "OTA partition ota_0 not found");
-    return false;
-  }
-  esp_image_metadata_t data;
-  const esp_partition_pos_t pos = {
-      .offset = part->address,
-      .size = part->size,
-  };
-  if (esp_image_verify(ESP_IMAGE_VERIFY, &pos, &data) == ESP_OK) {
-    ESP_LOGI(TAG, "OTA partition ota_0 has valid firmware");
-    return true;
-  }
-  ESP_LOGI(TAG, "OTA partition ota_0 lacks valid firmware");
-  return false;
-}
+volatile bool ota_in_progress = false;
 
 #define LEDC_TIMER LEDC_TIMER_0
 #define LEDC_MODE LEDC_LOW_SPEED_MODE
@@ -199,7 +180,7 @@ static char *http_get(const char *url, const char *auth, int *out_status) {
       .url = url,
       .timeout_ms = 10000,
       .transport_type = HTTP_TRANSPORT_OVER_SSL,
-      .crt_bundle_attach = esp_crt_bundle_attach,
+      .cert_pem = github_root_cert,
       .skip_cert_common_name_check = false,
       .user_agent = "esp32-lcm",
       .disable_auto_redirect = false, // follow GitHub's 302 redirect to S3
@@ -265,7 +246,7 @@ static bool download_sig(const char *url, const char *auth, uint8_t *out_hash,
       .url = url,
       .timeout_ms = 10000,
       .transport_type = HTTP_TRANSPORT_OVER_SSL,
-      .crt_bundle_attach = esp_crt_bundle_attach,
+      .cert_pem = github_root_cert,
       .skip_cert_common_name_check = false,
       .user_agent = "esp32-lcm",
       .disable_auto_redirect = false, // follow GitHub's 302 redirect to S3
@@ -344,7 +325,7 @@ static bool download_and_flash(const char *url, const uint8_t *expected_hash,
       .url = url,
       .timeout_ms = 10000,
       .transport_type = HTTP_TRANSPORT_OVER_SSL,
-      .crt_bundle_attach = esp_crt_bundle_attach,
+      .cert_pem = github_root_cert,
       .skip_cert_common_name_check = false,
       .user_agent = "esp32-lcm",
       .disable_auto_redirect = false, // follow GitHub's 302 redirect to S3
@@ -504,20 +485,18 @@ static bool is_version_newer(const char *current, const char *latest) {
 }
 
 static bool perform_update(nvs_handle_t handle, const char *repo_url,
-                          bool prerelease, bool force_update,
-                          const char *auth) {
-  ESP_LOGI(TAG, "Checking repository %s (prerelease=%d, force=%d)", repo_url,
-           prerelease, force_update);
+                          bool prerelease, const char *auth) {
+  ESP_LOGI(TAG, "Checking repository %s (prerelease=%d)", repo_url,
+           prerelease);
   ota_in_progress = true;
-  char current_version[64] = {0};
+  char current_version[64] = CURRENT_VERSION;
+  ESP_LOGI(TAG, "Build version %s", current_version);
   char *stored_version = nvs_get_string(handle, "current_version");
   if (stored_version) {
     sanitize_version_str(stored_version, current_version,
                          sizeof(current_version));
     ESP_LOGI(TAG, "Stored version %s", current_version);
     free(stored_version);
-  } else {
-    ESP_LOGI(TAG, "No current_version in NVS; forcing update");
   }
 
   char api_base[512];
@@ -579,9 +558,8 @@ static bool perform_update(nvs_handle_t handle, const char *repo_url,
 
   const char *tag_name = tag->valuestring;
   ESP_LOGI(TAG, "Latest tag %s", tag_name);
-  if (!force_update && *current_version &&
-      !is_version_newer(current_version, tag_name)) {
-    ESP_LOGW(TAG, "OTA: Signature mismatch or no newer version found");
+  if (!is_version_newer(current_version, tag_name)) {
+    ESP_LOGI(TAG, "No newer firmware available");
     cJSON_Delete(root);
     free(json);
     ota_in_progress = false;
@@ -672,23 +650,9 @@ void ota_check_and_install(void) {
   bool prerelease = prerelease_str && strcmp(prerelease_str, "1") == 0;
   free(prerelease_str);
 
-  bool has_valid = ota_partition_has_valid_firmware();
-  size_t dummy = 0;
-  bool has_version =
-      nvs_get_str(handle, "current_version", NULL, &dummy) == ESP_OK;
-
   char *token = nvs_get_string(handle, "github_token");
 
-  if (!has_valid) {
-    ESP_LOGI(TAG, "OTA partition empty; installing latest release");
-    (void)perform_update(handle, repo_url, prerelease, true, token);
-  } else if (!has_version) {
-    ESP_LOGI(TAG, "No current_version in NVS; installing latest release");
-    (void)perform_update(handle, repo_url, prerelease, true, token);
-  } else {
-    ESP_LOGI(TAG, "Valid firmware found; checking for updates");
-    (void)perform_update(handle, repo_url, prerelease, false, token);
-  }
+  (void)perform_update(handle, repo_url, prerelease, token);
 
   free(token);
   free(repo_url);
@@ -716,7 +680,7 @@ void firmware_update(void) {
   free(prerelease_str);
   char *token = nvs_get_string(handle, "github_token");
 
-  (void)perform_update(handle, repo_url, prerelease, false, token);
+  (void)perform_update(handle, repo_url, prerelease, token);
 
   free(token);
   free(repo_url);
