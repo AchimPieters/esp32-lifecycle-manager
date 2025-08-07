@@ -26,4 +26,5 @@ idf_component_register(
         http_parser
     EMBED_TXTFILES
         "content/index.html"
+        "github_root_cert.pem"
 )
