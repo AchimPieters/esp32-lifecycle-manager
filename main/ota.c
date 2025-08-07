@@ -485,9 +485,8 @@ static bool is_version_newer(const char *current, const char *latest) {
 }
 
 static bool perform_update(nvs_handle_t handle, const char *repo_url,
-                          bool prerelease, const char *auth) {
-  ESP_LOGI(TAG, "Checking repository %s (prerelease=%d)", repo_url,
-           prerelease);
+                           bool prerelease, const char *auth) {
+  ESP_LOGI(TAG, "Checking repository %s (prerelease=%d)", repo_url, prerelease);
   ota_in_progress = true;
   char current_version[64] = CURRENT_VERSION;
   ESP_LOGI(TAG, "Build version %s", current_version);
@@ -577,7 +576,8 @@ static bool perform_update(nvs_handle_t handle, const char *repo_url,
     cJSON *asset = NULL;
     cJSON_ArrayForEach(asset, assets) {
       cJSON *name = cJSON_GetObjectItem(asset, "name");
-      if (cJSON_IsString(name) && strcasestr(name->valuestring, ".sig") != NULL) {
+      if (cJSON_IsString(name) &&
+          strcasestr(name->valuestring, ".sig") != NULL) {
         cJSON *download_url =
             cJSON_GetObjectItem(asset, "browser_download_url");
         if (download_url && cJSON_IsString(download_url) &&
@@ -590,10 +590,10 @@ static bool perform_update(nvs_handle_t handle, const char *repo_url,
     }
   }
   if (!sig_url[0]) {
-    if (strlen(fw_url) < sizeof(sig_url) - 4) {
+    if (strlen(fw_url) < sizeof(sig_url) - 5) { // 4 for ".sig" + 1 for '\0'
       snprintf(sig_url, sizeof(sig_url), "%s.sig", fw_url);
     } else {
-      ESP_LOGE(TAG, "FW URL too long for signature URL");
+      ESP_LOGE(TAG, "FW URL too long for signature URL buffer");
       cJSON_Delete(root);
       free(json);
       ota_in_progress = false;
