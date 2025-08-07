@@ -72,13 +72,12 @@ static void normalize_repo_url(const char *input, char *output, size_t len) {
   const char *repo_part = input;
   const char *p = NULL;
   if ((p = strstr(input, "api.github.com/repos/"))) {
-    strlcpy(output, input, len);
-    return;
-  }
-  if ((p = strstr(input, "github.com/"))) {
+    repo_part = p + strlen("api.github.com/repos/");
+  } else if ((p = strstr(input, "github.com/"))) {
     repo_part = p + strlen("github.com/");
   }
-  snprintf(output, len, "https://api.github.com/repos/%s", repo_part);
+  /* Store only the <owner>/<repo> path in NVS. */
+  strlcpy(output, repo_part, len);
 }
 
 static wifi_mode_t opmode_to_wifi_mode(int mode) {
@@ -121,16 +120,6 @@ static void sdk_wifi_set_opmode(int mode) {
 
 static void sdk_wifi_get_macaddr(int iface, uint8_t *mac) {
   esp_wifi_get_mac(iface == SOFTAP_IF ? WIFI_IF_AP : WIFI_IF_STA, mac);
-}
-
-static void sdk_wifi_station_set_config(wifi_config_t *cfg) {
-  esp_wifi_set_config(WIFI_IF_STA, cfg);
-}
-
-static void sdk_wifi_station_connect(void) { esp_wifi_connect(); }
-
-static void sdk_wifi_station_set_auto_connect(bool en) {
-  safe_set_auto_connect(en);
 }
 
 static void sysparam_init(void) {
@@ -337,8 +326,16 @@ static void wifi_scan_task(void *arg) {
     if (sdk_wifi_get_opmode() != STATIONAP_MODE)
       break;
 
-    /* Run scan on STA interface while AP remains active. */
-    esp_wifi_scan_start(NULL, true);
+    /* Run blocking scan on STA interface while AP remains active. */
+    wifi_scan_config_t config = {
+        .show_hidden = true,
+    };
+    esp_err_t scan_err = esp_wifi_scan_start(&config, true);
+    if (scan_err != ESP_OK) {
+      ESP_LOGE("wifi_config", "WiFi scan start failed: %s", esp_err_to_name(scan_err));
+      vTaskDelay(10000 / portTICK_PERIOD_MS);
+      continue;
+    }
 
     uint16_t ap_num = 0;
     esp_wifi_scan_get_ap_num(&ap_num);
@@ -376,6 +373,8 @@ static void wifi_scan_task(void *arg) {
       }
 
       xSemaphoreGive(wifi_networks_mutex);
+    } else {
+      ESP_LOGW("wifi_config", "Failed to get AP records");
     }
 
     free(records);
@@ -486,12 +485,12 @@ static void wifi_config_server_on_settings_update(client_t *client) {
   nvs_handle ota_handle;
   if (nvs_open("ota", NVS_READWRITE, &ota_handle) == ESP_OK) {
     if (repo_param) {
-      char api_repo[256];
-      normalize_repo_url(repo_param->value, api_repo, sizeof(api_repo));
-      DEBUG("Setting ota.repo_url param = %s", api_repo);
-      nvs_set_str(ota_handle, "repo_url", api_repo);
+      char repo_path[256];
+      normalize_repo_url(repo_param->value, repo_path, sizeof(repo_path));
+      ESP_LOGI("wifi_config", "NVS: storing repo URL: %s", repo_path);
+      nvs_set_str(ota_handle, "repo_url", repo_path);
     } else {
-      DEBUG("Setting ota.repo_url param = (none)");
+      ESP_LOGI("wifi_config", "NVS: storing repo URL: (none)");
       nvs_set_str(ota_handle, "repo_url", "");
     }
 
@@ -855,6 +854,7 @@ static void wifi_config_softap_start() {
   /* Always use APSTA mode so that scanning works while running the captive
    * portal. */
   ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_APSTA));
+  ESP_LOGI("wifi_config", "WiFi mode set to APSTA");
 
   uint8_t macaddr[6];
   sdk_wifi_get_macaddr(SOFTAP_IF, macaddr);
@@ -881,12 +881,10 @@ static void wifi_config_softap_start() {
   ap_cfg.ap.ssid_len = snprintf((char *)ap_cfg.ap.ssid, sizeof(ap_cfg.ap.ssid),
                                 "%s-%02X%02X%02X", context->ssid_prefix,
                                 macaddr[3], macaddr[4], macaddr[5]);
-  if (context->password) {
-    strncpy((char *)ap_cfg.ap.password, context->password,
-            sizeof(ap_cfg.ap.password));
-    ap_cfg.ap.authmode =
-        context->password[0] == '\0' ? WIFI_AUTH_OPEN : WIFI_AUTH_WPA2_PSK;
-  }
+  /* SoftAP should always be open; ignore any configured password. */
+  ap_cfg.ap.authmode = WIFI_AUTH_OPEN;
+  ap_cfg.ap.password[0] = '\0';
+  ESP_LOGI("wifi_config", "SoftAP configured without WPA2 password");
 
   /* Ensure both AP and STA configs are set before starting WiFi. */
   wifi_config_t sta_cfg = {0};
@@ -985,7 +983,8 @@ static int wifi_config_station_connect() {
     return -1;
   }
 
-  INFO("Connecting to %s", wifi_ssid);
+  ESP_LOGI("wifi_config", "WiFi: Setting mode to STA");
+  ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
 
   wifi_config_t sta_config;
   memset(&sta_config, 0, sizeof(sta_config));
@@ -995,10 +994,12 @@ static int wifi_config_station_connect() {
     strncpy((char *)sta_config.sta.password, wifi_password,
             sizeof(sta_config.sta.password));
 
-  sdk_wifi_station_set_config(&sta_config);
+  ESP_LOGI("wifi_config", "WiFi: Applying config for SSID %s", wifi_ssid);
+  ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &sta_config));
 
-  sdk_wifi_station_connect();
-  sdk_wifi_station_set_auto_connect(true);
+  ESP_LOGI("wifi_config", "WiFi: Connecting to SSID %s", wifi_ssid);
+  ESP_ERROR_CHECK(esp_wifi_connect());
+  safe_set_auto_connect(true);
 
   free(wifi_ssid);
   if (wifi_password)

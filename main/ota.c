@@ -338,7 +338,7 @@ static bool download_sig(const char *url, const char *auth, uint8_t *out_hash,
 
 static bool download_and_flash(const char *url, const uint8_t *expected_hash,
                                uint32_t expected_size, const char *auth) {
-  ESP_LOGI(TAG, "Starting firmware download");
+  ESP_LOGI(TAG, "OTA: Start download of main.bin from GitHub: %s", url);
   ota_led_start();
 
   esp_http_client_config_t config = {
@@ -447,13 +447,13 @@ static bool download_and_flash(const char *url, const uint8_t *expected_hash,
   free(buf);
 
   if (expected_size && total != (int)expected_size) {
-    ESP_LOGE(TAG, "Handtekening ongeldig (size mismatch)");
+    ESP_LOGW(TAG, "OTA: Signature mismatch or no newer version found");
     esp_ota_abort(ota_handle);
     ota_led_stop();
     return false;
   }
   if (memcmp(hash, expected_hash, 48) != 0) {
-    ESP_LOGE(TAG, "Handtekening ongeldig (hash mismatch)");
+    ESP_LOGW(TAG, "OTA: Signature mismatch or no newer version found");
     esp_ota_abort(ota_handle);
     ota_led_stop();
     return false;
@@ -582,7 +582,7 @@ static bool perform_update(nvs_handle_t handle, const char *repo_url,
   ESP_LOGI(TAG, "Latest tag %s", tag_name);
   if (!force_update && *current_version &&
       !is_version_newer(current_version, tag_name)) {
-    ESP_LOGI(TAG, "No update available");
+    ESP_LOGW(TAG, "OTA: Signature mismatch or no newer version found");
     cJSON_Delete(root);
     free(json);
     ota_in_progress = false;
@@ -590,46 +590,31 @@ static bool perform_update(nvs_handle_t handle, const char *repo_url,
   }
 
   char sig_url[1024] = {0};
-  char fw_url[1024] = {0};
+  char fw_url[1024];
+  snprintf(fw_url, sizeof(fw_url),
+           "https://github.com/%s/releases/download/%s/main.bin", repo_url,
+           tag_name);
+  ESP_LOGI(TAG, "OTA: Checking for update from %s", fw_url);
   cJSON *assets = cJSON_GetObjectItem(release, "assets");
   if (cJSON_IsArray(assets)) {
     cJSON *asset = NULL;
     cJSON_ArrayForEach(asset, assets) {
       cJSON *name = cJSON_GetObjectItem(asset, "name");
-      if (cJSON_IsString(name)) {
-        if (strcmp(name->valuestring, "main.bin") == 0) {
-          cJSON *download_url =
-              cJSON_GetObjectItem(asset, "browser_download_url");
-          if (download_url && cJSON_IsString(download_url) &&
-              download_url->valuestring) {
-            strlcpy(fw_url, download_url->valuestring, sizeof(fw_url));
-          }
-        } else if (strcasestr(name->valuestring, ".sig") != NULL) {
-          cJSON *download_url =
-              cJSON_GetObjectItem(asset, "browser_download_url");
-          if (download_url && cJSON_IsString(download_url) &&
-              download_url->valuestring) {
-            strlcpy(sig_url, download_url->valuestring, sizeof(sig_url));
-            ESP_LOGI(TAG, "Found signature asset: %s", name->valuestring);
-            ESP_LOGI(TAG, "Signature download URL: %s", sig_url);
-          }
+      if (cJSON_IsString(name) && strcasestr(name->valuestring, ".sig") != NULL) {
+        cJSON *download_url =
+            cJSON_GetObjectItem(asset, "browser_download_url");
+        if (download_url && cJSON_IsString(download_url) &&
+            download_url->valuestring) {
+          strlcpy(sig_url, download_url->valuestring, sizeof(sig_url));
+          ESP_LOGI(TAG, "Found signature asset: %s", name->valuestring);
+          ESP_LOGI(TAG, "Signature download URL: %s", sig_url);
         }
       }
     }
   }
   if (!sig_url[0]) {
-    cJSON_Delete(root);
-    free(json);
-    ESP_LOGE(TAG, "No .sig file found in GitHub release assets");
-    ota_in_progress = false;
-    return false;
-  }
-  if (!fw_url[0]) {
-    cJSON_Delete(root);
-    free(json);
-    ESP_LOGE(TAG, "Required assets not found in release");
-    ota_in_progress = false;
-    return false;
+    snprintf(sig_url, sizeof(sig_url), "%s.sig", fw_url);
+    ESP_LOGW(TAG, "No signature asset found; assuming %s", sig_url);
   }
 
   uint8_t expected_hash[48];
