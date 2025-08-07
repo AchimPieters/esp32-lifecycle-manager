@@ -923,7 +923,7 @@ static void wifi_config_monitor_callback(TimerHandle_t xTimer) {
     }
 
     wifi_config_softap_stop();
-    sdk_wifi_station_set_auto_connect(false);
+    esp_wifi_set_auto_connect(false);
 
     if (context->on_event)
       context->on_event(WIFI_CONFIG_CONNECTED);
