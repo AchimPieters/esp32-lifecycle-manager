@@ -186,12 +186,11 @@ static void normalize_repo_api(const char *input, char *output, size_t len) {
   }
   if ((p = strstr(temp, "github.com/"))) {
     repo_part = p + strlen("github.com/");
-    char repo_part_limited[200];
-    strlcpy(repo_part_limited, repo_part, sizeof(repo_part_limited));
-    snprintf(output, len, "https://api.github.com/repos/%s", repo_part_limited);
-  } else {
-    strlcpy(output, temp, len);
   }
+
+  char repo_part_limited[200];
+  strlcpy(repo_part_limited, repo_part, sizeof(repo_part_limited));
+  snprintf(output, len, "https://api.github.com/repos/%s", repo_part_limited);
 }
 
 static char *http_get(const char *url, const char *auth, int *out_status) {
