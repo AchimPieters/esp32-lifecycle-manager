@@ -25,9 +25,9 @@
 #include "esp_wifi.h"
 
 esp_err_t safe_set_auto_connect(bool enable) {
-        if (enable) {
-                return esp_wifi_connect();
-        } else {
-                return esp_wifi_disconnect();
-        }
+#if CONFIG_ESP_WIFI_ENABLED
+    return esp_wifi_set_auto_connect(enable);
+#else
+    return ESP_OK;
+#endif
 }

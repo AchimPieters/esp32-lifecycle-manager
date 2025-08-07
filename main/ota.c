@@ -593,7 +593,7 @@ static bool perform_update(nvs_handle_t handle, const char *repo_url,
     if (strlen(fw_url) < sizeof(sig_url) - 4) {
       snprintf(sig_url, sizeof(sig_url), "%s.sig", fw_url);
     } else {
-      ESP_LOGE(TAG, "FW URL too long for signature URL buffer");
+      ESP_LOGE(TAG, "FW URL too long for signature URL");
       cJSON_Delete(root);
       free(json);
       ota_in_progress = false;
