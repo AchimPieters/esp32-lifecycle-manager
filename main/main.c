@@ -137,6 +137,6 @@ void app_main(void) {
     ESP_LOGE(TAG, "Failed to create button task");
   }
   ESP_LOGI(TAG, "Initializing WiFi config");
-  wifi_config_init("LCM", "12345678", on_wifi_ready);
+  wifi_config_init("LCM", NULL, on_wifi_ready);
   ESP_LOGI(TAG, "WiFi config initialized");
 }
