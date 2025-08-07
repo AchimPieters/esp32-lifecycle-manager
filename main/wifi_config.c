@@ -865,18 +865,17 @@ static void wifi_config_softap_start() {
                               /* Force channel to stay within 1-11 to avoid DFS
                                  channels on macOS. */
                               .channel = 1,
-                              .password = "12345678",
+                              .password = "",
                               .max_connection = 4,
-                              .authmode = WIFI_AUTH_WPA2_PSK,
+                              .authmode = WIFI_AUTH_OPEN,
                               .ssid_hidden = 0,
                               .pmf_cfg =
                                   {
                                       .required = false,
                                   },
                               .sae_pwe_h2e = WPA3_SAE_PWE_UNSPECIFIED,
-                              /* Use a shorter beacon interval for improved
-                                 detection on some clients. */
-                              .beacon_interval = 100,
+                              /* Reduce beacon interval for faster discovery */
+                              .beacon_interval = 50,
                           }};
 
   ap_cfg.ap.ssid_len = snprintf((char *)ap_cfg.ap.ssid, sizeof(ap_cfg.ap.ssid),
@@ -885,9 +884,8 @@ static void wifi_config_softap_start() {
   if (context->password) {
     strncpy((char *)ap_cfg.ap.password, context->password,
             sizeof(ap_cfg.ap.password));
-    if (context->password[0] == '\0') {
-      ap_cfg.ap.authmode = WIFI_AUTH_OPEN;
-    }
+    ap_cfg.ap.authmode =
+        context->password[0] == '\0' ? WIFI_AUTH_OPEN : WIFI_AUTH_WPA2_PSK;
   }
 
   /* Ensure both AP and STA configs are set before starting WiFi. */
