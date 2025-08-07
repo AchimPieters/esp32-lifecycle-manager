@@ -195,7 +195,7 @@ static char *http_get(const char *url, const char *auth, int *out_status) {
   esp_http_client_set_header(client, "X-GitHub-Api-Version", "2022-11-28");
   if (auth && *auth) {
     char header[160];
-    snprintf(header, sizeof(header), "token %s", auth);
+    snprintf(header, sizeof(header), "Bearer %s", auth);
     esp_http_client_set_header(client, "Authorization", header);
   }
   if (esp_http_client_open(client, 0) != ESP_OK) {
@@ -261,7 +261,7 @@ static bool download_sig(const char *url, const char *auth, uint8_t *out_hash,
   esp_http_client_set_header(client, "X-GitHub-Api-Version", "2022-11-28");
   if (auth && *auth) {
     char header[160];
-    snprintf(header, sizeof(header), "token %s", auth);
+    snprintf(header, sizeof(header), "Bearer %s", auth);
     esp_http_client_set_header(client, "Authorization", header);
   }
   if (esp_http_client_open(client, 0) != ESP_OK) {
@@ -342,7 +342,7 @@ static bool download_and_flash(const char *url, const uint8_t *expected_hash,
   esp_http_client_set_header(client, "X-GitHub-Api-Version", "2022-11-28");
   if (auth && *auth) {
     char header[160];
-    snprintf(header, sizeof(header), "token %s", auth);
+    snprintf(header, sizeof(header), "Bearer %s", auth);
     esp_http_client_set_header(client, "Authorization", header);
   }
   if (esp_http_client_open(client, 0) != ESP_OK) {
