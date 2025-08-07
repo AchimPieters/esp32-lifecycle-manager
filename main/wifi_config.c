@@ -873,6 +873,7 @@ static void wifi_config_softap_start() {
                                   {
                                       .required = false,
                                   },
+                              .sae_pwe_h2e = WPA3_SAE_PWE_UNSPECIFIED,
                               /* Use a shorter beacon interval for improved
                                  detection on some clients. */
                               .beacon_interval = 100,
@@ -884,6 +885,9 @@ static void wifi_config_softap_start() {
   if (context->password) {
     strncpy((char *)ap_cfg.ap.password, context->password,
             sizeof(ap_cfg.ap.password));
+    if (context->password[0] == '\0') {
+      ap_cfg.ap.authmode = WIFI_AUTH_OPEN;
+    }
   }
 
   /* Ensure both AP and STA configs are set before starting WiFi. */
