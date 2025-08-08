@@ -328,7 +328,17 @@ static void wifi_scan_task(void *arg) {
 
     /* Run blocking scan on STA interface while AP remains active. */
     wifi_scan_config_t config = {
-        .show_hidden = true,
+        .ssid = NULL,
+        .bssid = NULL,
+        .channel = 0,
+        .show_hidden = false,
+        .scan_type = WIFI_SCAN_TYPE_ACTIVE,
+        .scan_time = {
+            .active = {
+                .min = 100,
+                .max = 300,
+            },
+        },
     };
     esp_err_t scan_err = esp_wifi_scan_start(&config, true);
     if (scan_err != ESP_OK) {
@@ -356,6 +366,9 @@ static void wifi_scan_task(void *arg) {
       wifi_networks = NULL;
 
       for (int i = 0; i < ap_num; i++) {
+        if (records[i].ssid[0] == '\0') {
+          continue; // Skip empty SSIDs
+        }
         wifi_network_info_t *net = wifi_networks;
         while (net) {
           if (!strncmp(net->ssid, (char *)records[i].ssid, sizeof(net->ssid)))

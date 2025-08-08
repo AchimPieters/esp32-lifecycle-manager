@@ -26,5 +26,6 @@ idf_component_register(
         http_parser
     EMBED_TXTFILES
         "content/index.html"
-        "github_root_cert.pem"
 )
+
+target_add_binary_data(${COMPONENT_TARGET} "github_root_ca.pem" TEXT)
