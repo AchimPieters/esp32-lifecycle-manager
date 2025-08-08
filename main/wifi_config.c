@@ -864,47 +864,30 @@ static void dns_stop() {
 static void wifi_config_softap_start() {
   INFO("Starting AP mode");
 
-  /* Always use APSTA mode so that scanning works while running the captive
-   * portal. */
-  ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_APSTA));
-  ESP_LOGI("wifi_config", "WiFi mode set to APSTA");
+  ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP));
+  ESP_LOGI("wifi_config", "WiFi mode set to AP");
 
-  uint8_t macaddr[6];
-  sdk_wifi_get_macaddr(SOFTAP_IF, macaddr);
+  wifi_config_t ap_cfg = {
+      .ap = {
+          .ssid = "ESP32-Setup",
+          .ssid_len = strlen("ESP32-Setup"),
+          /* Use channel 6 for broad compatibility on macOS. */
+          .channel = 6,
+          .max_connection = 4,
+          .authmode = WIFI_AUTH_OPEN,
+          .ssid_hidden = 0,
+          .pmf_cfg = {
+              .required = false,
+          },
+          .sae_pwe_h2e = WPA3_SAE_PWE_UNSPECIFIED,
+          /* Reduce beacon interval for faster discovery */
+          .beacon_interval = 50,
+      }};
 
-  wifi_config_t ap_cfg = {.ap = {
-                              .ssid = "",
-                              .ssid_len = 0,
-                              /* Force channel to stay within 1-11 to avoid DFS
-                                 channels on macOS. */
-                              .channel = 1,
-                              .password = "",
-                              .max_connection = 4,
-                              .authmode = WIFI_AUTH_OPEN,
-                              .ssid_hidden = 0,
-                              .pmf_cfg =
-                                  {
-                                      .required = false,
-                                  },
-                              .sae_pwe_h2e = WPA3_SAE_PWE_UNSPECIFIED,
-                              /* Reduce beacon interval for faster discovery */
-                              .beacon_interval = 50,
-                          }};
-
-  ap_cfg.ap.ssid_len = snprintf((char *)ap_cfg.ap.ssid, sizeof(ap_cfg.ap.ssid),
-                                "%s-%02X%02X%02X", context->ssid_prefix,
-                                macaddr[3], macaddr[4], macaddr[5]);
-  /* SoftAP should always be open; ignore any configured password. */
-  ap_cfg.ap.authmode = WIFI_AUTH_OPEN;
-  ap_cfg.ap.password[0] = '\0';
-  ESP_LOGI("wifi_config", "SoftAP configured without WPA2 password");
-
-  /* Ensure both AP and STA configs are set before starting WiFi. */
-  wifi_config_t sta_cfg = {0};
-  esp_wifi_set_config(WIFI_IF_AP, &ap_cfg);
-  esp_wifi_set_config(WIFI_IF_STA, &sta_cfg);
-  esp_wifi_start();
-  ESP_LOGI("wifi_config", "AP active, SSID=%s", ap_cfg.ap.ssid);
+  ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &ap_cfg));
+  ESP_ERROR_CHECK(esp_wifi_start());
+  ESP_LOGI("wifi_config", "SoftAP started: SSID=\"%s\", channel=%d",
+           ap_cfg.ap.ssid, ap_cfg.ap.channel);
   safe_set_auto_connect(true);
 
   wifi_networks_mutex = xSemaphoreCreateBinary();
