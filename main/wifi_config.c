@@ -118,10 +118,6 @@ static void sdk_wifi_set_opmode(int mode) {
   esp_wifi_set_mode(opmode_to_wifi_mode(mode));
 }
 
-static void sdk_wifi_get_macaddr(int iface, uint8_t *mac) {
-  esp_wifi_get_mac(iface == SOFTAP_IF ? WIFI_IF_AP : WIFI_IF_STA, mac);
-}
-
 static void sysparam_init(void) {
   static bool initialized = false;
   if (!initialized) {
@@ -981,9 +977,6 @@ static int wifi_config_station_connect() {
       free(wifi_password);
     return -1;
   }
-
-  ESP_LOGI("wifi_config", "WiFi: Setting mode to STA");
-  ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
 
   wifi_config_t sta_config;
   memset(&sta_config, 0, sizeof(sta_config));
