@@ -340,6 +340,7 @@ static void wifi_scan_task(void *arg) {
             },
         },
     };
+    ESP_LOGI("wifi_config", "Scanning for networks...");
     esp_err_t scan_err = esp_wifi_scan_start(&config, true);
     if (scan_err != ESP_OK) {
       ESP_LOGE("wifi_config", "WiFi scan start failed: %s", esp_err_to_name(scan_err));
@@ -864,8 +865,10 @@ static void dns_stop() {
 static void wifi_config_softap_start() {
   INFO("Starting AP mode");
 
-  ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP));
-  ESP_LOGI("wifi_config", "WiFi mode set to AP");
+  // Enable concurrent AP + STA mode so that the device can scan while
+  // serving the configuration portal.
+  ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_APSTA));
+  ESP_LOGI("wifi_config", "WiFi mode set to APSTA");
 
   wifi_config_t ap_cfg = {
       .ap = {
