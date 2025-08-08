@@ -1,5 +1,5 @@
 #!/bin/bash
-# Maak een geldige main.bin.sig (52 bytes) voor ESP32 OTA
+# Maak een geldige main.bin.sig (56 bytes) voor ESP32 OTA
 # Gebruik: ./make_sig.sh build/main.bin
 
 # Input controleren
@@ -20,18 +20,19 @@ fi
 echo "🔹 Maak SHA-384 hash..."
 openssl sha384 -binary -out "$SIGFILE" "$BINFILE"
 
-echo "🔹 Voeg bestandsgrootte toe..."
+echo "🔹 Voeg bestandsgrootte toe (little-endian)..."
 # Cross-platform bestandsgrootte bepalen
 if [[ "$OSTYPE" == "darwin"* ]]; then
-    # macOS
     FILESIZE=$(stat -f%z "$BINFILE")
 else
-    # Linux
     FILESIZE=$(stat -c%s "$BINFILE")
 fi
 
-# 4 bytes bestandsgrootte (big endian) toevoegen
-printf "%08x" "$FILESIZE" | xxd -r -p >> "$SIGFILE"
+# Append 4-byte little-endian bestandsgrootte aan het .sig bestand
+printf "$(printf '\\x%02x' $(($FILESIZE        & 0xFF)) \
+                        $((($FILESIZE >> 8)  & 0xFF)) \
+                        $((($FILESIZE >> 16) & 0xFF)) \
+                        $((($FILESIZE >> 24) & 0xFF)))" >> "$SIGFILE"
 
 echo "✅ Klaar! Bestandsinfo:"
 ls -l "$SIGFILE"
