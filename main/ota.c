@@ -26,6 +26,8 @@
 
 #define OTA_NAMESPACE "ota"
 
+#define OTA_JSON_BUFFER_SIZE 4096
+
 #if defined(MBEDTLS_VERSION_NUMBER) && MBEDTLS_VERSION_NUMBER >= 0x03000000
 #define mbedtls_sha512_starts_ret mbedtls_sha512_starts
 #define mbedtls_sha512_update_ret mbedtls_sha512_update
@@ -216,8 +218,8 @@ static char *http_get(const char *url, const char *auth, int *out_status) {
     esp_http_client_cleanup(client);
     return NULL;
   }
-  if (content_length <= 0)
-    content_length = 1024; // default buffer
+  if (content_length < OTA_JSON_BUFFER_SIZE)
+    content_length = OTA_JSON_BUFFER_SIZE; // default buffer
 
   char *buffer = malloc(content_length + 1);
   if (!buffer) {
@@ -520,6 +522,7 @@ static bool perform_update(nvs_handle_t handle, const char *repo_url,
     ota_in_progress = false;
     return false;
   }
+  ESP_LOGI(TAG, "OTA: Received GitHub JSON:\n%s", json);
 
   cJSON *root = cJSON_Parse(json);
   cJSON *release = NULL;
@@ -550,15 +553,36 @@ static bool perform_update(nvs_handle_t handle, const char *repo_url,
   }
 
   const cJSON *tag = cJSON_GetObjectItem(release, "tag_name");
-  if (!cJSON_IsString(tag)) {
+  const char *tag_name = NULL;
+  char parsed_tag[64];
+  if (cJSON_IsString(tag)) {
+    tag_name = tag->valuestring;
+  } else {
+    char *tag_pos = strstr(json, "\"tag_name\":");
+    if (tag_pos) {
+      tag_pos += strlen("\"tag_name\":");
+      while (*tag_pos == ' ' || *tag_pos == '\"')
+        tag_pos++;
+      char *end = strchr(tag_pos, '\"');
+      if (end) {
+        size_t len = end - tag_pos;
+        if (len >= sizeof(parsed_tag))
+          len = sizeof(parsed_tag) - 1;
+        memcpy(parsed_tag, tag_pos, len);
+        parsed_tag[len] = '\0';
+        tag_name = parsed_tag;
+        ESP_LOGI(TAG, "OTA: Found GitHub release tag: %s", tag_name);
+      }
+    }
+  }
+  if (!tag_name) {
     cJSON_Delete(root);
     free(json);
-    ESP_LOGE(TAG, "No release found at GitHub API URL: %s", api_url);
+    ESP_LOGE(TAG, "OTA: Failed to parse version from GitHub JSON");
     ota_in_progress = false;
     return false;
   }
 
-  const char *tag_name = tag->valuestring;
   ESP_LOGI(TAG, "Latest tag %s", tag_name);
   if (!is_version_newer(current_version, tag_name)) {
     ESP_LOGI(TAG, "No newer firmware available");
