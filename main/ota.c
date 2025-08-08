@@ -493,7 +493,7 @@ static bool perform_update(nvs_handle_t handle, const char *repo_url,
                            bool prerelease, const char *auth) {
   ESP_LOGI(TAG, "Checking repository %s (prerelease=%d)", repo_url, prerelease);
   ota_in_progress = true;
-  char current_version[64] = CURRENT_VERSION;
+  char current_version[64] = APP_VERSION;
   ESP_LOGI(TAG, "Build version %s", current_version);
   char *stored_version = nvs_get_string(handle, "current_version");
   if (stored_version) {
@@ -584,7 +584,9 @@ static bool perform_update(nvs_handle_t handle, const char *repo_url,
   }
 
   ESP_LOGI(TAG, "Latest tag %s", tag_name);
-  if (!is_version_newer(current_version, tag_name)) {
+  if (strcmp(current_version, "0.0.0") == 0) {
+    ESP_LOGI(TAG, "No firmware version detected – performing initial OTA...");
+  } else if (!is_version_newer(current_version, tag_name)) {
     ESP_LOGI(TAG, "No newer firmware available");
     cJSON_Delete(root);
     free(json);

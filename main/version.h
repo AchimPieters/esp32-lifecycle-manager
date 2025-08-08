@@ -1,2 +1,2 @@
 #pragma once
-#define CURRENT_VERSION "0.0.2"
+#define APP_VERSION "0.0.0"
