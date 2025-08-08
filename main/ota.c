@@ -36,7 +36,10 @@ static const char *TAG = "ota";
 
 extern void led_write(bool on);
 
-extern const char github_root_cert[] asm("_binary_github_root_cert_pem_start");
+extern const char github_root_ca_pem_start[]
+    asm("_binary_github_root_ca_pem_start");
+extern const char github_root_ca_pem_end[]
+    asm("_binary_github_root_ca_pem_end");
 
 volatile bool ota_in_progress = false;
 
@@ -178,9 +181,9 @@ static char *http_get(const char *url, const char *auth, int *out_status) {
   ESP_LOGI(TAG, "HTTP GET: %s", url);
   esp_http_client_config_t config = {
       .url = url,
-      .timeout_ms = 10000,
+      .timeout_ms = 15000,
       .transport_type = HTTP_TRANSPORT_OVER_SSL,
-      .cert_pem = github_root_cert,
+      .cert_pem = github_root_ca_pem_start,
       .skip_cert_common_name_check = false,
       .user_agent = "esp32-lcm",
       .disable_auto_redirect = false, // follow GitHub's 302 redirect to S3
@@ -244,9 +247,9 @@ static bool download_sig(const char *url, const char *auth, uint8_t *out_hash,
   ESP_LOGI(TAG, "Downloading signature");
   esp_http_client_config_t config = {
       .url = url,
-      .timeout_ms = 10000,
+      .timeout_ms = 15000,
       .transport_type = HTTP_TRANSPORT_OVER_SSL,
-      .cert_pem = github_root_cert,
+      .cert_pem = github_root_ca_pem_start,
       .skip_cert_common_name_check = false,
       .user_agent = "esp32-lcm",
       .disable_auto_redirect = false, // follow GitHub's 302 redirect to S3
@@ -323,9 +326,9 @@ static bool download_and_flash(const char *url, const uint8_t *expected_hash,
 
   esp_http_client_config_t config = {
       .url = url,
-      .timeout_ms = 10000,
+      .timeout_ms = 15000,
       .transport_type = HTTP_TRANSPORT_OVER_SSL,
-      .cert_pem = github_root_cert,
+      .cert_pem = github_root_ca_pem_start,
       .skip_cert_common_name_check = false,
       .user_agent = "esp32-lcm",
       .disable_auto_redirect = false, // follow GitHub's 302 redirect to S3
@@ -565,41 +568,36 @@ static bool perform_update(nvs_handle_t handle, const char *repo_url,
     return false;
   }
 
+  char fw_url[1024] = {0};
   char sig_url[1024] = {0};
-  char fw_url[1024];
-  snprintf(fw_url, sizeof(fw_url),
-           "https://github.com/%s/releases/download/%s/main.bin", repo_url,
-           tag_name);
-  ESP_LOGI(TAG, "OTA: Checking for update from %s", fw_url);
   cJSON *assets = cJSON_GetObjectItem(release, "assets");
   if (cJSON_IsArray(assets)) {
     cJSON *asset = NULL;
     cJSON_ArrayForEach(asset, assets) {
       cJSON *name = cJSON_GetObjectItem(asset, "name");
-      if (cJSON_IsString(name) &&
-          strcasestr(name->valuestring, ".sig") != NULL) {
-        cJSON *download_url =
-            cJSON_GetObjectItem(asset, "browser_download_url");
-        if (download_url && cJSON_IsString(download_url) &&
-            download_url->valuestring) {
+      cJSON *download_url =
+          cJSON_GetObjectItem(asset, "browser_download_url");
+      if (cJSON_IsString(name) && cJSON_IsString(download_url) &&
+          download_url->valuestring) {
+        if (strcmp(name->valuestring, "main.bin") == 0) {
+          strlcpy(fw_url, download_url->valuestring, sizeof(fw_url));
+          ESP_LOGI(TAG, "Found firmware asset: %s", fw_url);
+        } else if (strcmp(name->valuestring, "main.bin.sig") == 0) {
           strlcpy(sig_url, download_url->valuestring, sizeof(sig_url));
-          ESP_LOGI(TAG, "Found signature asset: %s", name->valuestring);
-          ESP_LOGI(TAG, "Signature download URL: %s", sig_url);
+          ESP_LOGI(TAG, "Found signature asset: %s", sig_url);
         }
       }
     }
   }
-  if (!sig_url[0]) {
-    if (strlcpy(sig_url, fw_url, sizeof(sig_url)) >= sizeof(sig_url) ||
-        strlcat(sig_url, ".sig", sizeof(sig_url)) >= sizeof(sig_url)) {
-      ESP_LOGE(TAG, "FW URL too long for signature URL buffer");
-      cJSON_Delete(root);
-      free(json);
-      ota_in_progress = false;
-      return false;
-    }
-    ESP_LOGW(TAG, "No signature asset found; assuming %s", sig_url);
+  if (!fw_url[0] || !sig_url[0]) {
+    ESP_LOGE(TAG, "Required release assets not found");
+    cJSON_Delete(root);
+    free(json);
+    ota_in_progress = false;
+    return false;
   }
+
+  ESP_LOGI(TAG, "OTA: Checking for update from %s", fw_url);
 
   uint8_t expected_hash[48];
   uint32_t expected_size = 0;
