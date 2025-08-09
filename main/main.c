@@ -54,10 +54,13 @@ static bool s_time_ready(void) {
 
 static void sync_time(void) {
   esp_sntp_setoperatingmode(SNTP_OPMODE_POLL);
-  // In ESP-IDF 5.4+, the DHCP SNTP server configuration API no longer
-  // carries the esp_ prefix. Use the updated function to obtain the
-  // server address from the DHCP response.
-  sntp_servermode_dhcp(true);
+  // In ESP-IDF 5.4+, the DHCP SNTP server configuration API is
+  // esp_sntp_servermode_dhcp(), which is only available when
+  // LWIP_DHCP_GET_NTP_SRV is enabled. Guard the call so the code
+  // builds cleanly regardless of that configuration.
+#if LWIP_DHCP_GET_NTP_SRV
+  esp_sntp_servermode_dhcp(true);
+#endif
   esp_sntp_setservername(0, "pool.ntp.org");
   esp_sntp_init();
 
