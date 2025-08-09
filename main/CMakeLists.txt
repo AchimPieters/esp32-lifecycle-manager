@@ -28,6 +28,4 @@ idf_component_register(
         "content/index.html"
 )
 
-target_add_binary_data(${COMPONENT_TARGET} "github_root_ca.pem" TEXT)
-
 target_compile_definitions(${COMPONENT_TARGET} PRIVATE KEEP_PORTAL_DURING_OTA=0)

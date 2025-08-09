@@ -41,8 +41,6 @@
 
 static const char *TAG = "main";
 
-bool led_on = false;
-
 void led_write(bool on) { gpio_set_level(LED_GPIO, on ? 1 : 0); }
 
 static bool sntp_started = false;
@@ -69,17 +67,20 @@ static void start_time_sync(void) {
   esp_sntp_servermode_dhcp(true);
 #endif
   esp_sntp_setservername(0, "pool.ntp.org");
+  esp_sntp_setservername(1, "time.cloudflare.com");
+  esp_sntp_setservername(2, "time.google.com");
   esp_sntp_set_time_sync_notification_cb(on_time_synced);
   esp_sntp_init();
   sntp_started = true;
 
-  const int timeout_ms = 15000;
+  const int timeout_ms = 30000;
   int waited = 0;
-  while (!s_time_ready() && waited < timeout_ms) {
+  while (esp_sntp_get_sync_status() != SNTP_SYNC_STATUS_COMPLETED &&
+         waited < timeout_ms) {
     vTaskDelay(pdMS_TO_TICKS(250));
     waited += 250;
   }
-  if (!s_time_ready()) {
+  if (esp_sntp_get_sync_status() != SNTP_SYNC_STATUS_COMPLETED) {
     ESP_LOGW("TIME", "SNTP timeout; ga toch door (TLS kan falen)");
   }
 }
@@ -89,7 +90,7 @@ void gpio_init() {
   // LED setup
   gpio_reset_pin(LED_GPIO);
   gpio_set_direction(LED_GPIO, GPIO_MODE_OUTPUT);
-  led_write(led_on);
+  led_write(false);
 
   // Knop setup
   gpio_config_t io_conf = {.pin_bit_mask = 1ULL << BUTTON_GPIO,

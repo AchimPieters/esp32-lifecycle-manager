@@ -50,10 +50,6 @@
 #include "ota.h"
 #include "wifi_config.h"
 
-#ifndef KEEP_PORTAL_DURING_OTA
-#define KEEP_PORTAL_DURING_OTA 0
-#endif
-
 enum {
   STATION_MODE = 1,
   SOFTAP_MODE = 2,

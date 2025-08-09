@@ -97,6 +97,10 @@
       font-size: 1rem;
       cursor: pointer;
       transition: background 0.2s ease;
+      touch-action: manipulation;
+      -webkit-user-select: none;
+      user-select: none;
+      -webkit-tap-highlight-color: rgba(0,0,0,0);
     }
     .networks li:hover {
       background-color: #e0e0e5;
@@ -115,11 +119,6 @@
       background-image: url("data:image/svg+xml;utf8,%3Csvg%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%20width%3D%2216.66mm%22%20height%3D%2223.95mm%22%20viewBox%3D%220%200%2047.23%2067.89%22%3E%3Cpath%20d%3D%22M7.79%2C67.89c-2.54%2C0-4.47-.69-5.8-2.08C0.66%2C64.43%2C0%2C62.38%2C0%2C59.66V35.82c0-2.72%2C0.66-4.77%2C1.99-6.14%2C1.33-1.37%2C3.26-2.06%2C5.8-2.06h31.66c2.54%2C0%2C4.47%2C0.69%2C5.8%2C2.06%2C1.33%2C1.37%2C1.99%2C3.42%2C1.99%2C6.14v23.84c0%2C2.72-.66%2C4.78-1.99%2C6.16-1.33%2C1.38-3.26%2C2.08-5.8%2C2.08H7.79ZM6.06%2C30.28V19.35c0-4.34%2C0.84-7.94%2C2.51-10.8%2C1.67-2.86%2C3.85-5%2C6.52-6.42%2C2.68-1.42%2C5.51-2.13%2C8.51-2.13%2C3.02%2C0%2C5.87%2C0.71%2C8.55%2C2.13%2C2.68%2C1.42%2C4.85%2C3.56%2C6.52%2C6.42%2C1.67%2C2.86%2C2.51%2C6.46%2C2.51%2C10.8v10.93h-5.47V18.58c0-2.91-.56-5.35-1.68-7.34-1.12-1.98-2.6-3.48-4.43-4.5-1.83-1.01-3.84-1.52-6-1.52-2.15%2C0-4.13%2C0.51-5.97%2C1.52-1.83%2C1.02-3.3%2C2.51-4.41%2C4.5-1.11%2C1.98-1.66%2C4.43-1.66%2C7.34v11.7h-5.5Z%22%20fill%3D%22%23939598%22/%3E%3C/svg%3E");
       background-repeat: no-repeat;
       background-size: contain;
-    }
-    .networks li {
-      position: relative;
-      padding-left: 2.5rem;
-      /* ruimte voor icoon */
     }
     .networks li:not(.other)::before {
       content: "";
@@ -217,8 +216,10 @@
       document.querySelectorAll('ul.networks li').forEach(n => n.classList.remove('selected'));
       el.classList.add('selected');
     }
-    document.querySelectorAll('ul.networks li.unsecure').forEach(li => {
-      li.onclick = () => {
+    networks_block.addEventListener('click', (ev) => {
+      const li = ev.target.closest('li');
+      if (!li) return;
+      if (li.classList.contains('unsecure')) {
         selectNetwork(li);
         ssid_field.value = li.innerText;
         hide(ssid_block);
@@ -226,10 +227,7 @@
         disable(password_field);
         password_field.value = '';
         enable(join_button);
-      };
-    });
-    document.querySelectorAll('ul.networks li.secure').forEach(li => {
-      li.onclick = () => {
+      } else if (li.classList.contains('secure')) {
         selectNetwork(li);
         ssid_field.value = li.innerText;
         hide(ssid_block);
@@ -237,10 +235,7 @@
         show(password_block);
         disable(join_button);
         password_block.classList.add('required');
-      };
-    });
-    document.querySelectorAll('ul.networks li.other').forEach(li => {
-      li.onclick = () => {
+      } else if (li.classList.contains('other')) {
         if (li.classList.contains('selected')) return;
         selectNetwork(li);
         ssid_field.value = '';
@@ -250,7 +245,7 @@
         enable(password_field);
         disable(join_button);
         password_block.classList.remove('required');
-      };
+      }
     });
     if (document.querySelectorAll('ul.networks li').length === 1) {
       show(document.querySelector('.nonetworks'));
