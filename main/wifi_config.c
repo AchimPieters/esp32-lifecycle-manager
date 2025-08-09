@@ -64,6 +64,8 @@ static nvs_handle_t wifi_cfg_handle;
 static volatile bool sta_got_ip = false;
 static volatile bool sta_connecting = false;
 static void (*wifi_ready_cb)(void) = NULL;
+static int retry_count = 0;
+static const int max_retries = 5;
 
 static void normalize_repo_url(const char *input, char *output, size_t len) {
   if (!input || !*input) {
@@ -151,7 +153,11 @@ static void sysparam_get_string(const char *key, char **value) {
 
 static void wifi_event_handler(void *arg, esp_event_base_t event_base,
                                int32_t event_id, void *event_data) {
-  if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_CONNECTED) {
+  if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
+    ESP_LOGI("wifi_config", "WIFI: STA_START");
+    retry_count = 0;
+    wifi_config_station_connect();
+  } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_CONNECTED) {
     ESP_LOGI("wifi_config", "Connected to WiFi network");
     sta_connecting = false;
   } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
@@ -161,8 +167,8 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
       if (esp_netif_get_ip_info(netif, &ip_info) == ESP_OK) {
         sta_got_ip = true;
         sta_connecting = false;
-        ESP_LOGI("wifi_config", "WiFi is fully ready! IP: " IPSTR,
-                 IP2STR(&ip_info.ip));
+        retry_count = 0;
+        ESP_LOGI("wifi_config", "WIFI: GOT_IP " IPSTR, IP2STR(&ip_info.ip));
         if (wifi_ready_cb)
           wifi_ready_cb();
       } else {
@@ -173,8 +179,18 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
     }
   } else if (event_base == WIFI_EVENT &&
              event_id == WIFI_EVENT_STA_DISCONNECTED) {
+    wifi_event_sta_disconnected_t *disc = event_data;
+    ESP_LOGI("wifi_config", "WIFI: DISCONNECTED(reason=%d)", disc->reason);
     sta_got_ip = false;
     sta_connecting = false;
+    if (retry_count < max_retries) {
+      int delay_ms = 250 << retry_count;
+      retry_count++;
+      vTaskDelay(pdMS_TO_TICKS(delay_ms));
+      wifi_config_station_connect();
+    } else {
+      ESP_LOGE("wifi_config", "WiFi: giving up after %d retries", retry_count);
+    }
   }
 }
 
@@ -573,8 +589,8 @@ static void wifi_config_server_on_settings_update(client_t *client) {
   form_params_free(form);
 
   vTaskDelay(500 / portTICK_PERIOD_MS);
-
-  wifi_config_station_connect();
+  retry_count = 0;
+  esp_wifi_disconnect();
 }
 
 static int wifi_config_server_on_url(http_parser *parser, const char *data,
@@ -1003,9 +1019,6 @@ static void wifi_config_monitor_callback(TimerHandle_t xTimer) {
 
     return;
   } else {
-    if (wifi_config_has_configuration())
-      wifi_config_station_connect();
-
     if (sdk_wifi_get_opmode() != STATION_MODE)
       return;
 
@@ -1037,6 +1050,13 @@ static int wifi_config_has_configuration() {
 }
 
 static int wifi_config_station_connect() {
+  // Prevent duplicate connect attempts while one is in-flight.
+  if (sta_connecting) {
+    ESP_LOGW("wifi_config",
+             "Connect already in progress; skipping esp_wifi_connect()");
+    return 0;
+  }
+
   char *wifi_ssid = NULL;
   char *wifi_password = NULL;
   sysparam_get_string("wifi_ssid", &wifi_ssid);
@@ -1060,9 +1080,15 @@ static int wifi_config_station_connect() {
   ESP_LOGI("wifi_config", "WiFi: Applying config for SSID %s", wifi_ssid);
   ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &sta_config));
 
-  ESP_LOGI("wifi_config", "WiFi: Connecting to SSID %s", wifi_ssid);
+  ESP_LOGI("wifi_config", "WIFI: CONNECTING(ssid=%s)", wifi_ssid);
   sta_connecting = true;
-  ESP_ERROR_CHECK(esp_wifi_connect());
+  esp_err_t __err = esp_wifi_connect();
+  if (__err == ESP_ERR_WIFI_CONN) {
+    // Already connecting — not an error; wait for events.
+    ESP_LOGW("wifi_config", "esp_wifi_connect(): already connecting; ignoring");
+    __err = ESP_OK;
+  }
+  ESP_ERROR_CHECK(__err);
   safe_set_auto_connect(true);
 
   free(wifi_ssid);
@@ -1078,7 +1104,6 @@ void wifi_config_start() {
   context->first_time = true;
 
   wifi_config_softap_start();
-  wifi_config_station_connect();
 
   if (!context->network_monitor_timer) {
     context->network_monitor_timer =
