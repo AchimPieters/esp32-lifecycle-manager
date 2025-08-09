@@ -37,6 +37,7 @@
 #include <esp_idf_version.h>
 #include <esp_log.h>
 #include <esp_netif.h>
+#include <esp_netif_ip_addr.h>
 #include <esp_system.h>
 #include <esp_timer.h>
 #include <esp_wifi.h>
@@ -48,6 +49,10 @@
 #include "form_urlencoded.h"
 #include "ota.h"
 #include "wifi_config.h"
+
+#ifndef KEEP_PORTAL_DURING_OTA
+#define KEEP_PORTAL_DURING_OTA 0
+#endif
 
 enum {
   STATION_MODE = 1,
@@ -152,10 +157,21 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
   if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_CONNECTED) {
     ESP_LOGI("wifi_config", "Connected to WiFi network");
   } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
-    sta_got_ip = true;
-    ESP_LOGI("wifi_config", "WiFi is fully ready!");
-    if (wifi_ready_cb)
-      wifi_ready_cb();
+    esp_netif_t *netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+    if (netif) {
+      esp_netif_ip_info_t ip_info;
+      if (esp_netif_get_ip_info(netif, &ip_info) == ESP_OK) {
+        sta_got_ip = true;
+        ESP_LOGI("wifi_config", "WiFi is fully ready! IP: " IPSTR,
+                 IP2STR(&ip_info.ip));
+        if (wifi_ready_cb)
+          wifi_ready_cb();
+      } else {
+        ESP_LOGW("wifi_config", "Failed to get IP info");
+      }
+    } else {
+      ESP_LOGW("wifi_config", "STA netif handle is NULL");
+    }
   } else if (event_base == WIFI_EVENT &&
              event_id == WIFI_EVENT_STA_DISCONNECTED) {
     sta_got_ip = false;
@@ -452,6 +468,14 @@ static void wifi_config_server_on_settings(client_t *client) {
   client_send_chunk(client, "");
 }
 
+static void http_400(client_t *client, const char *msg) {
+  char buffer[256];
+  int len = snprintf(buffer, sizeof(buffer),
+                     "HTTP/1.1 400 Bad Request\r\nContent-Type: text/plain\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s",
+                     (int)strlen(msg), msg);
+  client_send(client, buffer, len);
+}
+
 static void wifi_config_server_on_settings_update(client_t *client) {
   DEBUG("Update settings, body = %s", client->body);
 
@@ -471,6 +495,26 @@ static void wifi_config_server_on_settings_update(client_t *client) {
     DEBUG("Invalid form data, redirecting to /settings");
     form_params_free(form);
     client_send_redirect(client, 302, "/settings");
+    return;
+  }
+
+  size_t ssid_len = strlen(ssid_param->value);
+  size_t password_len = password_param ? strlen(password_param->value) : 0;
+  size_t repo_len = repo_param ? strlen(repo_param->value) : 0;
+
+  if (ssid_len == 0 || ssid_len > 32) {
+    http_400(client, "Invalid SSID");
+    form_params_free(form);
+    return;
+  }
+  if ((password_len > 0 && password_len < 8) || password_len > 64) {
+    http_400(client, "Invalid password length");
+    form_params_free(form);
+    return;
+  }
+  if (!repo_param || repo_len == 0 || repo_len > 120) {
+    http_400(client, "Invalid repo URL");
+    form_params_free(form);
     return;
   }
 
@@ -750,8 +794,10 @@ static void http_task(void *arg) {
 }
 
 static void http_start() {
-  xTaskCreate(http_task, "wifi_config HTTP", 8192, NULL, 2,
-              &context->http_task_handle);
+  if (xTaskCreate(http_task, "wifi_config HTTP", 8192, NULL, 2,
+                  &context->http_task_handle) != pdPASS) {
+    ESP_LOGE("wifi_config", "Failed to create HTTP task");
+  }
 }
 
 static void http_stop() {
@@ -847,8 +893,10 @@ static void dns_task(void *arg) {
 }
 
 static void dns_start() {
-  xTaskCreate(dns_task, "wifi_config DNS", 4096, NULL, 2,
-              &context->dns_task_handle);
+  if (xTaskCreate(dns_task, "wifi_config DNS", 4096, NULL, 2,
+                  &context->dns_task_handle) != pdPASS) {
+    ESP_LOGE("wifi_config", "Failed to create DNS task");
+  }
 }
 
 static void dns_stop() {
@@ -892,7 +940,10 @@ static void wifi_config_softap_start() {
   wifi_networks_mutex = xSemaphoreCreateBinary();
   xSemaphoreGive(wifi_networks_mutex);
 
-  xTaskCreate(wifi_scan_task, "wifi_config scan", 4096, NULL, 2, NULL);
+  if (xTaskCreate(wifi_scan_task, "wifi_config scan", 4096, NULL, 2, NULL) !=
+      pdPASS) {
+    ESP_LOGE("wifi_config", "Failed to create WiFi scan task");
+  }
 
   dns_start();
   http_start();
@@ -913,8 +964,10 @@ static void wifi_config_monitor_callback(TimerHandle_t xTimer) {
     INFO("Connected to WiFi network");
 
     if (ota_in_progress) {
-      INFO("OTA in progress; keeping captive portal active");
-      return;
+      if (KEEP_PORTAL_DURING_OTA) {
+        INFO("OTA in progress; keeping captive portal active");
+        return;
+      }
     }
 
     wifi_config_softap_stop();

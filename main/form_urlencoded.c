@@ -54,6 +54,8 @@ char *url_unescape(const char *buffer, size_t size) {
         }
 
         char *result = malloc(len+1);
+        if (!result)
+                return NULL;
         i = j = 0;
         while (i < size) {
                 if (buffer[i] == '+') {
@@ -76,6 +78,11 @@ char *url_unescape(const char *buffer, size_t size) {
 
 
 form_param_t *form_params_parse(const char *s) {
+        if (!s)
+                return NULL;
+        if (strlen(s) > 4096)
+                return NULL;
+
         form_param_t *params = NULL;
 
         int i = 0;
@@ -88,10 +95,19 @@ form_param_t *form_params_parse(const char *s) {
                 }
 
                 form_param_t *param = malloc(sizeof(form_param_t));
+                if (!param) {
+                        form_params_free(params);
+                        return NULL;
+                }
                 param->name = url_unescape(s+pos, i-pos);
                 param->value = NULL;
                 param->next = params;
                 params = param;
+
+                if (!param->name) {
+                        form_params_free(params);
+                        return NULL;
+                }
 
                 if (s[i] == '=') {
                         i++;
@@ -99,6 +115,10 @@ form_param_t *form_params_parse(const char *s) {
                         while (s[i] && s[i] != '&') i++;
                         if (i != pos) {
                                 param->value = url_unescape(s+pos, i-pos);
+                                if (!param->value) {
+                                        form_params_free(params);
+                                        return NULL;
+                                }
                         }
                 }
 
