@@ -67,6 +67,11 @@ static void (*wifi_ready_cb)(void) = NULL;
 static int retry_count = 0;
 static const int max_retries = 5;
 
+static int wifi_config_has_configuration(void);
+static int wifi_config_station_connect(void);
+static void wifi_config_softap_start(void);
+static void wifi_config_softap_stop(void);
+
 static void normalize_repo_url(const char *input, char *output, size_t len) {
   if (!input || !*input) {
     if (len)
@@ -275,11 +280,6 @@ typedef struct _client {
 
   struct _client *next;
 } client_t;
-
-static int wifi_config_has_configuration();
-static int wifi_config_station_connect();
-static void wifi_config_softap_start();
-static void wifi_config_softap_stop();
 
 static client_t *client_new() {
   client_t *client = malloc(sizeof(client_t));
