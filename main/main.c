@@ -53,10 +53,10 @@ static bool s_time_ready(void) {
 }
 
 static void sync_time(void) {
-  sntp_setoperatingmode(SNTP_OPMODE_POLL);
-  sntp_servermode_dhcp(1);
-  sntp_setservername(0, "pool.ntp.org");
-  sntp_init();
+  esp_sntp_setoperatingmode(SNTP_OPMODE_POLL);
+  esp_sntp_servermode_dhcp(1);
+  esp_sntp_setservername(0, "pool.ntp.org");
+  esp_sntp_init();
 
   const int timeout_ms = 15000;
   int waited = 0;
