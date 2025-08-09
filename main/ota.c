@@ -232,8 +232,10 @@ static char *http_get(const char *url, const char *auth, const char *etag,
   int content_length = esp_http_client_fetch_headers(client);
   if (out_status)
     *out_status = esp_http_client_get_status_code(client);
-  const char *resp_etag = esp_http_client_get_header(client, "ETag");
-  const char *resp_last_mod = esp_http_client_get_header(client, "Last-Modified");
+  char *resp_etag = NULL;
+  esp_http_client_get_header(client, "ETag", &resp_etag);
+  char *resp_last_mod = NULL;
+  esp_http_client_get_header(client, "Last-Modified", &resp_last_mod);
   if (out_etag && resp_etag)
     *out_etag = strdup(resp_etag);
   if (out_last_modified && resp_last_mod)
