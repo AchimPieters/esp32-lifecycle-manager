@@ -27,6 +27,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <stdbool.h>
 
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
@@ -64,6 +65,9 @@ static nvs_handle_t wifi_cfg_handle;
 static volatile bool sta_got_ip = false;
 static volatile bool sta_connecting = false;
 static void (*wifi_ready_cb)(void) = NULL;
+
+#define MAX_SCAN_ATTEMPTS 3
+static int scan_attempts = 0;
 
 static void normalize_repo_url(const char *input, char *output, size_t len) {
   if (!input || !*input) {
@@ -165,6 +169,10 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
                  IP2STR(&ip_info.ip));
         if (wifi_ready_cb)
           wifi_ready_cb();
+        ESP_LOGI("wifi_config",
+                 "Connected to WiFi. Starting OTA check...");
+        if (!ota_in_progress)
+          ota_start();
       } else {
         ESP_LOGW("wifi_config", "Failed to get IP info");
       }
@@ -264,6 +272,7 @@ static int wifi_config_has_configuration();
 static int wifi_config_station_connect();
 static void wifi_config_softap_start();
 static void wifi_config_softap_stop();
+static bool wifi_config_get_ssid(char *ssid, size_t len);
 
 static client_t *client_new() {
   client_t *client = malloc(sizeof(client_t));
@@ -959,6 +968,9 @@ static void wifi_config_softap_start() {
 
   dns_start();
   http_start();
+  ESP_LOGI("wifi_config",
+           "Captive portal active: connect to SSID '%s' and open configuration page",
+           ap_cfg.ap.ssid);
 }
 
 static void wifi_config_softap_stop() {
@@ -969,6 +981,7 @@ static void wifi_config_softap_stop() {
 
 static void wifi_config_monitor_callback(TimerHandle_t xTimer) {
   if (sdk_wifi_station_get_connect_status() == STATION_GOT_IP) {
+    scan_attempts = 0;
     if (sdk_wifi_get_opmode() == STATION_MODE && !context->first_time)
       return;
 
@@ -997,8 +1010,17 @@ static void wifi_config_monitor_callback(TimerHandle_t xTimer) {
 
     return;
   } else {
-    if (wifi_config_has_configuration())
-      wifi_config_station_connect();
+    if (wifi_config_has_configuration()) {
+      if (scan_attempts < MAX_SCAN_ATTEMPTS) {
+        wifi_config_station_connect();
+        scan_attempts++;
+      } else {
+        ESP_LOGI("wifi_config",
+                 "Max scan attempts reached — switching to AP mode");
+        wifi_config_softap_start();
+        return;
+      }
+    }
 
     if (sdk_wifi_get_opmode() != STATION_MODE)
       return;
@@ -1028,6 +1050,21 @@ static int wifi_config_has_configuration() {
   free(wifi_ssid);
 
   return 1;
+}
+
+static bool wifi_config_get_ssid(char *ssid, size_t len) {
+  char *wifi_ssid = NULL;
+  sysparam_get_string("wifi_ssid", &wifi_ssid);
+
+  if (!wifi_ssid || strlen(wifi_ssid) == 0) {
+    if (wifi_ssid)
+      free(wifi_ssid);
+    return false;
+  }
+
+  strlcpy(ssid, wifi_ssid, len);
+  free(wifi_ssid);
+  return true;
 }
 
 static int wifi_config_station_connect() {
@@ -1070,9 +1107,20 @@ void wifi_config_start() {
   wifi_config_init_wifi();
 
   context->first_time = true;
+  char ssid[33];
+  if (!wifi_config_get_ssid(ssid, sizeof(ssid))) {
+    ESP_LOGI("wifi_config",
+             "No WiFi credentials found — starting AP + Captive Portal");
+    wifi_config_softap_start();
+    return;
+  }
 
+  ESP_LOGI("wifi_config",
+           "WiFi credentials found — attempting connection to SSID: %s",
+           ssid);
   wifi_config_softap_start();
   wifi_config_station_connect();
+  scan_attempts = 1;
 
   if (!context->network_monitor_timer) {
     context->network_monitor_timer =
