@@ -30,6 +30,7 @@
 #include <freertos/task.h>
 #include <nvs_flash.h>
 #include <stdio.h>
+#include <sys/time.h>
 #include <time.h>
 #include <wifi_config.h>
 
@@ -44,6 +45,12 @@ bool led_on = false;
 
 void led_write(bool on) { gpio_set_level(LED_GPIO, on ? 1 : 0); }
 
+static bool sntp_started = false;
+
+static void on_time_synced(struct timeval *tv) {
+  ESP_LOGI("TIME", "Systeemtijd gesynchroniseerd");
+}
+
 static bool s_time_ready(void) {
   time_t now = 0;
   struct tm tm_info = {0};
@@ -52,7 +59,10 @@ static bool s_time_ready(void) {
   return (tm_info.tm_year + 1900) >= 2024;
 }
 
-static void sync_time(void) {
+static void start_time_sync(void) {
+  if (esp_sntp_enabled()) {
+    esp_sntp_stop();
+  }
   esp_sntp_setoperatingmode(SNTP_OPMODE_POLL);
   // In ESP-IDF 5.4+, the DHCP SNTP server configuration API is
   // esp_sntp_servermode_dhcp(), which is only available when
@@ -62,7 +72,9 @@ static void sync_time(void) {
   esp_sntp_servermode_dhcp(true);
 #endif
   esp_sntp_setservername(0, "pool.ntp.org");
+  esp_sntp_set_time_sync_notification_cb(on_time_synced);
   esp_sntp_init();
+  sntp_started = true;
 
   const int timeout_ms = 15000;
   int waited = 0;
@@ -72,8 +84,6 @@ static void sync_time(void) {
   }
   if (!s_time_ready()) {
     ESP_LOGW("TIME", "SNTP timeout; ga toch door (TLS kan falen)");
-  } else {
-    ESP_LOGI("TIME", "Systeemtijd gesynchroniseerd");
   }
 }
 
@@ -142,9 +152,11 @@ void button_task(void *pvParameter) {
   }
 }
 
-static void on_wifi_ready(void) {
+static void on_got_ip(void) {
   ESP_LOGI("MAIN", "WiFi connected, synchronizing time…");
-  sync_time();
+  if (!sntp_started) {
+    start_time_sync();
+  }
   ESP_LOGI("MAIN", "Starting OTA task…");
   ota_start();
 }
@@ -168,6 +180,6 @@ void app_main(void) {
     ESP_LOGE(TAG, "Failed to create button task");
   }
   ESP_LOGI(TAG, "Initializing WiFi config");
-  wifi_config_init("LCM", NULL, on_wifi_ready);
+  wifi_config_init("LCM", NULL, on_got_ip);
   ESP_LOGI(TAG, "WiFi config initialized");
 }
