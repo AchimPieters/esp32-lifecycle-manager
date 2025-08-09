@@ -25,7 +25,7 @@
 #include "ota.h"
 #include <driver/gpio.h>
 #include <esp_log.h>
-#include <esp_sntp.h>
+#include "apps/esp_sntp.h"
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <nvs_flash.h>
@@ -60,9 +60,6 @@ static bool s_time_ready(void) {
 }
 
 static void start_time_sync(void) {
-  if (esp_sntp_enabled()) {
-    esp_sntp_stop();
-  }
   esp_sntp_setoperatingmode(SNTP_OPMODE_POLL);
   // In ESP-IDF 5.4+, the DHCP SNTP server configuration API is
   // esp_sntp_servermode_dhcp(), which is only available when
@@ -154,6 +151,8 @@ void button_task(void *pvParameter) {
 
 static void on_got_ip(void) {
   ESP_LOGI("MAIN", "WiFi connected, synchronizing time…");
+  if (esp_sntp_enabled())
+    esp_sntp_stop();
   if (!sntp_started) {
     start_time_sync();
   }
