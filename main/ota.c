@@ -2,7 +2,6 @@
 #include "version.h"
 #include <cJSON.h>
 #include <ctype.h>
-#include <driver/ledc.h>
 #include <esp_http_client.h>
 #include <esp_idf_version.h>
 #include <esp_log.h>
@@ -38,17 +37,7 @@
 
 static const char *TAG = "ota";
 
-extern void led_write(bool on);
-
 volatile bool ota_in_progress = false;
-
-#define LEDC_TIMER LEDC_TIMER_0
-#define LEDC_MODE LEDC_LOW_SPEED_MODE
-#define LEDC_CHANNEL LEDC_CHANNEL_0
-#define LEDC_DUTY_RES LEDC_TIMER_8_BIT
-#define LEDC_FREQUENCY 5000
-
-static TaskHandle_t led_task_handle = NULL;
 static TaskHandle_t ota_task_handle = NULL;
 
 static esp_err_t http_open_with_retry(esp_http_client_handle_t client) {
@@ -63,64 +52,6 @@ static esp_err_t http_open_with_retry(esp_http_client_handle_t client) {
   return ESP_FAIL;
 }
 
-static void led_fade_task(void *pv) {
-  int duty = 0;
-  int step = 5;
-  int direction = 1;
-  while (1) {
-    ledc_set_duty(LEDC_MODE, LEDC_CHANNEL, duty);
-    ledc_update_duty(LEDC_MODE, LEDC_CHANNEL);
-    duty += step * direction;
-    if (duty >= 255) {
-      duty = 255;
-      direction = -1;
-    } else if (duty <= 0) {
-      duty = 0;
-      direction = 1;
-    }
-    vTaskDelay(pdMS_TO_TICKS(20));
-  }
-}
-
-static void ota_led_start(void) {
-  if (led_task_handle)
-    return;
-
-  ledc_timer_config_t timer = {
-      .speed_mode = LEDC_MODE,
-      .timer_num = LEDC_TIMER,
-      .duty_resolution = LEDC_DUTY_RES,
-      .freq_hz = LEDC_FREQUENCY,
-      .clk_cfg = LEDC_AUTO_CLK,
-  };
-  ledc_timer_config(&timer);
-
-  ledc_channel_config_t channel = {
-      .speed_mode = LEDC_MODE,
-      .channel = LEDC_CHANNEL,
-      .timer_sel = LEDC_TIMER,
-      .intr_type = LEDC_INTR_DISABLE,
-      .gpio_num = CONFIG_ESP_LED_GPIO,
-      .duty = 0,
-      .hpoint = 0,
-  };
-  ledc_channel_config(&channel);
-
-  if (xTaskCreate(led_fade_task, "ota_led", 1024, NULL, 1,
-                  &led_task_handle) != pdPASS) {
-    ESP_LOGE(TAG, "Failed to create LED fade task");
-    led_task_handle = NULL;
-  }
-}
-
-static void ota_led_stop(void) {
-  if (led_task_handle) {
-    vTaskDelete(led_task_handle);
-    led_task_handle = NULL;
-  }
-  ledc_stop(LEDC_MODE, LEDC_CHANNEL, 0);
-  led_write(false);
-}
 
 static char *nvs_get_string(nvs_handle_t handle, const char *key) {
   ESP_LOGD(TAG, "Reading NVS key '%s'", key);
@@ -281,202 +212,108 @@ static char *http_get(const char *url, const char *auth, const char *etag,
 static bool download_sig(const char *url, const char *auth, uint8_t *out_hash,
                          uint32_t *out_size) {
   ESP_LOGI(TAG, "Downloading signature");
-  char current_url[1024];
-  strlcpy(current_url, url, sizeof(current_url));
-
-  for (int redirect = 0; redirect < 5; ++redirect) {
-    esp_http_client_config_t config = {
-        .url = current_url,
-        .timeout_ms = 15000,
-        .transport_type = HTTP_TRANSPORT_OVER_SSL,
-        .crt_bundle_attach = esp_crt_bundle_attach,
-        .skip_cert_common_name_check = false,
-        .user_agent = "esp32-lcm",
-        .disable_auto_redirect = true,
-        .keep_alive_enable = true,
-    };
-    esp_http_client_handle_t client = esp_http_client_init(&config);
-    if (!client) {
-      ESP_LOGE(TAG, "Failed to init HTTP client");
-      return false;
-    }
-    esp_http_client_set_header(client, "User-Agent", "esp32-lcm");
-    esp_http_client_set_header(client, "Accept", "application/octet-stream");
-    esp_http_client_set_header(client, "X-GitHub-Api-Version", "2022-11-28");
-    if (auth && *auth) {
-      char header[160];
-      snprintf(header, sizeof(header), "Bearer %s", auth);
-      esp_http_client_set_header(client, "Authorization", header);
-    }
-    if (http_open_with_retry(client) != ESP_OK) {
-      ESP_LOGE(TAG, "Failed to open HTTP connection");
-      esp_http_client_cleanup(client);
-      return false;
-    }
-    esp_http_client_fetch_headers(client);
-    int status = esp_http_client_get_status_code(client);
-
-    if (status == 301 || status == 302 || status == 303 || status == 307 ||
-        status == 308) {
-      char *location = NULL;
-      esp_http_client_get_header(client, "Location", &location);
-      esp_http_client_close(client);
-      esp_http_client_cleanup(client);
-      if (!location) {
-        ESP_LOGE(TAG, "Redirect without Location header");
-        return false;
-      }
-      char new_url[1024];
-      if (location[0] == '/') {
-        const char *scheme_end = strstr(current_url, "://");
-        if (!scheme_end) {
-          ESP_LOGE(TAG, "Invalid URL for redirect");
-          return false;
-        }
-        const char *path_start = strchr(scheme_end + 3, '/');
-        size_t base_len = path_start ? (size_t)(path_start - current_url) :
-                                       strlen(current_url);
-        snprintf(new_url, sizeof(new_url), "%.*s%s", (int)base_len, current_url,
-                 location);
-      } else {
-        strlcpy(new_url, location, sizeof(new_url));
-      }
-      strlcpy(current_url, new_url, sizeof(current_url));
-      continue;
-    }
-
-    if (status != 200) {
-      ESP_LOGE(TAG, "HTTP status %d", status);
-      esp_http_client_close(client);
-      esp_http_client_cleanup(client);
-      return false;
-    }
-    const int sig_buf_len = 256;
-    uint8_t *sig = malloc(sig_buf_len);
-    if (!sig) {
-      ESP_LOGE(TAG, "Failed to allocate HTTP buffer");
-      esp_http_client_close(client);
-      esp_http_client_cleanup(client);
-      return false;
-    }
-    int total_read = 0;
-    while (total_read < 52) {
-      int read_len = esp_http_client_read(client, (char *)sig + total_read,
-                                          sig_buf_len - total_read);
-      if (read_len < 0) {
-        ESP_LOGE(TAG, "HTTP read failed");
-        free(sig);
-        esp_http_client_close(client);
-        esp_http_client_cleanup(client);
-        return false;
-      }
-      if (read_len == 0)
-        break;
-      total_read += read_len;
-    }
+  esp_http_client_config_t config = {
+      .url = url,
+      .timeout_ms = 15000,
+      .transport_type = HTTP_TRANSPORT_OVER_SSL,
+      .crt_bundle_attach = esp_crt_bundle_attach,
+      .skip_cert_common_name_check = false,
+      .user_agent = "esp32-lcm",
+      .disable_auto_redirect = false,
+      .keep_alive_enable = true,
+  };
+  esp_http_client_handle_t client = esp_http_client_init(&config);
+  if (!client) {
+    ESP_LOGE(TAG, "Failed to init HTTP client");
+    return false;
+  }
+  esp_http_client_set_header(client, "User-Agent", "esp32-lcm");
+  esp_http_client_set_header(client, "Accept", "application/octet-stream");
+  esp_http_client_set_header(client, "X-GitHub-Api-Version", "2022-11-28");
+  if (auth && *auth) {
+    char header[160];
+    snprintf(header, sizeof(header), "Bearer %s", auth);
+    esp_http_client_set_header(client, "Authorization", header);
+  }
+  if (http_open_with_retry(client) != ESP_OK) {
+    ESP_LOGE(TAG, "Failed to open HTTP connection");
+    esp_http_client_cleanup(client);
+    return false;
+  }
+  esp_http_client_fetch_headers(client);
+  int status = esp_http_client_get_status_code(client);
+  if (status != 200) {
+    ESP_LOGE(TAG, "HTTP status %d", status);
     esp_http_client_close(client);
     esp_http_client_cleanup(client);
-    ESP_LOGI(TAG, "Signature file received: %d bytes", total_read);
-    if (total_read != 52) {
-      ESP_LOGE(TAG, "Signature parse failed");
-      free(sig);
+    return false;
+  }
+  uint8_t sig[52];
+  int total_read = 0;
+  while (total_read < 52) {
+    int read_len = esp_http_client_read(client, (char *)sig + total_read,
+                                        sizeof(sig) - total_read);
+    if (read_len <= 0) {
+      ESP_LOGE(TAG, "HTTP read failed");
+      esp_http_client_close(client);
+      esp_http_client_cleanup(client);
       return false;
     }
-    memcpy(out_hash, sig, 48);
-    uint32_t size = ((uint32_t)sig[48]) | ((uint32_t)sig[49] << 8) |
-                    ((uint32_t)sig[50] << 16) | ((uint32_t)sig[51] << 24);
-    *out_size = size;
-    free(sig);
-    return true;
+    total_read += read_len;
   }
-  ESP_LOGE(TAG, "Too many HTTP redirects");
-  return false;
+  esp_http_client_close(client);
+  esp_http_client_cleanup(client);
+  ESP_LOGI(TAG, "Signature file received: %d bytes", total_read);
+  if (total_read != 52) {
+    ESP_LOGE(TAG, "Signature parse failed");
+    return false;
+  }
+  memcpy(out_hash, sig, 48);
+  uint32_t size = ((uint32_t)sig[48]) | ((uint32_t)sig[49] << 8) |
+                  ((uint32_t)sig[50] << 16) | ((uint32_t)sig[51] << 24);
+  *out_size = size;
+  return true;
 }
 
 static bool download_and_flash(const char *url, const uint8_t *expected_hash,
                                uint32_t expected_size, const char *auth) {
   ESP_LOGI(TAG, "OTA: Start download of main.bin from GitHub: %s", url);
-  ota_led_start();
 
-  char current_url[1024];
-  strlcpy(current_url, url, sizeof(current_url));
-  esp_http_client_handle_t client = NULL;
-  int status = 0;
+  esp_http_client_config_t config = {
+      .url = url,
+      .timeout_ms = 15000,
+      .transport_type = HTTP_TRANSPORT_OVER_SSL,
+      .crt_bundle_attach = esp_crt_bundle_attach,
+      .skip_cert_common_name_check = false,
+      .user_agent = "esp32-lcm",
+      .disable_auto_redirect = false,
+      .keep_alive_enable = true,
+  };
 
-  for (int redirect = 0; redirect < 5; ++redirect) {
-    esp_http_client_config_t config = {
-        .url = current_url,
-        .timeout_ms = 15000,
-        .transport_type = HTTP_TRANSPORT_OVER_SSL,
-        .crt_bundle_attach = esp_crt_bundle_attach,
-        .skip_cert_common_name_check = false,
-        .user_agent = "esp32-lcm",
-        .disable_auto_redirect = true,
-        .keep_alive_enable = true,
-    };
-
-    client = esp_http_client_init(&config);
-    if (!client) {
-      ESP_LOGE(TAG, "Failed to init HTTP client");
-      ota_led_stop();
-      return false;
-    }
-    esp_http_client_set_header(client, "User-Agent", "esp32-lcm");
-    esp_http_client_set_header(client, "Accept", "application/octet-stream");
-    esp_http_client_set_header(client, "X-GitHub-Api-Version", "2022-11-28");
-    if (auth && *auth) {
-      char header[160];
-      snprintf(header, sizeof(header), "Bearer %s", auth);
-      esp_http_client_set_header(client, "Authorization", header);
-    }
-    if (http_open_with_retry(client) != ESP_OK) {
-      ESP_LOGE(TAG, "Failed to open HTTP connection");
-      esp_http_client_cleanup(client);
-      ota_led_stop();
-      return false;
-    }
-    esp_http_client_fetch_headers(client);
-    status = esp_http_client_get_status_code(client);
-    if (status == 301 || status == 302 || status == 303 || status == 307 ||
-        status == 308) {
-      char *location = NULL;
-      esp_http_client_get_header(client, "Location", &location);
-      esp_http_client_close(client);
-      esp_http_client_cleanup(client);
-      if (!location) {
-        ESP_LOGE(TAG, "Redirect without Location header");
-        ota_led_stop();
-        return false;
-      }
-      char new_url[1024];
-      if (location[0] == '/') {
-        const char *scheme_end = strstr(current_url, "://");
-        if (!scheme_end) {
-          ESP_LOGE(TAG, "Invalid URL for redirect");
-          ota_led_stop();
-          return false;
-        }
-        const char *path_start = strchr(scheme_end + 3, '/');
-        size_t base_len = path_start ? (size_t)(path_start - current_url) :
-                                       strlen(current_url);
-        snprintf(new_url, sizeof(new_url), "%.*s%s", (int)base_len, current_url,
-                 location);
-      } else {
-        strlcpy(new_url, location, sizeof(new_url));
-      }
-      strlcpy(current_url, new_url, sizeof(current_url));
-      continue;
-    }
-    break;
+  esp_http_client_handle_t client = esp_http_client_init(&config);
+  if (!client) {
+    ESP_LOGE(TAG, "Failed to init HTTP client");
+    return false;
   }
-
+  esp_http_client_set_header(client, "User-Agent", "esp32-lcm");
+  esp_http_client_set_header(client, "Accept", "application/octet-stream");
+  esp_http_client_set_header(client, "X-GitHub-Api-Version", "2022-11-28");
+  if (auth && *auth) {
+    char header[160];
+    snprintf(header, sizeof(header), "Bearer %s", auth);
+    esp_http_client_set_header(client, "Authorization", header);
+  }
+  if (http_open_with_retry(client) != ESP_OK) {
+    ESP_LOGE(TAG, "Failed to open HTTP connection");
+    esp_http_client_cleanup(client);
+    return false;
+  }
+  esp_http_client_fetch_headers(client);
+  int status = esp_http_client_get_status_code(client);
   if (status != 200) {
     ESP_LOGE(TAG, "HTTP status %d", status);
-    if (client) {
-      esp_http_client_close(client);
-      esp_http_client_cleanup(client);
-    }
-    ota_led_stop();
+    esp_http_client_close(client);
+    esp_http_client_cleanup(client);
     return false;
   }
 
@@ -486,7 +323,6 @@ static bool download_and_flash(const char *url, const uint8_t *expected_hash,
     ESP_LOGE(TAG, "OTA begin failed");
     esp_http_client_close(client);
     esp_http_client_cleanup(client);
-    ota_led_stop();
     return false;
   }
 
@@ -497,7 +333,6 @@ static bool download_and_flash(const char *url, const uint8_t *expected_hash,
     esp_ota_abort(ota_handle);
     esp_http_client_close(client);
     esp_http_client_cleanup(client);
-    ota_led_stop();
     return false;
   }
 
@@ -515,7 +350,6 @@ static bool download_and_flash(const char *url, const uint8_t *expected_hash,
       esp_ota_abort(ota_handle);
       esp_http_client_close(client);
       esp_http_client_cleanup(client);
-      ota_led_stop();
       return false;
     }
     if (read == 0)
@@ -529,7 +363,6 @@ static bool download_and_flash(const char *url, const uint8_t *expected_hash,
       esp_ota_abort(ota_handle);
       esp_http_client_close(client);
       esp_http_client_cleanup(client);
-      ota_led_stop();
       return false;
     }
   }
@@ -548,29 +381,24 @@ static bool download_and_flash(const char *url, const uint8_t *expected_hash,
     ESP_LOGE(TAG, "OTA size mismatch: expected %" PRIu32 ", got %d",
              expected_size, total);
     esp_ota_abort(ota_handle);
-    ota_led_stop();
     return false;
   }
   if (memcmp(hash, expected_hash, 48) != 0) {
     ESP_LOGE(TAG, "OTA hash mismatch");
     esp_ota_abort(ota_handle);
-    ota_led_stop();
     return false;
   }
   ESP_LOGI(TAG, "Firmware hash verified");
 
   if (esp_ota_end(ota_handle) != ESP_OK) {
     ESP_LOGE(TAG, "OTA end failed");
-    ota_led_stop();
     return false;
   }
   if (esp_ota_set_boot_partition(update_part) != ESP_OK) {
     ESP_LOGE(TAG, "Failed to set boot partition");
-    ota_led_stop();
     return false;
   }
 
-  ota_led_stop();
   ESP_LOGI(TAG, "OTA update successful");
   return true;
 }
@@ -695,36 +523,14 @@ static bool perform_update(nvs_handle_t handle, const char *repo_url,
   }
 
   const cJSON *tag = cJSON_GetObjectItem(release, "tag_name");
-  const char *tag_name = NULL;
-  char parsed_tag[64];
-  if (cJSON_IsString(tag)) {
-    tag_name = tag->valuestring;
-  } else {
-    char *tag_pos = strstr(json, "\"tag_name\":");
-    if (tag_pos) {
-      tag_pos += strlen("\"tag_name\":");
-      while (*tag_pos == ' ' || *tag_pos == '\"')
-        tag_pos++;
-      char *end = strchr(tag_pos, '\"');
-      if (end) {
-        size_t len = end - tag_pos;
-        if (len >= sizeof(parsed_tag))
-          len = sizeof(parsed_tag) - 1;
-        memcpy(parsed_tag, tag_pos, len);
-        parsed_tag[len] = '\0';
-        tag_name = parsed_tag;
-        ESP_LOGI(TAG, "OTA: Found GitHub release tag: %s", tag_name);
-      }
-    }
-  }
-  if (!tag_name) {
+  if (!cJSON_IsString(tag) || !tag->valuestring) {
     cJSON_Delete(root);
     free(json);
     ESP_LOGE(TAG, "OTA: Failed to parse version from GitHub JSON");
     ota_in_progress = false;
     return false;
   }
-
+  const char *tag_name = tag->valuestring;
   ESP_LOGI(TAG, "Latest tag %s", tag_name);
   if (strcmp(current_version, "0.0.0") == 0) {
     ESP_LOGI(TAG, "No firmware version detected – performing initial OTA...");
@@ -823,34 +629,6 @@ void ota_check_and_install(void) {
   bool prerelease = prerelease_str && strcmp(prerelease_str, "1") == 0;
   free(prerelease_str);
 
-  char *token = nvs_get_string(handle, "github_token");
-
-  (void)perform_update(handle, repo_url, prerelease, token);
-
-  free(token);
-  free(repo_url);
-  nvs_close(handle);
-}
-
-void firmware_update(void) {
-  ESP_LOGI(TAG, "Checking for new firmware...");
-  nvs_handle_t handle;
-  if (nvs_open(OTA_NAMESPACE, NVS_READWRITE, &handle) != ESP_OK) {
-    ESP_LOGE(TAG, "Failed to open NVS");
-    return;
-  }
-
-  char *repo_url = nvs_get_string(handle, "repo_url");
-  if (!repo_url) {
-    ESP_LOGW(TAG, "No repository URL set in NVS");
-    nvs_close(handle);
-    return;
-  }
-  ESP_LOGI(TAG, "Loaded OTA repository URL from NVS: %s", repo_url);
-
-  char *prerelease_str = nvs_get_string(handle, "prerelease");
-  bool prerelease = prerelease_str && strcmp(prerelease_str, "1") == 0;
-  free(prerelease_str);
   char *token = nvs_get_string(handle, "github_token");
 
   (void)perform_update(handle, repo_url, prerelease, token);
