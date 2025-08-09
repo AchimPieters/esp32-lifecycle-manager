@@ -502,7 +502,6 @@ static void wifi_config_server_on_settings_update(client_t *client) {
   form_param_t *password_param = form_params_find(form, "password");
   form_param_t *repo_param = form_params_find(form, "repo");
   form_param_t *prerelease_param = form_params_find(form, "prerelease");
-  form_param_t *token_param = form_params_find(form, "token");
 
   if (!ssid_param) {
     DEBUG("Invalid form data, redirecting to /settings");
@@ -540,8 +539,6 @@ static void wifi_config_server_on_settings_update(client_t *client) {
   DEBUG("wifi_password param updated");
   DEBUG("Setting ota.prerelease param = %s",
         prerelease_param ? prerelease_param->value : "(none)");
-  DEBUG("Setting ota.github_token param = %s",
-        token_param && token_param->value[0] ? token_param->value : "(none)");
 
   sysparam_set_string("wifi_ssid", ssid_param->value);
 
@@ -567,12 +564,6 @@ static void wifi_config_server_on_settings_update(client_t *client) {
       nvs_set_str(ota_handle, "prerelease", "1");
     } else {
       nvs_set_str(ota_handle, "prerelease", "0");
-    }
-
-    if (token_param && token_param->value[0]) {
-      nvs_set_str(ota_handle, "github_token", token_param->value);
-    } else {
-      nvs_erase_key(ota_handle, "github_token");
     }
 
     nvs_commit(ota_handle);

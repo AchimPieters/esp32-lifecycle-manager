@@ -124,7 +124,7 @@ static void normalize_repo_api(const char *input, char *output, size_t len) {
   snprintf(output, len, "https://api.github.com/repos/%s", repo_part_limited);
 }
 
-static char *http_get(const char *url, const char *auth, const char *etag,
+static char *http_get(const char *url, const char *etag,
                       const char *last_modified, char **out_etag,
                       char **out_last_modified, int *out_status) {
   ESP_LOGI(TAG, "HTTP GET: %s", url);
@@ -146,15 +146,6 @@ static char *http_get(const char *url, const char *auth, const char *etag,
   esp_http_client_set_header(client, "User-Agent", "esp32-lifecycle-manager");
   esp_http_client_set_header(client, "Accept", "application/vnd.github+json");
   esp_http_client_set_header(client, "X-GitHub-Api-Version", "2022-11-28");
-  if (auth && *auth) {
-    char header[160];
-    if (auth[0] == 'B') {
-      esp_http_client_set_header(client, "Authorization", auth);
-    } else {
-      snprintf(header, sizeof(header), "Bearer %s", auth);
-      esp_http_client_set_header(client, "Authorization", header);
-    }
-  }
   if (etag && *etag)
     esp_http_client_set_header(client, "If-None-Match", etag);
   if (last_modified && *last_modified)
@@ -222,7 +213,7 @@ static char *http_get(const char *url, const char *auth, const char *etag,
   return buffer;
 }
 
-static bool download_sig(const char *url, const char *auth, uint8_t *out_hash,
+static bool download_sig(const char *url, uint8_t *out_hash,
                          uint32_t *out_size) {
   ESP_LOGI(TAG, "Downloading signature");
   esp_http_client_config_t config = {
@@ -243,15 +234,6 @@ static bool download_sig(const char *url, const char *auth, uint8_t *out_hash,
   esp_http_client_set_header(client, "User-Agent", "esp32-lifecycle-manager");
   esp_http_client_set_header(client, "Accept", "application/octet-stream");
   esp_http_client_set_header(client, "X-GitHub-Api-Version", "2022-11-28");
-  if (auth && *auth) {
-    char header[160];
-    if (auth[0] == 'B') {
-      esp_http_client_set_header(client, "Authorization", auth);
-    } else {
-      snprintf(header, sizeof(header), "Bearer %s", auth);
-      esp_http_client_set_header(client, "Authorization", header);
-    }
-  }
   if (http_open_with_retry(client) != ESP_OK) {
     ESP_LOGE(TAG, "Failed to open HTTP connection");
     esp_http_client_cleanup(client);
@@ -301,7 +283,7 @@ static bool download_sig(const char *url, const char *auth, uint8_t *out_hash,
 }
 
 static bool download_and_flash(const char *url, const uint8_t *expected_hash,
-                               uint32_t expected_size, const char *auth) {
+                               uint32_t expected_size) {
   ESP_LOGI(TAG, "OTA: Start download of main.bin from GitHub: %s", url);
 
   esp_http_client_config_t config = {
@@ -323,15 +305,6 @@ static bool download_and_flash(const char *url, const uint8_t *expected_hash,
   esp_http_client_set_header(client, "User-Agent", "esp32-lifecycle-manager");
   esp_http_client_set_header(client, "Accept", "application/octet-stream");
   esp_http_client_set_header(client, "X-GitHub-Api-Version", "2022-11-28");
-  if (auth && *auth) {
-    char header[160];
-    if (auth[0] == 'B') {
-      esp_http_client_set_header(client, "Authorization", auth);
-    } else {
-      snprintf(header, sizeof(header), "Bearer %s", auth);
-      esp_http_client_set_header(client, "Authorization", header);
-    }
-  }
   if (http_open_with_retry(client) != ESP_OK) {
     ESP_LOGE(TAG, "Failed to open HTTP connection");
     esp_http_client_cleanup(client);
@@ -469,7 +442,7 @@ static bool is_version_newer(const char *current, const char *latest) {
 }
 
 static bool perform_update(nvs_handle_t handle, const char *repo_url,
-                           bool prerelease, const char *auth) {
+                           bool prerelease) {
   ESP_LOGI(TAG, "Checking repository %s (prerelease=%d)", repo_url, prerelease);
   esp_log_level_set("HTTP_CLIENT", ESP_LOG_WARN);
   ota_in_progress = true;
@@ -503,7 +476,7 @@ static bool perform_update(nvs_handle_t handle, const char *repo_url,
   char *new_last_mod = NULL;
   int status = 0;
   char *json =
-      http_get(api_url, auth, etag, last_mod, &new_etag, &new_last_mod, &status);
+      http_get(api_url, etag, last_mod, &new_etag, &new_last_mod, &status);
   free(etag);
   free(last_mod);
   if (status == 304) {
@@ -612,14 +585,14 @@ static bool perform_update(nvs_handle_t handle, const char *repo_url,
 
   uint8_t expected_hash[48];
   uint32_t expected_size = 0;
-  if (!download_sig(sig_url, auth, expected_hash, &expected_size)) {
+  if (!download_sig(sig_url, expected_hash, &expected_size)) {
     ESP_LOGE(TAG, "Failed to download signature");
     cJSON_Delete(root);
     free(json);
     ota_in_progress = false;
     return false;
   }
-  if (download_and_flash(fw_url, expected_hash, expected_size, auth)) {
+  if (download_and_flash(fw_url, expected_hash, expected_size)) {
     char cleaned_tag[64];
     sanitize_version_str(tag_name, cleaned_tag, sizeof(cleaned_tag));
     nvs_handle_t nvs;
@@ -666,11 +639,8 @@ void ota_check_and_install(void) {
   bool prerelease = prerelease_str && strcmp(prerelease_str, "1") == 0;
   free(prerelease_str);
 
-  char *token = nvs_get_string(handle, "github_token");
+  (void)perform_update(handle, repo_url, prerelease);
 
-  (void)perform_update(handle, repo_url, prerelease, token);
-
-  free(token);
   free(repo_url);
   nvs_close(handle);
 }
