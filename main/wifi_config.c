@@ -502,6 +502,7 @@ static void wifi_config_server_on_settings_update(client_t *client) {
   form_param_t *password_param = form_params_find(form, "password");
   form_param_t *repo_param = form_params_find(form, "repo");
   form_param_t *prerelease_param = form_params_find(form, "prerelease");
+  form_param_t *token_param = form_params_find(form, "token");
 
   if (!ssid_param) {
     DEBUG("Invalid form data, redirecting to /settings");
@@ -539,6 +540,8 @@ static void wifi_config_server_on_settings_update(client_t *client) {
   DEBUG("wifi_password param updated");
   DEBUG("Setting ota.prerelease param = %s",
         prerelease_param ? prerelease_param->value : "(none)");
+  DEBUG("Setting ota.github_token param = %s",
+        token_param && token_param->value[0] ? token_param->value : "(none)");
 
   sysparam_set_string("wifi_ssid", ssid_param->value);
 
@@ -564,6 +567,12 @@ static void wifi_config_server_on_settings_update(client_t *client) {
       nvs_set_str(ota_handle, "prerelease", "1");
     } else {
       nvs_set_str(ota_handle, "prerelease", "0");
+    }
+
+    if (token_param && token_param->value[0]) {
+      nvs_set_str(ota_handle, "github_token", token_param->value);
+    } else {
+      nvs_erase_key(ota_handle, "github_token");
     }
 
     nvs_commit(ota_handle);
@@ -606,7 +615,16 @@ static int wifi_config_server_on_url(http_parser *parser, const char *data,
 static int wifi_config_server_on_body(http_parser *parser, const char *data,
                                       size_t length) {
   client_t *client = parser->data;
-  client->body = realloc(client->body, client->body_length + length + 1);
+  void *tmp =
+      realloc(client->body, client->body_length + length + 1);
+  if (!tmp) {
+    ESP_LOGE("wifi_config", "Out of memory while accumulating body");
+    free(client->body);
+    client->body = NULL;
+    client->body_length = 0;
+    return -1;
+  }
+  client->body = (char *)tmp;
   memcpy(client->body + client->body_length, data, length);
   client->body_length += length;
   client->body[client->body_length] = 0;
@@ -660,7 +678,7 @@ static void http_task(void *arg) {
 
   struct sockaddr_in serv_addr;
   int listenfd = socket(AF_INET, SOCK_STREAM, 0);
-  memset(&serv_addr, '0', sizeof(serv_addr));
+  memset(&serv_addr, 0, sizeof(serv_addr));
   serv_addr.sin_family = AF_INET;
   serv_addr.sin_addr.s_addr = htonl(INADDR_ANY);
   serv_addr.sin_port = htons(WIFI_CONFIG_SERVER_PORT);
@@ -685,6 +703,7 @@ static void http_task(void *arg) {
   fd_set fds;
   int max_fd = listenfd;
 
+  FD_ZERO(&fds);
   FD_SET(listenfd, &fds);
 
   char data[64];
@@ -827,8 +846,7 @@ static void dns_task(void *arg) {
 
   struct sockaddr_in serv_addr;
   int fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-
-  memset(&serv_addr, '0', sizeof(serv_addr));
+  memset(&serv_addr, 0, sizeof(serv_addr));
   serv_addr.sin_family = AF_INET;
   serv_addr.sin_addr.s_addr = htonl(INADDR_ANY);
   serv_addr.sin_port = htons(53);
@@ -836,9 +854,6 @@ static void dns_task(void *arg) {
 
   const struct timeval timeout = {2, 0}; /* 2 second timeout */
   setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
-
-  const struct ifreq ifreq1 = {"en1"};
-  setsockopt(fd, SOL_SOCKET, SO_BINDTODEVICE, &ifreq1, sizeof(ifreq1));
 
   for (;;) {
     char buffer[96];

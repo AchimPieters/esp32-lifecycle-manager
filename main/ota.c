@@ -134,7 +134,7 @@ static char *http_get(const char *url, const char *auth, const char *etag,
       .transport_type = HTTP_TRANSPORT_OVER_SSL,
       .crt_bundle_attach = esp_crt_bundle_attach,
       .skip_cert_common_name_check = false,
-      .user_agent = "esp32-lcm",
+      .user_agent = "esp32-lifecycle-manager",
       .disable_auto_redirect = false, // follow GitHub's 302 redirect to S3
       .keep_alive_enable = true,
   };
@@ -143,13 +143,17 @@ static char *http_get(const char *url, const char *auth, const char *etag,
     ESP_LOGE(TAG, "Failed to init HTTP client");
     return NULL;
   }
-  esp_http_client_set_header(client, "User-Agent", "esp32-lcm");
+  esp_http_client_set_header(client, "User-Agent", "esp32-lifecycle-manager");
   esp_http_client_set_header(client, "Accept", "application/vnd.github+json");
   esp_http_client_set_header(client, "X-GitHub-Api-Version", "2022-11-28");
   if (auth && *auth) {
     char header[160];
-    snprintf(header, sizeof(header), "Bearer %s", auth);
-    esp_http_client_set_header(client, "Authorization", header);
+    if (auth[0] == 'B') {
+      esp_http_client_set_header(client, "Authorization", auth);
+    } else {
+      snprintf(header, sizeof(header), "Bearer %s", auth);
+      esp_http_client_set_header(client, "Authorization", header);
+    }
   }
   if (etag && *etag)
     esp_http_client_set_header(client, "If-None-Match", etag);
@@ -162,8 +166,17 @@ static char *http_get(const char *url, const char *auth, const char *etag,
   }
 
   int content_length = esp_http_client_fetch_headers(client);
+  int status_code = esp_http_client_get_status_code(client);
   if (out_status)
-    *out_status = esp_http_client_get_status_code(client);
+    *out_status = status_code;
+  if (status_code == 401 || status_code == 403 || status_code == 429) {
+    char *remain = NULL;
+    char *reset = NULL;
+    esp_http_client_get_header(client, "X-RateLimit-Remaining", &remain);
+    esp_http_client_get_header(client, "X-RateLimit-Reset", &reset);
+    ESP_LOGW(TAG, "GitHub rate limit – Remaining:%s Reset:%s",
+             remain ? remain : "?", reset ? reset : "?");
+  }
   char *resp_etag = NULL;
   esp_http_client_get_header(client, "ETag", &resp_etag);
   char *resp_last_mod = NULL;
@@ -218,7 +231,7 @@ static bool download_sig(const char *url, const char *auth, uint8_t *out_hash,
       .transport_type = HTTP_TRANSPORT_OVER_SSL,
       .crt_bundle_attach = esp_crt_bundle_attach,
       .skip_cert_common_name_check = false,
-      .user_agent = "esp32-lcm",
+      .user_agent = "esp32-lifecycle-manager",
       .disable_auto_redirect = false,
       .keep_alive_enable = true,
   };
@@ -227,13 +240,17 @@ static bool download_sig(const char *url, const char *auth, uint8_t *out_hash,
     ESP_LOGE(TAG, "Failed to init HTTP client");
     return false;
   }
-  esp_http_client_set_header(client, "User-Agent", "esp32-lcm");
+  esp_http_client_set_header(client, "User-Agent", "esp32-lifecycle-manager");
   esp_http_client_set_header(client, "Accept", "application/octet-stream");
   esp_http_client_set_header(client, "X-GitHub-Api-Version", "2022-11-28");
   if (auth && *auth) {
     char header[160];
-    snprintf(header, sizeof(header), "Bearer %s", auth);
-    esp_http_client_set_header(client, "Authorization", header);
+    if (auth[0] == 'B') {
+      esp_http_client_set_header(client, "Authorization", auth);
+    } else {
+      snprintf(header, sizeof(header), "Bearer %s", auth);
+      esp_http_client_set_header(client, "Authorization", header);
+    }
   }
   if (http_open_with_retry(client) != ESP_OK) {
     ESP_LOGE(TAG, "Failed to open HTTP connection");
@@ -242,6 +259,14 @@ static bool download_sig(const char *url, const char *auth, uint8_t *out_hash,
   }
   esp_http_client_fetch_headers(client);
   int status = esp_http_client_get_status_code(client);
+  if (status == 401 || status == 403 || status == 429) {
+    char *remain = NULL;
+    char *reset = NULL;
+    esp_http_client_get_header(client, "X-RateLimit-Remaining", &remain);
+    esp_http_client_get_header(client, "X-RateLimit-Reset", &reset);
+    ESP_LOGW(TAG, "GitHub rate limit – Remaining:%s Reset:%s",
+             remain ? remain : "?", reset ? reset : "?");
+  }
   if (status != 200) {
     ESP_LOGE(TAG, "HTTP status %d", status);
     esp_http_client_close(client);
@@ -285,7 +310,7 @@ static bool download_and_flash(const char *url, const uint8_t *expected_hash,
       .transport_type = HTTP_TRANSPORT_OVER_SSL,
       .crt_bundle_attach = esp_crt_bundle_attach,
       .skip_cert_common_name_check = false,
-      .user_agent = "esp32-lcm",
+      .user_agent = "esp32-lifecycle-manager",
       .disable_auto_redirect = false,
       .keep_alive_enable = true,
   };
@@ -295,13 +320,17 @@ static bool download_and_flash(const char *url, const uint8_t *expected_hash,
     ESP_LOGE(TAG, "Failed to init HTTP client");
     return false;
   }
-  esp_http_client_set_header(client, "User-Agent", "esp32-lcm");
+  esp_http_client_set_header(client, "User-Agent", "esp32-lifecycle-manager");
   esp_http_client_set_header(client, "Accept", "application/octet-stream");
   esp_http_client_set_header(client, "X-GitHub-Api-Version", "2022-11-28");
   if (auth && *auth) {
     char header[160];
-    snprintf(header, sizeof(header), "Bearer %s", auth);
-    esp_http_client_set_header(client, "Authorization", header);
+    if (auth[0] == 'B') {
+      esp_http_client_set_header(client, "Authorization", auth);
+    } else {
+      snprintf(header, sizeof(header), "Bearer %s", auth);
+      esp_http_client_set_header(client, "Authorization", header);
+    }
   }
   if (http_open_with_retry(client) != ESP_OK) {
     ESP_LOGE(TAG, "Failed to open HTTP connection");
@@ -310,6 +339,14 @@ static bool download_and_flash(const char *url, const uint8_t *expected_hash,
   }
   esp_http_client_fetch_headers(client);
   int status = esp_http_client_get_status_code(client);
+  if (status == 401 || status == 403 || status == 429) {
+    char *remain = NULL;
+    char *reset = NULL;
+    esp_http_client_get_header(client, "X-RateLimit-Remaining", &remain);
+    esp_http_client_get_header(client, "X-RateLimit-Reset", &reset);
+    ESP_LOGW(TAG, "GitHub rate limit – Remaining:%s Reset:%s",
+             remain ? remain : "?", reset ? reset : "?");
+  }
   if (status != 200) {
     ESP_LOGE(TAG, "HTTP status %d", status);
     esp_http_client_close(client);

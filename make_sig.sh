@@ -1,5 +1,7 @@
 #!/bin/bash
-# Maak een geldige main.bin.sig (56 bytes) voor ESP32 OTA
+# Maak een geldige main.bin.sig (52 bytes) voor ESP32 OTA
+# 48 bytes: SHA-384 digest
+# 4 bytes: firmware size (uint32, little-endian)
 # Gebruik: ./make_sig.sh build/main.bin
 
 # Input controleren
