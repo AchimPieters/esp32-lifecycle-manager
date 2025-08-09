@@ -160,6 +160,8 @@ static void on_got_ip(void) {
       start_time_sync();
     }
   }
+  ESP_LOGI("MAIN", "Starting OTA task…");
+  ota_start();
 }
 
 void app_main(void) {
