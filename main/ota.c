@@ -17,6 +17,7 @@
 #include <nvs_flash.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <inttypes.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
@@ -544,8 +545,8 @@ static bool download_and_flash(const char *url, const uint8_t *expected_hash,
   free(buf);
 
   if (expected_size && total != (int)expected_size) {
-    ESP_LOGE(TAG, "OTA size mismatch: expected %u, got %d", expected_size,
-             total);
+    ESP_LOGE(TAG, "OTA size mismatch: expected %" PRIu32 ", got %d",
+             expected_size, total);
     esp_ota_abort(ota_handle);
     ota_led_stop();
     return false;
