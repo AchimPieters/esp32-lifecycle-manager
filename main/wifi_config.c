@@ -615,7 +615,7 @@ static int wifi_config_server_on_body(http_parser *parser, const char *data,
     client->body_length = 0;
     return -1;
   }
-  client->body = (char *)tmp;
+  client->body = (uint8_t *)tmp;
   memcpy(client->body + client->body_length, data, length);
   client->body_length += length;
   client->body[client->body_length] = 0;
