@@ -152,10 +152,13 @@ void button_task(void *pvParameter) {
 
 static void on_got_ip(void) {
   ESP_LOGI("MAIN", "WiFi connected, synchronizing time…");
-  if (esp_sntp_enabled())
-    esp_sntp_stop();
-  if (!sntp_started) {
-    start_time_sync();
+  if (!s_time_ready()) {
+    if (esp_sntp_enabled()) {
+      esp_sntp_stop();
+    }
+    if (!sntp_started) {
+      start_time_sync();
+    }
   }
   ESP_LOGI("MAIN", "Starting OTA task…");
   ota_start();
