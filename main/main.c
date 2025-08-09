@@ -54,7 +54,10 @@ static bool s_time_ready(void) {
 
 static void sync_time(void) {
   esp_sntp_setoperatingmode(SNTP_OPMODE_POLL);
-  esp_sntp_servermode_dhcp(1);
+  // In ESP-IDF 5.4+, the DHCP SNTP server configuration API no longer
+  // carries the esp_ prefix. Use the updated function to obtain the
+  // server address from the DHCP response.
+  sntp_servermode_dhcp(true);
   esp_sntp_setservername(0, "pool.ntp.org");
   esp_sntp_init();
 
