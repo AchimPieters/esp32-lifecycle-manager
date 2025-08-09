@@ -6,6 +6,7 @@
 #include <esp_http_client.h>
 #include <esp_idf_version.h>
 #include <esp_log.h>
+#include <esp_crt_bundle.h>
 #include <esp_ota_ops.h>
 #include <esp_partition.h>
 #include <freertos/FreeRTOS.h>
@@ -38,11 +39,6 @@ static const char *TAG = "ota";
 
 extern void led_write(bool on);
 
-extern const char github_root_ca_pem_start[]
-    asm("_binary_github_root_ca_pem_start");
-extern const char github_root_ca_pem_end[]
-    asm("_binary_github_root_ca_pem_end");
-
 volatile bool ota_in_progress = false;
 
 #define LEDC_TIMER LEDC_TIMER_0
@@ -52,6 +48,18 @@ volatile bool ota_in_progress = false;
 #define LEDC_FREQUENCY 5000
 
 static TaskHandle_t led_task_handle = NULL;
+
+static esp_err_t http_open_with_retry(esp_http_client_handle_t client) {
+  const int max_tries = 5;
+  int delay_ms = 500;
+  for (int i = 0; i < max_tries; i++) {
+    if (esp_http_client_open(client, 0) == ESP_OK)
+      return ESP_OK;
+    vTaskDelay(pdMS_TO_TICKS(delay_ms));
+    delay_ms = delay_ms * 2 > 8000 ? 8000 : delay_ms * 2;
+  }
+  return ESP_FAIL;
+}
 
 static void led_fade_task(void *pv) {
   int duty = 0;
@@ -96,7 +104,11 @@ static void ota_led_start(void) {
   };
   ledc_channel_config(&channel);
 
-  xTaskCreate(led_fade_task, "ota_led", 1024, NULL, 1, &led_task_handle);
+  if (xTaskCreate(led_fade_task, "ota_led", 1024, NULL, 1,
+                  &led_task_handle) != pdPASS) {
+    ESP_LOGE(TAG, "Failed to create LED fade task");
+    led_task_handle = NULL;
+  }
 }
 
 static void ota_led_stop(void) {
@@ -185,7 +197,7 @@ static char *http_get(const char *url, const char *auth, int *out_status) {
       .url = url,
       .timeout_ms = 15000,
       .transport_type = HTTP_TRANSPORT_OVER_SSL,
-      .cert_pem = github_root_ca_pem_start,
+      .crt_bundle_attach = esp_crt_bundle_attach,
       .skip_cert_common_name_check = false,
       .user_agent = "esp32-lcm",
       .disable_auto_redirect = false, // follow GitHub's 302 redirect to S3
@@ -196,6 +208,7 @@ static char *http_get(const char *url, const char *auth, int *out_status) {
     ESP_LOGE(TAG, "Failed to init HTTP client");
     return NULL;
   }
+  esp_http_client_set_header(client, "User-Agent", "esp32-lcm");
   esp_http_client_set_header(client, "Accept", "application/vnd.github+json");
   esp_http_client_set_header(client, "X-GitHub-Api-Version", "2022-11-28");
   if (auth && *auth) {
@@ -203,7 +216,7 @@ static char *http_get(const char *url, const char *auth, int *out_status) {
     snprintf(header, sizeof(header), "Bearer %s", auth);
     esp_http_client_set_header(client, "Authorization", header);
   }
-  if (esp_http_client_open(client, 0) != ESP_OK) {
+  if (http_open_with_retry(client) != ESP_OK) {
     ESP_LOGE(TAG, "Failed to open HTTP connection");
     esp_http_client_cleanup(client);
     return NULL;
@@ -251,7 +264,7 @@ static bool download_sig(const char *url, const char *auth, uint8_t *out_hash,
       .url = url,
       .timeout_ms = 15000,
       .transport_type = HTTP_TRANSPORT_OVER_SSL,
-      .cert_pem = github_root_ca_pem_start,
+      .crt_bundle_attach = esp_crt_bundle_attach,
       .skip_cert_common_name_check = false,
       .user_agent = "esp32-lcm",
       .disable_auto_redirect = false, // follow GitHub's 302 redirect to S3
@@ -262,6 +275,7 @@ static bool download_sig(const char *url, const char *auth, uint8_t *out_hash,
     ESP_LOGE(TAG, "Failed to init HTTP client");
     return false;
   }
+  esp_http_client_set_header(client, "User-Agent", "esp32-lcm");
   esp_http_client_set_header(client, "Accept", "application/octet-stream");
   esp_http_client_set_header(client, "X-GitHub-Api-Version", "2022-11-28");
   if (auth && *auth) {
@@ -269,7 +283,7 @@ static bool download_sig(const char *url, const char *auth, uint8_t *out_hash,
     snprintf(header, sizeof(header), "Bearer %s", auth);
     esp_http_client_set_header(client, "Authorization", header);
   }
-  if (esp_http_client_open(client, 0) != ESP_OK) {
+  if (http_open_with_retry(client) != ESP_OK) {
     ESP_LOGE(TAG, "Failed to open HTTP connection");
     esp_http_client_cleanup(client);
     return false;
@@ -330,7 +344,7 @@ static bool download_and_flash(const char *url, const uint8_t *expected_hash,
       .url = url,
       .timeout_ms = 15000,
       .transport_type = HTTP_TRANSPORT_OVER_SSL,
-      .cert_pem = github_root_ca_pem_start,
+      .crt_bundle_attach = esp_crt_bundle_attach,
       .skip_cert_common_name_check = false,
       .user_agent = "esp32-lcm",
       .disable_auto_redirect = false, // follow GitHub's 302 redirect to S3
@@ -343,6 +357,7 @@ static bool download_and_flash(const char *url, const uint8_t *expected_hash,
     ota_led_stop();
     return false;
   }
+  esp_http_client_set_header(client, "User-Agent", "esp32-lcm");
   esp_http_client_set_header(client, "Accept", "application/octet-stream");
   esp_http_client_set_header(client, "X-GitHub-Api-Version", "2022-11-28");
   if (auth && *auth) {
@@ -350,7 +365,7 @@ static bool download_and_flash(const char *url, const uint8_t *expected_hash,
     snprintf(header, sizeof(header), "Bearer %s", auth);
     esp_http_client_set_header(client, "Authorization", header);
   }
-  if (esp_http_client_open(client, 0) != ESP_OK) {
+  if (http_open_with_retry(client) != ESP_OK) {
     ESP_LOGE(TAG, "Failed to open HTTP connection");
     esp_http_client_cleanup(client);
     ota_led_stop();
@@ -501,6 +516,8 @@ static bool perform_update(nvs_handle_t handle, const char *repo_url,
                          sizeof(current_version));
     ESP_LOGI(TAG, "Stored version %s", current_version);
     free(stored_version);
+  } else {
+    ESP_LOGI(TAG, "No stored firmware version found (initial run)");
   }
 
   char api_base[512];
@@ -732,5 +749,7 @@ static void ota_task(void *pv) {
 
 void ota_start(void) {
   ESP_LOGI(TAG, "Starting OTA task");
-  xTaskCreate(ota_task, "ota_task", 8192, NULL, 5, NULL);
+  if (xTaskCreate(ota_task, "ota_task", 8192, NULL, 5, NULL) != pdPASS) {
+    ESP_LOGE(TAG, "Failed to create OTA task");
+  }
 }

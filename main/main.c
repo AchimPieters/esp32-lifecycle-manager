@@ -25,10 +25,12 @@
 #include "ota.h"
 #include <driver/gpio.h>
 #include <esp_log.h>
+#include <esp_sntp.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <nvs_flash.h>
 #include <stdio.h>
+#include <time.h>
 #include <wifi_config.h>
 
 // GPIO-definities
@@ -41,6 +43,33 @@ static const char *TAG = "main";
 bool led_on = false;
 
 void led_write(bool on) { gpio_set_level(LED_GPIO, on ? 1 : 0); }
+
+static bool s_time_ready(void) {
+  time_t now = 0;
+  struct tm tm_info = {0};
+  time(&now);
+  localtime_r(&now, &tm_info);
+  return (tm_info.tm_year + 1900) >= 2024;
+}
+
+static void sync_time(void) {
+  sntp_setoperatingmode(SNTP_OPMODE_POLL);
+  sntp_servermode_dhcp(1);
+  sntp_setservername(0, "pool.ntp.org");
+  sntp_init();
+
+  const int timeout_ms = 15000;
+  int waited = 0;
+  while (!s_time_ready() && waited < timeout_ms) {
+    vTaskDelay(pdMS_TO_TICKS(250));
+    waited += 250;
+  }
+  if (!s_time_ready()) {
+    ESP_LOGW("TIME", "SNTP timeout; ga toch door (TLS kan falen)");
+  } else {
+    ESP_LOGI("TIME", "Systeemtijd gesynchroniseerd");
+  }
+}
 
 void gpio_init() {
   ESP_LOGI(TAG, "Initializing GPIOs");
@@ -85,37 +114,33 @@ void factory_reset() {
 // Task button
 void button_task(void *pvParameter) {
   ESP_LOGI(TAG, "Button task started");
-  bool last_state = true;
+  TickType_t pressed_ts = 0;
+  bool was_pressed = false;
 
   while (1) {
-    bool current_state = gpio_get_level(BUTTON_GPIO);
-
-    if (last_state != current_state) {
-      ESP_LOGI(TAG, "Button state: %d", current_state);
+    bool current = (gpio_get_level(BUTTON_GPIO) == 0);
+    if (current && !was_pressed) {
+      was_pressed = true;
+      pressed_ts = xTaskGetTickCount();
+    } else if (!current && was_pressed) {
+      TickType_t held = xTaskGetTickCount() - pressed_ts;
+      was_pressed = false;
+      if (held >= pdMS_TO_TICKS(3000)) {
+        ESP_LOGW(TAG, "LONG PRESS -> FACTORY RESET");
+        factory_reset();
+      } else {
+        ESP_LOGI(TAG, "Short press ignored (safety)");
+      }
     }
-
-    // Detecteer overgang van HIGH naar LOW (knop ingedrukt)
-    if (last_state && !current_state) {
-      ESP_LOGW(TAG, "BUTTON PRESSED → RESETTING CONFIGURATION");
-      factory_reset();
-    }
-
-    last_state = current_state;
     vTaskDelay(pdMS_TO_TICKS(DEBOUNCE_TIME_MS));
   }
 }
 
-void ota_task(void *pvParameter) {
-  while (1) {
-    ESP_LOGI("OTA_TASK", "Checking for firmware updates...");
-    ota_start();
-    vTaskDelay(pdMS_TO_TICKS(3600000));
-  }
-}
-
 static void on_wifi_ready(void) {
-  ESP_LOGI("MAIN", "WiFi connected! Starting OTA task...");
-  xTaskCreate(ota_task, "ota_task", 8192, NULL, 5, NULL);
+  ESP_LOGI("MAIN", "WiFi connected, synchronizing time…");
+  sync_time();
+  ESP_LOGI("MAIN", "Starting OTA task…");
+  ota_start();
 }
 
 void app_main(void) {
@@ -131,7 +156,7 @@ void app_main(void) {
   ESP_LOGI(TAG, "NVS initialized");
   gpio_init();
   ESP_LOGI(TAG, "GPIO initialized");
-  if (xTaskCreate(button_task, "button_task", 2048, NULL, 10, NULL) == pdPASS) {
+  if (xTaskCreate(button_task, "button_task", 4096, NULL, 10, NULL) == pdPASS) {
     ESP_LOGI(TAG, "Button task created");
   } else {
     ESP_LOGE(TAG, "Failed to create button task");
