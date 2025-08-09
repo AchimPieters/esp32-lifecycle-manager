@@ -66,6 +66,7 @@ enum {
 
 static nvs_handle_t wifi_cfg_handle;
 static volatile bool sta_got_ip = false;
+static volatile bool sta_connecting = false;
 static void (*wifi_ready_cb)(void) = NULL;
 
 static void normalize_repo_url(const char *input, char *output, size_t len) {
@@ -156,12 +157,14 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
                                int32_t event_id, void *event_data) {
   if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_CONNECTED) {
     ESP_LOGI("wifi_config", "Connected to WiFi network");
+    sta_connecting = false;
   } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
     esp_netif_t *netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
     if (netif) {
       esp_netif_ip_info_t ip_info;
       if (esp_netif_get_ip_info(netif, &ip_info) == ESP_OK) {
         sta_got_ip = true;
+        sta_connecting = false;
         ESP_LOGI("wifi_config", "WiFi is fully ready! IP: " IPSTR,
                  IP2STR(&ip_info.ip));
         if (wifi_ready_cb)
@@ -175,6 +178,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
   } else if (event_base == WIFI_EVENT &&
              event_id == WIFI_EVENT_STA_DISCONNECTED) {
     sta_got_ip = false;
+    sta_connecting = false;
   }
 }
 
@@ -338,6 +342,12 @@ static void wifi_scan_task(void *arg) {
     if (sdk_wifi_get_opmode() != STATIONAP_MODE)
       break;
 
+    if (sta_connecting) {
+      ESP_LOGW("wifi_config", "STA is connecting, skipping scan");
+      vTaskDelay(pdMS_TO_TICKS(5000));
+      continue;
+    }
+
     /* Run blocking scan on STA interface while AP remains active. */
     wifi_scan_config_t config = {
         .ssid = NULL,
@@ -354,8 +364,14 @@ static void wifi_scan_task(void *arg) {
     };
     ESP_LOGI("wifi_config", "Scanning for networks...");
     esp_err_t scan_err = esp_wifi_scan_start(&config, true);
+    if (scan_err == ESP_ERR_WIFI_STATE) {
+      ESP_LOGW("wifi_config", "WiFi scan not allowed while STA connecting");
+      vTaskDelay(pdMS_TO_TICKS(5000));
+      continue;
+    }
     if (scan_err != ESP_OK) {
-      ESP_LOGE("wifi_config", "WiFi scan start failed: %s", esp_err_to_name(scan_err));
+      ESP_LOGE("wifi_config", "WiFi scan start failed: %s",
+               esp_err_to_name(scan_err));
       vTaskDelay(10000 / portTICK_PERIOD_MS);
       continue;
     }
@@ -1043,6 +1059,7 @@ static int wifi_config_station_connect() {
   ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &sta_config));
 
   ESP_LOGI("wifi_config", "WiFi: Connecting to SSID %s", wifi_ssid);
+  sta_connecting = true;
   ESP_ERROR_CHECK(esp_wifi_connect());
   safe_set_auto_connect(true);
 

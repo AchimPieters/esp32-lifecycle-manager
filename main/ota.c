@@ -48,6 +48,7 @@ volatile bool ota_in_progress = false;
 #define LEDC_FREQUENCY 5000
 
 static TaskHandle_t led_task_handle = NULL;
+static TaskHandle_t ota_task_handle = NULL;
 
 static esp_err_t http_open_with_retry(esp_http_client_handle_t client) {
   const int max_tries = 5;
@@ -191,7 +192,9 @@ static void normalize_repo_api(const char *input, char *output, size_t len) {
   snprintf(output, len, "https://api.github.com/repos/%s", repo_part_limited);
 }
 
-static char *http_get(const char *url, const char *auth, int *out_status) {
+static char *http_get(const char *url, const char *auth, const char *etag,
+                      const char *last_modified, char **out_etag,
+                      char **out_last_modified, int *out_status) {
   ESP_LOGI(TAG, "HTTP GET: %s", url);
   esp_http_client_config_t config = {
       .url = url,
@@ -216,6 +219,10 @@ static char *http_get(const char *url, const char *auth, int *out_status) {
     snprintf(header, sizeof(header), "Bearer %s", auth);
     esp_http_client_set_header(client, "Authorization", header);
   }
+  if (etag && *etag)
+    esp_http_client_set_header(client, "If-None-Match", etag);
+  if (last_modified && *last_modified)
+    esp_http_client_set_header(client, "If-Modified-Since", last_modified);
   if (http_open_with_retry(client) != ESP_OK) {
     ESP_LOGE(TAG, "Failed to open HTTP connection");
     esp_http_client_cleanup(client);
@@ -225,6 +232,17 @@ static char *http_get(const char *url, const char *auth, int *out_status) {
   int content_length = esp_http_client_fetch_headers(client);
   if (out_status)
     *out_status = esp_http_client_get_status_code(client);
+  const char *resp_etag = esp_http_client_get_header(client, "ETag");
+  const char *resp_last_mod = esp_http_client_get_header(client, "Last-Modified");
+  if (out_etag && resp_etag)
+    *out_etag = strdup(resp_etag);
+  if (out_last_modified && resp_last_mod)
+    *out_last_modified = strdup(resp_last_mod);
+  if (out_status && *out_status == 304) {
+    esp_http_client_close(client);
+    esp_http_client_cleanup(client);
+    return NULL;
+  }
   if (out_status && *out_status != 200) {
     ESP_LOGE(TAG, "HTTP status %d", *out_status);
     esp_http_client_close(client);
@@ -532,13 +550,38 @@ static bool perform_update(nvs_handle_t handle, const char *repo_url,
   }
   ESP_LOGI(TAG, "GitHub API URL: %s", api_url);
 
+  char *etag = nvs_get_string(handle, "etag");
+  char *last_mod = nvs_get_string(handle, "last_modified");
+  char *new_etag = NULL;
+  char *new_last_mod = NULL;
   int status = 0;
-  char *json = http_get(api_url, auth, &status);
-  if (!json) {
-    ESP_LOGE(TAG, "Failed to fetch release info (status %d)", status);
+  char *json =
+      http_get(api_url, auth, etag, last_mod, &new_etag, &new_last_mod, &status);
+  free(etag);
+  free(last_mod);
+  if (status == 304) {
+    ESP_LOGI(TAG, "Release not modified since last check");
+    free(new_etag);
+    free(new_last_mod);
     ota_in_progress = false;
     return false;
   }
+  if (!json) {
+    ESP_LOGE(TAG, "Failed to fetch release info (status %d)", status);
+    free(new_etag);
+    free(new_last_mod);
+    ota_in_progress = false;
+    return false;
+  }
+  if (new_etag) {
+    nvs_set_str(handle, "etag", new_etag);
+    free(new_etag);
+  }
+  if (new_last_mod) {
+    nvs_set_str(handle, "last_modified", new_last_mod);
+    free(new_last_mod);
+  }
+  nvs_commit(handle);
   ESP_LOGI(TAG, "OTA: Received GitHub JSON:\n%s", json);
 
   cJSON *root = cJSON_Parse(json);
@@ -741,15 +784,20 @@ static void ota_task(void *pv) {
   vTaskDelay(pdMS_TO_TICKS(3000));
   ESP_LOGI(TAG, "Checking for firmware updates");
   ota_check_and_install();
-  ESP_LOGI(TAG, "Initial OTA check complete");
-  firmware_update();
   ESP_LOGI(TAG, "OTA task finished");
+  ota_task_handle = NULL;
   vTaskDelete(NULL);
 }
 
 void ota_start(void) {
   ESP_LOGI(TAG, "Starting OTA task");
-  if (xTaskCreate(ota_task, "ota_task", 8192, NULL, 5, NULL) != pdPASS) {
+  if (ota_task_handle) {
+    ESP_LOGW(TAG, "OTA task already running");
+    return;
+  }
+  if (xTaskCreate(ota_task, "ota_task", 8192, NULL, 5, &ota_task_handle) !=
+      pdPASS) {
     ESP_LOGE(TAG, "Failed to create OTA task");
+    ota_task_handle = NULL;
   }
 }
