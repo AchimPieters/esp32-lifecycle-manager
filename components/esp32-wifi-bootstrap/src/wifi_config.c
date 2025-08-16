@@ -47,6 +47,8 @@
 #include "wifi_config.h"
 #include "form_urlencoded.h"
 
+static void ota_check_task(void *arg);
+
 enum {
         STATION_MODE = 1,
         SOFTAP_MODE = 2,
