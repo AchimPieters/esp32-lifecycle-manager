@@ -30,3 +30,7 @@ bool lcm32_drd_was_triggered(void) {
              (uint32_t)boot_counter, (uint32_t)s_window_ms, triggered ? "TRIGGERED" : "no");
     return triggered;
 }
+
+uint32_t lcm32_drd_get_count(void) {
+    return boot_counter;
+}
