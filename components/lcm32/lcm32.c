@@ -8,6 +8,7 @@
 #include "esp_netif.h"
 #include "nvs_flash.h"
 #include "nvs.h"
+#include "sdkconfig.h"
 #include "esp_wifi.h"
 #include "esp_http_client.h"
 #include "esp_ota_ops.h"
@@ -262,6 +263,25 @@ void lcm32_init(void) {
     if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         nvs_flash_erase(); nvs_flash_init();
     }
+    nvs_handle_t h;
+    uint8_t skip = 0;
+    if (nvs_open(NVS_NS, NVS_READWRITE, &h) == ESP_OK) {
+        nvs_get_u8(h, "drd_handled", &skip);
+        if (skip) { nvs_set_u8(h, "drd_handled", 0); nvs_commit(h); }
+        nvs_close(h);
+    }
+    esp_reset_reason_t rr = esp_reset_reason();
+    bool allow_drd = (rr == ESP_RST_POWERON || rr == ESP_RST_EXT);
+    if (!allow_drd || skip) {
+        ESP_LOGI(TAG, "Skipping DRD (reset reason=%d skip=%d)", rr, skip);
+        return;
+    }
+    ESP_LOGI(TAG, "DRD window %u ms", CONFIG_LCM32_DRD_WINDOW_MS);
     bool drd = lcm32_drd_was_triggered();
-    if (drd) lcm32_portal_start();
+    if (drd) {
+        if (nvs_open(NVS_NS, NVS_READWRITE, &h) == ESP_OK) {
+            nvs_set_u8(h, "drd_handled", 1); nvs_commit(h); nvs_close(h);
+        }
+        lcm32_portal_start();
+    }
 }
