@@ -4,7 +4,6 @@ idf_component_register(
         "src/wifi_config.c"
         "src/safe_auto_connect.c"
         "src/ota_stub.c"
-        "src/form_urlencoded.c"
     INCLUDE_DIRS
         "include" "content" "src"
     PRIV_REQUIRES
