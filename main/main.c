@@ -1,5 +1,7 @@
+#include <inttypes.h>
 #include "wifi_config.h"
 #include "lcm32.h"
+#include "drd.h"
 #include "esp_event.h"
 #include "esp_log.h"
 #include "esp_wifi.h"
@@ -28,7 +30,7 @@ void app_main(void) {
 
     uint32_t drd = lcm32_drd_get_count();
     if (drd >= 8) {
-        ESP_LOGW(TAG, "Erasing Wi-Fi credentials (DRD count=%u)", drd);
+        ESP_LOGW(TAG, "Erasing Wi-Fi credentials (DRD count=%" PRIu32 ")", drd);
         wifi_config_reset();
         esp_restart();
     }
