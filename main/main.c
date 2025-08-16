@@ -32,6 +32,8 @@ void app_main(void) {
     if (drd >= 8) {
         ESP_LOGW(TAG, "Erasing Wi-Fi credentials (DRD count=%" PRIu32 ")", drd);
         wifi_config_reset();
+        ESP_LOGW(TAG, "Wi-Fi creds erased; restarting in 4s to avoid DRD window");
+        vTaskDelay(pdMS_TO_TICKS(4000));
         esp_restart();
     }
 

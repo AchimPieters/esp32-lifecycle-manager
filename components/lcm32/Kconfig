@@ -1,0 +1,7 @@
+menu "LCM32 options"
+    config LCM32_DRD_WINDOW_MS
+        int "Double reset window (ms)"
+        default 3000
+        help
+            Time window in milliseconds for detecting a double reset.
+endmenu
