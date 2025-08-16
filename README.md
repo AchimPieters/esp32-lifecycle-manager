@@ -5,6 +5,8 @@ Deze bundel bevat een gepatchte versie die buildt met ESP-IDF 5.4. Belangrijkste
 - **lcm32/portal.c**: misleidende-indentation opgelost (Werror).
 - **wifi_config.c**: forward declaration `static void ota_check_task(void* arg);` toegevoegd, zodat calls compileren.
 
+LCM32 detecteert korte power-cycles om recovery-acties mogelijk te maken. Twee snelle herstarts openen de captive portal; acht of meer wissen de opgeslagen Wi-Fi-instellingen.
+
 ## Bouwen (Docker, aanbevolen)
 
 ```bash
