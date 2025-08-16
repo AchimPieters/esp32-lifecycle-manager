@@ -1,0 +1,4 @@
+version: "0.1.0"
+description: "ESP32 Lifecycle Manager for GitHub Releases with SHA-384 signature verify"
+dependencies:
+  idf: ">=5.4"
