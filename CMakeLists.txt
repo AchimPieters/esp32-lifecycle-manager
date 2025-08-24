@@ -1,3 +1,10 @@
+cmake_minimum_required(VERSION 3.16)
+
+# Include the component build system from ESP-IDF so that the
+# idf_component_register macro is available when building this
+# repository as a standalone component.
+include($ENV{IDF_PATH}/tools/cmake/component.cmake)
+
 idf_component_register(
     SRCS "src/wifi_config.c" "src/form_urlencoded.c" "src/wifi_config_util.c" "src/github_update.c"
     INCLUDE_DIRS "include" "content"
