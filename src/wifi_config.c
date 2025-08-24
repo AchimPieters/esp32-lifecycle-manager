@@ -259,8 +259,8 @@ static void client_send(client_t *client, const char *payload, size_t payload_si
 }
 static void client_send_index(client_t *client) {
         ESP_LOGI("wifi_config", "Serving captive portal response");
-        extern const uint8_t index_html_start[] asm ("_binary_index_html_start");
-        extern const uint8_t index_html_end[] asm ("_binary_index_html_end");
+        extern const uint8_t content_index_html_start[] asm ("_binary_content_index_html_start");
+        extern const uint8_t content_index_html_end[] asm ("_binary_content_index_html_end");
 
         const char *header =
                 "HTTP/1.1 200 OK\r\n"
@@ -270,7 +270,7 @@ static void client_send_index(client_t *client) {
                 "\r\n";
 
         client_send(client, header, strlen(header));
-        client_send(client, (const char *)index_html_start, index_html_end - index_html_start);
+        client_send(client, (const char *)content_index_html_start, content_index_html_end - content_index_html_start);
 }
 
 
