@@ -175,8 +175,11 @@ esp_err_t github_update_if_needed(const char *repo, bool pre_release)
         free(sig);
         free(bin);
 
-        esp_http_client_config_t ota_cfg = {
+        esp_http_client_config_t client_cfg = {
                 .url = bin_url,
+        };
+        esp_https_ota_config_t ota_cfg = {
+                .http_config = &client_cfg,
         };
         err = esp_https_ota(&ota_cfg);
         free(bin_url);
