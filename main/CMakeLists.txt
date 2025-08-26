@@ -1,0 +1,22 @@
+idf_component_register(
+    SRCS
+        "main.c"
+        "wifi_config.c"
+        "wifi_config_util.c"
+        "form_urlencoded.c"
+    INCLUDE_DIRS
+        "."
+        "include"
+        "content"
+    REQUIRES
+        freertos
+        esp_wifi
+        nvs_flash
+        driver
+        esp_event
+        esp_netif
+        esp_timer
+        http_parser
+    EMBED_TXTFILES
+        "content/index.html"
+)
