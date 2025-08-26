@@ -4,6 +4,7 @@ idf_component_register(
         "wifi_config.c"
         "wifi_config_util.c"
         "form_urlencoded.c"
+        "github_update.c"
     INCLUDE_DIRS
         "."
         "include"
@@ -17,6 +18,11 @@ idf_component_register(
         esp_netif
         esp_timer
         http_parser
-    EMBED_TXTFILES
-        "content/index.html"
+        esp_http_client
+        esp_https_ota
+        app_update
+        mbedtls
+        json
+        EMBED_TXTFILES
+            "content/index.html"
 )
