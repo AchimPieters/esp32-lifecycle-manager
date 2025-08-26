@@ -109,9 +109,9 @@ void app_main(void) {
 }
 
 static void sntp_start_and_wait(void){
-    sntp_setoperatingmode(SNTP_OPMODE_POLL);
-    sntp_setservername(0, "pool.ntp.org");
-    sntp_init();
+    esp_sntp_setoperatingmode(SNTP_OPMODE_POLL);
+    esp_sntp_setservername(0, "pool.ntp.org");
+    esp_sntp_init();
     time_t now=0; struct tm tm={0};
     for (int i=0; i<20 && tm.tm_year < (2016-1900); ++i) {
         vTaskDelay(pdMS_TO_TICKS(500));
