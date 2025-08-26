@@ -129,12 +129,11 @@ void wifi_ready(void)
 
     sntp_start_and_wait();
 
-    char repo[96]={0}, fw[256]={0}, sig[256]={0};
+    char repo[96]={0};
     bool pre=false;
-    if (!load_fw_config(repo, sizeof(repo), &pre, fw, sizeof(fw), sig, sizeof(sig))) {
+    if (!load_fw_config(repo, sizeof(repo), &pre)) {
         ESP_LOGW("app", "Geen firmware-config in NVS; configureer via web UI.");
         return;
     }
     github_update_if_needed(repo, pre);
-    // alternatively: github_update_from_urls(fw, sig);
 }

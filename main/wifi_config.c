@@ -431,8 +431,6 @@ static void wifi_config_server_on_settings_update(client_t *client) {
     form_param_t *password_param = form_params_find(form, "password");
     form_param_t *repo_param = form_params_find(form, "repo");
     form_param_t *pre_param = form_params_find(form, "use_prerelease");
-    form_param_t *fw_param = form_params_find(form, "fw_url");
-    form_param_t *sig_param = form_params_find(form, "sig_url");
 
     if (!ssid_param) {
         DEBUG("Invalid form data, redirecting to /settings");
@@ -448,8 +446,6 @@ static void wifi_config_server_on_settings_update(client_t *client) {
     DEBUG("Setting wifi_password param = %s", password_param ? password_param->value : "(none)");
     DEBUG("Setting ota.repo_url param = %s", repo_param ? repo_param->value : "(none)");
     DEBUG("Setting ota.pre param = %s", pre_param ? pre_param->value : "(none)");
-    DEBUG("Setting ota.fw_url param = %s", fw_param ? fw_param->value : "(none)");
-    DEBUG("Setting ota.sig_url param = %s", sig_param ? sig_param->value : "(none)");
 
     sysparam_set_string("wifi_ssid", ssid_param->value);
 
@@ -459,11 +455,9 @@ static void wifi_config_server_on_settings_update(client_t *client) {
         sysparam_set_string("wifi_password", "");
     }
 
-    if (repo_param || fw_param || sig_param) {
+    if (repo_param) {
         bool pre = pre_param && (strcmp(pre_param->value, "on") == 0 || strcmp(pre_param->value, "1") == 0);
-        save_fw_config(repo_param ? repo_param->value : "", pre,
-                       fw_param ? fw_param->value : "",
-                       sig_param ? sig_param->value : "");
+        save_fw_config(repo_param ? repo_param->value : "", pre);
     }
 
     form_params_free(form);

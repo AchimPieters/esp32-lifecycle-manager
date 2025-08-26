@@ -14,28 +14,24 @@
 
 static const char *TAG = "github_update";
 
-esp_err_t save_fw_config(const char *repo, bool pre, const char *fw_url, const char *sig_url) {
+esp_err_t save_fw_config(const char *repo, bool pre) {
     nvs_handle_t h;
     esp_err_t err = nvs_open("fwcfg", NVS_READWRITE, &h);
     if (err != ESP_OK) return err;
     err |= nvs_set_str(h, "repo", repo ? repo : "");
     err |= nvs_set_u8(h, "pre", pre ? 1 : 0);
-    err |= nvs_set_str(h, "fw_url", fw_url ? fw_url : "");
-    err |= nvs_set_str(h, "sig_url", sig_url ? sig_url : "");
     if (err == ESP_OK) err = nvs_commit(h);
     nvs_close(h);
     return err;
 }
 
-bool load_fw_config(char *repo, size_t repo_len, bool *pre, char *fw_url, size_t fw_len, char *sig_url, size_t sig_len) {
+bool load_fw_config(char *repo, size_t repo_len, bool *pre) {
     nvs_handle_t h;
     if (nvs_open("fwcfg", NVS_READONLY, &h) != ESP_OK) return false;
     size_t len;
     if (repo) { len = repo_len; if (nvs_get_str(h, "repo", repo, &len) != ESP_OK) { nvs_close(h); return false; } }
     uint8_t pre_u8; if (nvs_get_u8(h, "pre", &pre_u8) != ESP_OK) { nvs_close(h); return false; }
     if (pre) *pre = pre_u8 != 0;
-    if (fw_url) { len = fw_len; if (nvs_get_str(h, "fw_url", fw_url, &len) != ESP_OK) { nvs_close(h); return false; } }
-    if (sig_url) { len = sig_len; if (nvs_get_str(h, "sig_url", sig_url, &len) != ESP_OK) { nvs_close(h); return false; } }
     nvs_close(h);
     return true;
 }
