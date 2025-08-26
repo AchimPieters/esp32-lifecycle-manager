@@ -154,6 +154,23 @@
       content: "* ";
       color: red;
     }
+    .card {
+      margin-bottom: 1.5rem;
+      padding: 1rem;
+      background: #f2f2f7;
+      border-radius: 12px;
+    }
+    .checkbox {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      margin-bottom: 1rem;
+    }
+    .muted {
+      color: #999;
+      font-size: 0.9rem;
+      margin-bottom: 1rem;
+    }
   </style>
 </head>
 <body>
@@ -183,6 +200,25 @@
         <label for="password">Password:</label>
         <input type="password" id="password" name="password" />
       </div>
+      <section class="card">
+        <h3>Firmware bron (GitHub)</h3>
+
+        <label for="repo">Repo (owner/repo)</label>
+        <input id="repo" name="repo" type="text" placeholder="bv. AchimPieters/esp32-test" required />
+
+        <label class="checkbox">
+          <input id="use_prerelease" name="use_prerelease" type="checkbox" />
+          Gebruik pre-release
+        </label>
+
+        <div id="releaseStatus" class="muted">—</div>
+
+        <label for="fw_url">Firmware URL (main.bin)</label>
+        <input id="fw_url" name="fw_url" type="url" readonly />
+
+        <label for="sig_url">Signature URL (main.bin.sig)</label>
+        <input id="sig_url" name="sig_url" type="url" readonly />
+      </section>
       <input type="submit" id="join" value="Join" disabled />
     </form>
     <p style="text-align:center"><sub><sup>Copyright © 2025 | StudioPieters® | All rights reserved.</sub></sup></p>
@@ -261,6 +297,64 @@
         enableBtn ? enable(join_button) : disable(join_button);
       };
     });
+  </script>
+  <script>
+async function pickRelease(ownerRepo, allowPrerelease) {
+  const headers = {"Accept":"application/vnd.github+json"};
+  const [owner, repo] = ownerRepo.split("/");
+  if (!owner || !repo) throw new Error("Ongeldige repo (gebruik 'owner/repo').");
+
+  const latest = async () => {
+    const r = await fetch(`https://api.github.com/repos/${owner}/${repo}/releases/latest`, {headers});
+    if (r.status === 404) throw new Error("Geen releases gevonden.");
+    if (!r.ok) throw new Error(`GitHub API error: ${r.status}`);
+    return r.json();
+  };
+  const list = async () => {
+    const r = await fetch(`https://api.github.com/repos/${owner}/${repo}/releases?per_page=5`, {headers});
+    if (!r.ok) throw new Error(`GitHub API error: ${r.status}`);
+    const arr = await r.json();
+    if (!Array.isArray(arr) || arr.length === 0) throw new Error("Geen releases gevonden.");
+    if (allowPrerelease) return arr[0];
+    const stable = arr.find(x => !x.prerelease);
+    if (!stable) throw new Error("Alleen prereleases gevonden. Vink 'Gebruik pre-release' aan.");
+    return stable;
+  };
+  return allowPrerelease ? list() : latest().catch(list);
+}
+
+function findAssetUrl(release, name) {
+  const a = (release.assets || []).find(x => x.name === name);
+  return a ? a.browser_download_url : null;
+}
+
+async function updateFirmwareFields() {
+  const repo = document.getElementById("repo").value.trim();
+  const allowPre = document.getElementById("use_prerelease").checked;
+  const status = document.getElementById("releaseStatus");
+  const fwUrl = document.getElementById("fw_url");
+  const sigUrl = document.getElementById("sig_url");
+
+  fwUrl.value = ""; sigUrl.value = "";
+  if (!repo) { status.textContent = "—"; return; }
+
+  status.textContent = "Zoeken naar release…";
+  try {
+    const rel = await pickRelease(repo, allowPre);
+    const v = rel.tag_name || rel.name || "(onbekende tag)";
+    const fw = findAssetUrl(rel, "main.bin");
+    const sig = findAssetUrl(rel, "main.bin.sig");
+    if (!fw || !sig) { status.textContent = `Release ${v} gevonden, maar geen main.bin/.sig`; return; }
+    fwUrl.value = fw; sigUrl.value = sig;
+    status.textContent = `Release ${v} gekozen (${allowPre ? "pre/stable" : "stable"})`;
+  } catch (e) {
+    status.textContent = e.message || String(e);
+  }
+}
+function debounce(fn, ms){let t;return(...a)=>{clearTimeout(t);t=setTimeout(()=>fn(...a),ms)}}
+document.getElementById("repo").addEventListener("input", debounce(updateFirmwareFields, 400));
+document.getElementById("use_prerelease").addEventListener("change", updateFirmwareFields);
+document.addEventListener("DOMContentLoaded", updateFirmwareFields);
   </script>
 </body>
 </html>

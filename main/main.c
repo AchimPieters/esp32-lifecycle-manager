@@ -28,6 +28,8 @@
 #include <freertos/task.h>
 #include <driver/gpio.h>
 #include <wifi_config.h>
+#include <esp_sntp.h>
+#include "github_update.h"
 
 // GPIO-definities
 #define LED_GPIO CONFIG_ESP_LED_GPIO
@@ -35,6 +37,9 @@
 #define DEBOUNCE_TIME_MS 50
 
 static const char *TAG = "main";
+
+static void sntp_start_and_wait(void);
+void wifi_ready(void);
 
 bool led_on = false;
 
@@ -100,5 +105,36 @@ void app_main(void) {
     ESP_ERROR_CHECK(nvs_flash_init());
     gpio_init();
     xTaskCreate(button_task, "button_task", 2048, NULL, 10, NULL);
-    wifi_config_init("LCM", NULL, NULL);
+    wifi_config_init("LCM", NULL, wifi_ready);
+}
+
+static void sntp_start_and_wait(void){
+    sntp_setoperatingmode(SNTP_OPMODE_POLL);
+    sntp_setservername(0, "pool.ntp.org");
+    sntp_init();
+    time_t now=0; struct tm tm={0};
+    for (int i=0; i<20 && tm.tm_year < (2016-1900); ++i) {
+        vTaskDelay(pdMS_TO_TICKS(500));
+        time(&now); localtime_r(&now, &tm);
+    }
+}
+
+void wifi_ready(void)
+{
+    ESP_LOGI("app", "WiFi ready; starting OTA check");
+    esp_log_level_set("*", ESP_LOG_INFO);
+    esp_log_level_set("github_update", ESP_LOG_DEBUG);
+    esp_log_level_set("esp_https_ota", ESP_LOG_DEBUG);
+    esp_log_level_set("HTTP_CLIENT",   ESP_LOG_DEBUG);
+
+    sntp_start_and_wait();
+
+    char repo[96]={0}, fw[256]={0}, sig[256]={0};
+    bool pre=false;
+    if (!load_fw_config(repo, sizeof(repo), &pre, fw, sizeof(fw), sig, sizeof(sig))) {
+        ESP_LOGW("app", "Geen firmware-config in NVS; configureer via web UI.");
+        return;
+    }
+    github_update_if_needed(repo, pre);
+    // alternatively: github_update_from_urls(fw, sig);
 }
