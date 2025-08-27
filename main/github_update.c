@@ -1,16 +1,17 @@
 #include <string.h>
 #include <stdlib.h>
-#include <ctype.h>
 #include "esp_log.h"
 #include "esp_https_ota.h"
 #include "esp_http_client.h"
 #include "esp_ota_ops.h"
 #include "esp_crt_bundle.h"
 #include "mbedtls/sha256.h"
+#include "mbedtls/pk.h"
 #include "cJSON.h"
 #include "nvs.h"
 #include "nvs_flash.h"
 #include "github_update.h"
+#include "ota_pubkey.h"
 
 static const char *TAG = "github_update";
 
@@ -36,66 +37,77 @@ bool load_fw_config(char *repo, size_t repo_len, bool *pre) {
     return true;
 }
 
-static esp_err_t download_string(const char *url, char *buf, size_t buf_len) {
+static esp_err_t download_signature(const char *url, uint8_t *buf, size_t buf_len, size_t *out_len) {
     ESP_LOGD(TAG, "Initializing HTTP client for %s", url);
-    esp_http_client_config_t cfg = { .url = url, .crt_bundle_attach = esp_crt_bundle_attach };
+    esp_http_client_config_t cfg = {
+        .url = url,
+        .crt_bundle_attach = esp_crt_bundle_attach,
+        .user_agent = "esp32-ota"
+    };
     esp_http_client_handle_t client = esp_http_client_init(&cfg);
-    if (!client) { ESP_LOGE(TAG, "esp_http_client_init failed"); return ESP_FAIL; }
+    if (!client) {
+        ESP_LOGE(TAG, "esp_http_client_init failed");
+        return ESP_FAIL;
+    }
+    esp_http_client_set_header(client, "Accept", "application/octet-stream");
     ESP_LOGD(TAG, "Opening HTTP connection");
     esp_err_t err = esp_http_client_open(client, 0);
     ESP_LOGD(TAG, "esp_http_client_open -> %s", esp_err_to_name(err));
-    if (err != ESP_OK) { esp_http_client_cleanup(client); return err; }
-    int r = esp_http_client_read_response(client, buf, buf_len-1);
-    ESP_LOGD(TAG, "download_string read %d bytes", r);
-    if (r < 0) {
-        ESP_LOGE(TAG, "esp_http_client_read_response failed");
+    if (err != ESP_OK) {
+        esp_http_client_cleanup(client);
+        return err;
+    }
+    int status = esp_http_client_get_status_code(client);
+    ESP_LOGD(TAG, "HTTP status %d", status);
+    if (status != 200) {
+        ESP_LOGE(TAG, "Unexpected HTTP status %d", status);
         esp_http_client_close(client);
         esp_http_client_cleanup(client);
         return ESP_FAIL;
     }
-    buf[r] = '\0';
-    int status = esp_http_client_get_status_code(client);
-    ESP_LOGD(TAG, "HTTP status %d", status);
-    ESP_LOGV(TAG, "Received string: %s", buf);
+    const char *ctype = esp_http_client_get_content_type(client);
+    ESP_LOGD(TAG, "Content-Type: %s", ctype ? ctype : "(none)");
+    if (ctype && (strstr(ctype, "text/") || strstr(ctype, "json"))) {
+        ESP_LOGE(TAG, "Unexpected content type");
+        esp_http_client_close(client);
+        esp_http_client_cleanup(client);
+        return ESP_FAIL;
+    }
+    int r = esp_http_client_read_response(client, (char *)buf, buf_len);
+    ESP_LOGD(TAG, "download_signature read %d bytes", r);
+    if (r <= 0) {
+        ESP_LOGE(TAG, "Signature download failed");
+        esp_http_client_close(client);
+        esp_http_client_cleanup(client);
+        return ESP_FAIL;
+    }
+    *out_len = r;
     esp_http_client_close(client);
     esp_http_client_cleanup(client);
     return ESP_OK;
 }
 
-static bool parse_hex(const char *hex, uint8_t *out, size_t out_len) {
-    size_t len = strlen(hex);
-    ESP_LOGD(TAG, "Parsing hex string of length %d", len);
-    if (len < out_len*2) {
-        ESP_LOGE(TAG, "Signature too short: %d < %d", (int)len, (int)(out_len*2));
-        return false;
-    }
-    for (size_t i=0;i<out_len;i++) {
-        char c1 = tolower(hex[i*2]);
-        char c2 = tolower(hex[i*2+1]);
-        if (!isxdigit(c1) || !isxdigit(c2)) {
-            ESP_LOGE(TAG, "Invalid hex characters at position %d: %c %c", (int)(i*2), c1, c2);
-            return false;
-        }
-        out[i] = ((c1 <= '9'? c1-'0': c1-'a'+10) <<4) |
-                 (c2 <= '9'? c2-'0': c2-'a'+10);
-    }
-    ESP_LOGD(TAG, "Signature parsed successfully");
-    ESP_LOG_BUFFER_HEX_LEVEL(TAG, out, out_len, ESP_LOG_DEBUG);
-    return true;
+static int verify_sig_der(const uint8_t *hash, const uint8_t *sig_der, size_t sig_len,
+                          const unsigned char *pubkey_pem, size_t pubkey_pem_len) {
+    int ret; mbedtls_pk_context pk;
+    mbedtls_pk_init(&pk);
+    if ((ret = mbedtls_pk_parse_public_key(&pk, pubkey_pem, pubkey_pem_len)) != 0) goto out;
+    ret = mbedtls_pk_verify(&pk, MBEDTLS_MD_SHA256, hash, 0, sig_der, sig_len);
+out:
+    mbedtls_pk_free(&pk);
+    return ret;
 }
 
 esp_err_t github_update_from_urls(const char *fw_url, const char *sig_url) {
     ESP_LOGI(TAG, "Downloading signature from %s", sig_url);
-    char sig[128];
-    ESP_ERROR_CHECK(download_string(sig_url, sig, sizeof(sig)));
-    ESP_LOGI(TAG, "Raw signature string (%d chars): %s", (int)strlen(sig), sig);
-    uint8_t expected[32];
-    if (!parse_hex(sig, expected, sizeof(expected))) {
-        ESP_LOGE(TAG, "Invalid signature format");
-        return ESP_FAIL;
+    uint8_t sig[80];
+    size_t sig_len = 0;
+    esp_err_t sig_res = download_signature(sig_url, sig, sizeof(sig), &sig_len);
+    if (sig_res != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to download signature");
+        return sig_res;
     }
-    ESP_LOGD(TAG, "Expected SHA256:");
-    ESP_LOG_BUFFER_HEX_LEVEL(TAG, expected, sizeof(expected), ESP_LOG_DEBUG);
+    ESP_LOGI(TAG, "Downloaded signature (%u bytes)", (unsigned)sig_len);
 
     const esp_partition_t *update_part = esp_ota_get_next_update_partition(NULL);
     if (!update_part) {
@@ -120,13 +132,13 @@ esp_err_t github_update_from_urls(const char *fw_url, const char *sig_url) {
     uint8_t actual[32];
     esp_err_t hash_res = esp_partition_get_sha256(update_part, actual);
     ESP_LOGD(TAG, "esp_partition_get_sha256 -> %s", esp_err_to_name(hash_res));
-    ESP_LOGD(TAG, "Actual SHA256:");
+    ESP_LOGD(TAG, "Image SHA256:");
     ESP_LOG_BUFFER_HEX_LEVEL(TAG, actual, sizeof(actual), ESP_LOG_DEBUG);
-    if (memcmp(actual, expected, sizeof(actual)) != 0) {
-        ESP_LOGE(TAG, "SHA256 mismatch");
+    if (verify_sig_der(actual, sig, sig_len, ota_pubkey_pem, ota_pubkey_pem_len) != 0) {
+        ESP_LOGE(TAG, "Invalid signature");
         return ESP_FAIL;
     }
-    ESP_LOGI(TAG, "SHA256 verified, rebooting");
+    ESP_LOGI(TAG, "Signature verified, rebooting");
     esp_restart();
     return ESP_OK;
 }

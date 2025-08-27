@@ -5,6 +5,7 @@ idf_component_register(
         "wifi_config_util.c"
         "form_urlencoded.c"
         "github_update.c"
+        "ota_pubkey.c"
     INCLUDE_DIRS
         "."
         "include"
