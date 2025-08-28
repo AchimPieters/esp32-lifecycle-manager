@@ -50,41 +50,61 @@ static esp_err_t download_signature(const char *url, uint8_t *buf, size_t buf_le
         return ESP_FAIL;
     }
     esp_http_client_set_header(client, "Accept", "application/octet-stream");
-    ESP_LOGD(TAG, "Opening HTTP connection");
-    esp_err_t err = esp_http_client_open(client, 0);
-    ESP_LOGD(TAG, "esp_http_client_open -> %s", esp_err_to_name(err));
-    if (err != ESP_OK) {
-        esp_http_client_cleanup(client);
-        return err;
-    }
-    int status = esp_http_client_get_status_code(client);
-    ESP_LOGD(TAG, "HTTP status %d", status);
-    if (status != 200) {
-        ESP_LOGE(TAG, "Unexpected HTTP status %d", status);
+    esp_err_t err;
+    int redirects = 0;
+    while (redirects < 5) {
+        ESP_LOGD(TAG, "Opening HTTP connection");
+        err = esp_http_client_open(client, 0);
+        ESP_LOGD(TAG, "esp_http_client_open -> %s", esp_err_to_name(err));
+        if (err != ESP_OK) {
+            esp_http_client_cleanup(client);
+            return err;
+        }
+        int status = esp_http_client_get_status_code(client);
+        ESP_LOGD(TAG, "HTTP status %d", status);
+        if (status == 301 || status == 302 || status == 303 || status == 307 || status == 308) {
+            const char *loc = esp_http_client_get_header(client, "Location");
+            ESP_LOGD(TAG, "Redirect location: %s", loc ? loc : "(none)");
+            if (!loc) {
+                esp_http_client_close(client);
+                esp_http_client_cleanup(client);
+                return ESP_FAIL;
+            }
+            esp_http_client_set_url(client, loc);
+            esp_http_client_close(client);
+            redirects++;
+            continue;
+        }
+        if (status != 200) {
+            ESP_LOGE(TAG, "Unexpected HTTP status %d", status);
+            esp_http_client_close(client);
+            esp_http_client_cleanup(client);
+            return ESP_FAIL;
+        }
+        const char *ctype = esp_http_client_get_content_type(client);
+        ESP_LOGD(TAG, "Content-Type: %s", ctype ? ctype : "(none)");
+        if (ctype && (strstr(ctype, "text/") || strstr(ctype, "json"))) {
+            ESP_LOGE(TAG, "Unexpected content type");
+            esp_http_client_close(client);
+            esp_http_client_cleanup(client);
+            return ESP_FAIL;
+        }
+        int r = esp_http_client_read_response(client, (char *)buf, buf_len);
+        ESP_LOGD(TAG, "download_signature read %d bytes", r);
+        if (r <= 0) {
+            ESP_LOGE(TAG, "Signature download failed");
+            esp_http_client_close(client);
+            esp_http_client_cleanup(client);
+            return ESP_FAIL;
+        }
+        *out_len = r;
         esp_http_client_close(client);
         esp_http_client_cleanup(client);
-        return ESP_FAIL;
+        return ESP_OK;
     }
-    const char *ctype = esp_http_client_get_content_type(client);
-    ESP_LOGD(TAG, "Content-Type: %s", ctype ? ctype : "(none)");
-    if (ctype && (strstr(ctype, "text/") || strstr(ctype, "json"))) {
-        ESP_LOGE(TAG, "Unexpected content type");
-        esp_http_client_close(client);
-        esp_http_client_cleanup(client);
-        return ESP_FAIL;
-    }
-    int r = esp_http_client_read_response(client, (char *)buf, buf_len);
-    ESP_LOGD(TAG, "download_signature read %d bytes", r);
-    if (r <= 0) {
-        ESP_LOGE(TAG, "Signature download failed");
-        esp_http_client_close(client);
-        esp_http_client_cleanup(client);
-        return ESP_FAIL;
-    }
-    *out_len = r;
-    esp_http_client_close(client);
+    ESP_LOGE(TAG, "Too many redirects");
     esp_http_client_cleanup(client);
-    return ESP_OK;
+    return ESP_FAIL;
 }
 
 static int verify_sig_der(const uint8_t *hash, const uint8_t *sig_der, size_t sig_len,
