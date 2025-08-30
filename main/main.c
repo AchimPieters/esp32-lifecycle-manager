@@ -44,14 +44,17 @@ void wifi_ready(void);
 bool led_on = false;
 
 void led_write(bool on) {
+    ESP_LOGD(TAG, "Setting LED %s", on ? "ON" : "OFF");
     gpio_set_level(LED_GPIO, on ? 1 : 0);
 }
 
 void gpio_init() {
+    ESP_LOGD(TAG, "Initializing GPIO");
     // LED setup
     gpio_reset_pin(LED_GPIO);
     gpio_set_direction(LED_GPIO, GPIO_MODE_OUTPUT);
     led_write(led_on);
+    ESP_LOGD(TAG, "LED GPIO configured on pin %d", LED_GPIO);
 
     // Knop setup
     gpio_config_t io_conf = {
@@ -62,6 +65,7 @@ void gpio_init() {
         .intr_type = GPIO_INTR_DISABLE
     };
     gpio_config(&io_conf);
+    ESP_LOGD(TAG, "Button GPIO configured on pin %d", BUTTON_GPIO);
 }
 
 // Task factory_reset
@@ -69,17 +73,21 @@ void factory_reset_task(void *pvParameter) {
     ESP_LOGI("RESET", "Resetting WiFi Config");
     wifi_config_reset();
 
+    ESP_LOGD("RESET", "Waiting before reboot");
     vTaskDelay(pdMS_TO_TICKS(1000));
 
     ESP_LOGI("RESTART", "Restarting system");
     esp_restart();
 
+    ESP_LOGD("RESET", "factory_reset_task completed");
     vTaskDelete(NULL);
 }
 
 void factory_reset() {
     ESP_LOGI("RESET", "Resetting device configuration");
-    xTaskCreate(factory_reset_task, "factory_reset", 4096, NULL, 2, NULL);
+    if (xTaskCreate(factory_reset_task, "factory_reset", 4096, NULL, 2, NULL) != pdPASS) {
+        ESP_LOGE("RESET", "Failed to create factory_reset task");
+    }
 }
 
 // Task button
@@ -89,6 +97,7 @@ void button_task(void *pvParameter) {
 
     while (1) {
         bool current_state = gpio_get_level(BUTTON_GPIO);
+        ESP_LOGD(TAG, "Button state: %d", current_state);
 
         // Detecteer overgang van HIGH naar LOW (knop ingedrukt)
         if (last_state && !current_state) {
@@ -102,13 +111,20 @@ void button_task(void *pvParameter) {
 }
 
 void app_main(void) {
-    ESP_ERROR_CHECK(nvs_flash_init());
+    ESP_LOGI(TAG, "Application start");
+    esp_err_t err = nvs_flash_init();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "NVS init failed: %s", esp_err_to_name(err));
+    }
     gpio_init();
-    xTaskCreate(button_task, "button_task", 2048, NULL, 10, NULL);
+    if (xTaskCreate(button_task, "button_task", 2048, NULL, 10, NULL) != pdPASS) {
+        ESP_LOGE(TAG, "Failed to create button task");
+    }
     wifi_config_init("LCM", NULL, wifi_ready);
 }
 
 static void sntp_start_and_wait(void){
+    ESP_LOGD(TAG, "Starting SNTP");
     esp_sntp_setoperatingmode(SNTP_OPMODE_POLL);
     esp_sntp_setservername(0, "pool.ntp.org");
     esp_sntp_init();
@@ -116,7 +132,9 @@ static void sntp_start_and_wait(void){
     for (int i=0; i<20 && tm.tm_year < (2016-1900); ++i) {
         vTaskDelay(pdMS_TO_TICKS(500));
         time(&now); localtime_r(&now, &tm);
+        ESP_LOGD(TAG, "SNTP attempt %d, year=%d", i, tm.tm_year+1900);
     }
+    ESP_LOGD(TAG, "SNTP sync completed");
 }
 
 void wifi_ready(void)
@@ -127,7 +145,9 @@ void wifi_ready(void)
     esp_log_level_set("esp_https_ota", ESP_LOG_DEBUG);
     esp_log_level_set("HTTP_CLIENT",   ESP_LOG_DEBUG);
 
+    ESP_LOGI("app", "Starting SNTP synchronization");
     sntp_start_and_wait();
+    ESP_LOGI("app", "SNTP synchronization complete");
 
     char repo[96]={0};
     bool pre=false;
@@ -135,5 +155,8 @@ void wifi_ready(void)
         ESP_LOGW("app", "Geen firmware-config in NVS; configureer via web UI.");
         return;
     }
+    ESP_LOGI("app", "Firmware config loaded: repo=%s pre=%d", repo, pre);
+    ESP_LOGI("app", "Checking for firmware update");
     github_update_if_needed(repo, pre);
+    ESP_LOGI("app", "Firmware update check complete");
 }

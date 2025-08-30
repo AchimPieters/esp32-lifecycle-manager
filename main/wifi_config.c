@@ -110,14 +110,22 @@ static void sdk_wifi_station_connect(void) {
 }
 
 static void sdk_wifi_station_set_auto_connect(bool en) {
+        ESP_LOGD("wifi_config", "Auto-connect set to %d", en);
         safe_set_auto_connect(en);
 }
 
 static void sysparam_init(void) {
         static bool initialized = false;
         if (!initialized) {
-                nvs_flash_init();
-                nvs_open("wifi_cfg", NVS_READWRITE, &wifi_cfg_handle);
+                ESP_LOGD("wifi_config", "Initializing NVS for WiFi config");
+                esp_err_t err = nvs_flash_init();
+                if (err != ESP_OK) {
+                        ESP_LOGE("wifi_config", "nvs_flash_init failed: %s", esp_err_to_name(err));
+                }
+                err = nvs_open("wifi_cfg", NVS_READWRITE, &wifi_cfg_handle);
+                if (err != ESP_OK) {
+                        ESP_LOGE("wifi_config", "nvs_open failed: %s", esp_err_to_name(err));
+                }
                 initialized = true;
         }
 }
@@ -125,43 +133,66 @@ static void sysparam_init(void) {
 static void sysparam_set_string(const char *key, const char *value) {
         sysparam_init();
         if (!value) value = "";
-        nvs_set_str(wifi_cfg_handle, key, value);
-        nvs_commit(wifi_cfg_handle);
+        ESP_LOGD("wifi_config", "Setting NVS key %s", key);
+        esp_err_t err = nvs_set_str(wifi_cfg_handle, key, value);
+        if (err != ESP_OK) {
+                ESP_LOGE("wifi_config", "nvs_set_str failed: %s", esp_err_to_name(err));
+        }
+        err = nvs_commit(wifi_cfg_handle);
+        if (err != ESP_OK) {
+                ESP_LOGE("wifi_config", "nvs_commit failed: %s", esp_err_to_name(err));
+        }
 }
 
 static void sysparam_get_string(const char *key, char **value) {
         sysparam_init();
         size_t required = 0;
-        if (nvs_get_str(wifi_cfg_handle, key, NULL, &required) == ESP_OK && required > 0) {
+        esp_err_t err = nvs_get_str(wifi_cfg_handle, key, NULL, &required);
+        if (err == ESP_OK && required > 0) {
                 *value = malloc(required);
-                nvs_get_str(wifi_cfg_handle, key, *value, &required);
+                err = nvs_get_str(wifi_cfg_handle, key, *value, &required);
+                if (err != ESP_OK) {
+                        ESP_LOGE("wifi_config", "Failed to read key %s: %s", key, esp_err_to_name(err));
+                        free(*value);
+                        *value = NULL;
+                } else {
+                        ESP_LOGD("wifi_config", "Loaded key %s", key);
+                }
         } else {
+                ESP_LOGD("wifi_config", "Key %s not found", key);
                 *value = NULL;
         }
 }
 
 static void wifi_event_handler(void *arg, esp_event_base_t event_base,
                                int32_t event_id, void *event_data) {
+        ESP_LOGD("wifi_config", "Event: base=%s id=%ld", event_base, (long)event_id);
         if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
                 sta_got_ip = true;
+                ESP_LOGI("wifi_config", "Station got IP");
         } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
                 sta_got_ip = false;
+                ESP_LOGW("wifi_config", "Station disconnected");
         }
 }
 
 static int sdk_wifi_station_get_connect_status(void) {
-        return sta_got_ip ? STATION_GOT_IP : 0;
+        int status = sta_got_ip ? STATION_GOT_IP : 0;
+        ESP_LOGD("wifi_config", "Connect status %d", status);
+        return status;
 }
 
 static void wifi_config_init_wifi(void) {
         static bool wifi_inited = false;
         if (wifi_inited) return;
 
+        ESP_LOGD("wifi_config", "Initializing esp_netif");
         esp_netif_init();
         esp_event_loop_create_default();
         esp_netif_create_default_wifi_ap();
         esp_netif_create_default_wifi_sta();
 
+        ESP_LOGD("wifi_config", "Initializing WiFi driver");
         wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
         esp_wifi_init(&cfg);
         esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, wifi_event_handler, NULL);
@@ -170,6 +201,7 @@ static void wifi_config_init_wifi(void) {
         esp_wifi_start();
 
         wifi_inited = true;
+        ESP_LOGD("wifi_config", "WiFi initialization complete");
 }
 
 #define WIFI_CONFIG_SERVER_PORT 80
@@ -859,7 +891,9 @@ static void wifi_config_softap_stop() {
 
 
 static void wifi_config_monitor_callback(TimerHandle_t xTimer) {
-        if (sdk_wifi_station_get_connect_status() == STATION_GOT_IP) {
+        int status = sdk_wifi_station_get_connect_status();
+        DEBUG("Monitor callback fired, status=%d", status);
+        if (status == STATION_GOT_IP) {
                 if (sdk_wifi_get_opmode() == STATION_MODE && !context->first_time)
                         return;
 
@@ -869,8 +903,11 @@ static void wifi_config_monitor_callback(TimerHandle_t xTimer) {
                 wifi_config_softap_stop();
                 sdk_wifi_station_set_auto_connect(false);
 
-                if (context->on_event)
+                if (context->on_event) {
+                        DEBUG("Calling event handler: WIFI_CONFIG_CONNECTED");
                         context->on_event(WIFI_CONFIG_CONNECTED);
+                        DEBUG("Event handler returned");
+                }
 
                 context->first_time = false;
 
@@ -889,8 +926,11 @@ static void wifi_config_monitor_callback(TimerHandle_t xTimer) {
 
                 INFO("Disconnected from WiFi network");
 
-                if (!context->first_time && context->on_event)
+                if (!context->first_time && context->on_event) {
+                        DEBUG("Calling event handler: WIFI_CONFIG_DISCONNECTED");
                         context->on_event(WIFI_CONFIG_DISCONNECTED);
+                        DEBUG("Event handler returned");
+                }
 
                 // change monitoring poll interval
                 xTimerChangePeriod(
@@ -930,6 +970,8 @@ static int wifi_config_station_connect() {
         }
 
         INFO("Connecting to %s", wifi_ssid);
+        if (wifi_password)
+                DEBUG("Using password of length %d", (int)strlen(wifi_password));
 
         wifi_config_t sta_config;
         memset(&sta_config, 0, sizeof(sta_config));
@@ -938,8 +980,10 @@ static int wifi_config_station_connect() {
         if (wifi_password)
                 strncpy((char *)sta_config.sta.password, wifi_password, sizeof(sta_config.sta.password));
 
+        ESP_LOGD("wifi_config", "Applying station configuration");
         sdk_wifi_station_set_config(&sta_config);
 
+        ESP_LOGD("wifi_config", "Initiating connection");
         sdk_wifi_station_connect();
         sdk_wifi_station_set_auto_connect(true);
 
@@ -947,17 +991,21 @@ static int wifi_config_station_connect() {
         if (wifi_password)
                 free(wifi_password);
 
+        ESP_LOGD("wifi_config", "Connection initiation complete");
         return 0;
 }
 
 
 void wifi_config_start() {
+        ESP_LOGI("wifi_config", "Starting WiFi configuration");
         wifi_config_init_wifi();
         sdk_wifi_set_opmode(STATION_MODE);
 
         context->first_time = true;
 
-        if (wifi_config_station_connect()) {
+        int res = wifi_config_station_connect();
+        ESP_LOGD("wifi_config", "wifi_config_station_connect -> %d", res);
+        if (res) {
                 wifi_config_softap_start();
         }
 
@@ -968,23 +1016,34 @@ void wifi_config_start() {
                         pdTRUE,
                         NULL,
                         wifi_config_monitor_callback);
-                xTimerStart(context->network_monitor_timer, 0);
+                if (context->network_monitor_timer) {
+                        xTimerStart(context->network_monitor_timer, 0);
+                        ESP_LOGD("wifi_config", "Network monitor timer started");
+                } else {
+                        ESP_LOGE("wifi_config", "Failed to create network monitor timer");
+                }
         } else {
                 xTimerChangePeriod(
                         context->network_monitor_timer,
                         pdMS_TO_TICKS(WIFI_CONFIG_DISCONNECTED_MONITOR_INTERVAL), 0);
+                ESP_LOGD("wifi_config", "Network monitor timer period updated");
         }
 }
 
 
 void wifi_config_legacy_support_on_event(wifi_config_event_t event) {
+        DEBUG("Legacy event handler received event %d", event);
         if (event == WIFI_CONFIG_CONNECTED) {
+                INFO("WiFi connected event received");
                 if (context->on_wifi_ready) {
+                        INFO("Calling on_wifi_ready callback");
                         context->on_wifi_ready();
+                        INFO("on_wifi_ready callback finished");
                 }
         }
 #ifndef WIFI_CONFIG_NO_RESTART
         else if (event == WIFI_CONFIG_DISCONNECTED) {
+                INFO("WiFi disconnected event received");
                 esp_restart();
         }
 #endif
@@ -999,11 +1058,18 @@ void wifi_config_init(const char *ssid_prefix, const char *password, void (*on_w
         }
 
         context = malloc(sizeof(wifi_config_context_t));
+        if (!context) {
+                ERROR("Failed to allocate wifi_config_context_t");
+                return;
+        }
         memset(context, 0, sizeof(*context));
 
         context->ssid_prefix = strndup(ssid_prefix, 33-7);
-        if (password)
+        INFO("Using SSID prefix %s", context->ssid_prefix);
+        if (password) {
                 context->password = strdup(password);
+                INFO("Using WiFi password of length %d", (int)strlen(password));
+        }
 
         context->on_wifi_ready = on_wifi_ready;
         context->on_event = wifi_config_legacy_support_on_event;
@@ -1022,11 +1088,18 @@ void wifi_config_init2(const char *ssid_prefix, const char *password,
         }
 
         context = malloc(sizeof(wifi_config_context_t));
+        if (!context) {
+                ERROR("Failed to allocate wifi_config_context_t");
+                return;
+        }
         memset(context, 0, sizeof(*context));
 
         context->ssid_prefix = strndup(ssid_prefix, 33-7);
-        if (password)
+        INFO("Using SSID prefix %s", context->ssid_prefix);
+        if (password) {
                 context->password = strdup(password);
+                INFO("Using WiFi password of length %d", (int)strlen(password));
+        }
 
         context->on_event = on_event;
 
@@ -1035,21 +1108,27 @@ void wifi_config_init2(const char *ssid_prefix, const char *password,
 
 
 void wifi_config_reset() {
+        ESP_LOGI("wifi_config", "Resetting stored WiFi credentials");
         sysparam_set_string("wifi_ssid", "");
         sysparam_set_string("wifi_password", "");
 }
 
 
 void wifi_config_get(char **ssid, char **password) {
-        if (ssid)
+        if (ssid) {
                 sysparam_get_string("wifi_ssid", ssid);
+                ESP_LOGD("wifi_config", "wifi_config_get ssid=%s", *ssid ? *ssid : "(null)");
+        }
 
-        if (password)
+        if (password) {
                 sysparam_get_string("wifi_password", password);
+                ESP_LOGD("wifi_config", "wifi_config_get password length=%d", *password ? (int)strlen(*password) : 0);
+        }
 }
 
 
 void wifi_config_set(const char *ssid, const char *password) {
+        ESP_LOGI("wifi_config", "Saving WiFi credentials ssid=%s", ssid ? ssid : "(null)");
         sysparam_set_string("wifi_ssid", ssid);
         sysparam_set_string("wifi_password", password);
 }

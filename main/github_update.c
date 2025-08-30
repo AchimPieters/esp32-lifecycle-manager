@@ -16,24 +16,50 @@
 static const char *TAG = "github_update";
 
 esp_err_t save_fw_config(const char *repo, bool pre) {
+    ESP_LOGD(TAG, "Saving firmware config repo=%s pre=%d", repo ? repo : "(null)", pre);
     nvs_handle_t h;
     esp_err_t err = nvs_open("fwcfg", NVS_READWRITE, &h);
-    if (err != ESP_OK) return err;
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "nvs_open failed: %s", esp_err_to_name(err));
+        return err;
+    }
     err |= nvs_set_str(h, "repo", repo ? repo : "");
     err |= nvs_set_u8(h, "pre", pre ? 1 : 0);
-    if (err == ESP_OK) err = nvs_commit(h);
+    if (err == ESP_OK) {
+        err = nvs_commit(h);
+        ESP_LOGD(TAG, "nvs_commit -> %s", esp_err_to_name(err));
+    } else {
+        ESP_LOGE(TAG, "Failed to set fw config values: %s", esp_err_to_name(err));
+    }
     nvs_close(h);
     return err;
 }
 
 bool load_fw_config(char *repo, size_t repo_len, bool *pre) {
+    ESP_LOGD(TAG, "Loading firmware config");
     nvs_handle_t h;
-    if (nvs_open("fwcfg", NVS_READONLY, &h) != ESP_OK) return false;
+    if (nvs_open("fwcfg", NVS_READONLY, &h) != ESP_OK) {
+        ESP_LOGW(TAG, "fwcfg namespace not found");
+        return false;
+    }
     size_t len;
-    if (repo) { len = repo_len; if (nvs_get_str(h, "repo", repo, &len) != ESP_OK) { nvs_close(h); return false; } }
-    uint8_t pre_u8; if (nvs_get_u8(h, "pre", &pre_u8) != ESP_OK) { nvs_close(h); return false; }
+    if (repo) {
+        len = repo_len;
+        if (nvs_get_str(h, "repo", repo, &len) != ESP_OK) {
+            ESP_LOGW(TAG, "repo key missing");
+            nvs_close(h);
+            return false;
+        }
+    }
+    uint8_t pre_u8;
+    if (nvs_get_u8(h, "pre", &pre_u8) != ESP_OK) {
+        ESP_LOGW(TAG, "pre key missing");
+        nvs_close(h);
+        return false;
+    }
     if (pre) *pre = pre_u8 != 0;
     nvs_close(h);
+    ESP_LOGD(TAG, "Loaded firmware config repo=%s pre=%d", repo ? repo : "(null)", pre ? *pre : pre_u8);
     return true;
 }
 
