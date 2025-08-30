@@ -24,10 +24,14 @@
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
+#include "esp_log.h"
 #include "form_urlencoded.h"
+
+static const char *TAG = "form_urlencoded";
 
 
 char *url_unescape(const char *buffer, size_t size) {
+        ESP_LOGD(TAG, "Decoding URL-escaped string of size %d", (int)size);
         int len = 0;
 
         int ishex(int c) {
@@ -54,6 +58,10 @@ char *url_unescape(const char *buffer, size_t size) {
         }
 
         char *result = malloc(len+1);
+        if (!result) {
+                ESP_LOGE(TAG, "malloc failed in url_unescape");
+                return NULL;
+        }
         i = j = 0;
         while (i < size) {
                 if (buffer[i] == '+') {
@@ -71,6 +79,7 @@ char *url_unescape(const char *buffer, size_t size) {
                 }
         }
         result[j] = 0;
+        ESP_LOGD(TAG, "Decoded string: %s", result);
         return result;
 }
 
@@ -88,10 +97,16 @@ form_param_t *form_params_parse(const char *s) {
                 }
 
                 form_param_t *param = malloc(sizeof(form_param_t));
+                if (!param) {
+                        ESP_LOGE(TAG, "malloc failed in form_params_parse");
+                        form_params_free(params);
+                        return NULL;
+                }
                 param->name = url_unescape(s+pos, i-pos);
                 param->value = NULL;
                 param->next = params;
                 params = param;
+                ESP_LOGD(TAG, "Parsed param name=%s", param->name);
 
                 if (s[i] == '=') {
                         i++;
@@ -99,6 +114,7 @@ form_param_t *form_params_parse(const char *s) {
                         while (s[i] && s[i] != '&') i++;
                         if (i != pos) {
                                 param->value = url_unescape(s+pos, i-pos);
+                                ESP_LOGD(TAG, "Param %s value=%s", param->name, param->value ? param->value : "(null)");
                         }
                 }
 
@@ -112,11 +128,14 @@ form_param_t *form_params_parse(const char *s) {
 
 form_param_t *form_params_find(form_param_t *params, const char *name) {
         while (params) {
-                if (!strcmp(params->name, name))
+                if (!strcmp(params->name, name)) {
+                        ESP_LOGD(TAG, "Found param %s", name);
                         return params;
+                }
                 params = params->next;
         }
 
+        ESP_LOGD(TAG, "Param %s not found", name);
         return NULL;
 }
 
@@ -124,6 +143,7 @@ form_param_t *form_params_find(form_param_t *params, const char *name) {
 void form_params_free(form_param_t *params) {
         while (params) {
                 form_param_t *next = params->next;
+                ESP_LOGD(TAG, "Freeing param %s", params->name ? params->name : "(null)");
                 if (params->name)
                         free(params->name);
                 if (params->value)

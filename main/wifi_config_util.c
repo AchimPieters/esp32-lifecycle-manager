@@ -24,6 +24,9 @@
 #include "esp_err.h"
 #include "esp_idf_version.h"
 #include "esp_wifi.h"
+#include "esp_log.h"
+
+static const char *TAG = "wifi_config_util";
 
 // Fallback-declaratie voor IDF 5.0+ als header hem niet definieert
 #if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 0, 0)
@@ -32,8 +35,12 @@ esp_err_t esp_wifi_set_auto_connect(bool enable);
 
 esp_err_t safe_set_auto_connect(bool enable) {
 #if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 0, 0)
-        return esp_wifi_set_auto_connect(enable);
+        ESP_LOGD(TAG, "Setting auto-connect to %d", enable);
+        esp_err_t err = esp_wifi_set_auto_connect(enable);
+        ESP_LOGD(TAG, "esp_wifi_set_auto_connect -> %s", esp_err_to_name(err));
+        return err;
 #else
+        ESP_LOGD(TAG, "Auto-connect not supported, returning OK");
         return ESP_OK;
 #endif
 }
