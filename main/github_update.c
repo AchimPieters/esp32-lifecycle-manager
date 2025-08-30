@@ -60,6 +60,14 @@ static esp_err_t download_signature(const char *url, uint8_t *buf, size_t buf_le
             esp_http_client_cleanup(client);
             return err;
         }
+        int fetch = esp_http_client_fetch_headers(client);
+        ESP_LOGD(TAG, "esp_http_client_fetch_headers -> %d", fetch);
+        if (fetch < 0) {
+            ESP_LOGE(TAG, "Failed to fetch HTTP headers");
+            esp_http_client_close(client);
+            esp_http_client_cleanup(client);
+            return ESP_FAIL;
+        }
         int status = esp_http_client_get_status_code(client);
         ESP_LOGD(TAG, "HTTP status %d", status);
         if (status == 301 || status == 302 || status == 303 || status == 307 || status == 308) {
