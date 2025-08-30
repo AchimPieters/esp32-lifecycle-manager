@@ -63,7 +63,8 @@ static esp_err_t download_signature(const char *url, uint8_t *buf, size_t buf_le
         int status = esp_http_client_get_status_code(client);
         ESP_LOGD(TAG, "HTTP status %d", status);
         if (status == 301 || status == 302 || status == 303 || status == 307 || status == 308) {
-            const char *loc = esp_http_client_get_header(client, "Location");
+            char *loc = NULL;
+            esp_http_client_get_header(client, "Location", &loc);
             ESP_LOGD(TAG, "Redirect location: %s", loc ? loc : "(none)");
             if (!loc) {
                 esp_http_client_close(client);
@@ -81,7 +82,8 @@ static esp_err_t download_signature(const char *url, uint8_t *buf, size_t buf_le
             esp_http_client_cleanup(client);
             return ESP_FAIL;
         }
-        const char *ctype = esp_http_client_get_content_type(client);
+        char *ctype = NULL;
+        esp_http_client_get_header(client, "Content-Type", &ctype);
         ESP_LOGD(TAG, "Content-Type: %s", ctype ? ctype : "(none)");
         if (ctype && (strstr(ctype, "text/") || strstr(ctype, "json"))) {
             ESP_LOGE(TAG, "Unexpected content type");
