@@ -970,8 +970,9 @@ static int wifi_config_station_connect() {
         }
 
         INFO("Connecting to %s", wifi_ssid);
-        if (wifi_password)
+        if (wifi_password) {
                 DEBUG("Using password of length %d", (int)strlen(wifi_password));
+        }
 
         wifi_config_t sta_config;
         memset(&sta_config, 0, sizeof(sta_config));
