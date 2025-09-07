@@ -69,8 +69,9 @@ static esp_err_t download_signature(const char *url, uint8_t *buf, size_t buf_le
         .url = url,
         .crt_bundle_attach = esp_crt_bundle_attach,
         .user_agent = "esp32-ota",
-        // GitHub release assets use redirects with very long Location headers
-        .buffer_size = 2048,
+        // GitHub release assets use redirects with extremely long Location headers
+        // (currently >5k), so give the HTTP client a generously sized buffer.
+        .buffer_size = 8192,
     };
     esp_http_client_handle_t client = esp_http_client_init(&cfg);
     if (!client) {
@@ -83,15 +84,17 @@ static esp_err_t download_signature(const char *url, uint8_t *buf, size_t buf_le
     while (redirects < 5) {
         ESP_LOGD(TAG, "Opening HTTP connection");
         err = esp_http_client_open(client, 0);
-        ESP_LOGD(TAG, "esp_http_client_open -> %s", esp_err_to_name(err));
         if (err != ESP_OK) {
+            ESP_LOGE(TAG, "esp_http_client_open failed: %s", esp_err_to_name(err));
             esp_http_client_cleanup(client);
             return err;
         }
+        ESP_LOGD(TAG, "esp_http_client_open -> %s", esp_err_to_name(err));
         int fetch = esp_http_client_fetch_headers(client);
         ESP_LOGD(TAG, "esp_http_client_fetch_headers -> %d", fetch);
         if (fetch < 0) {
-            ESP_LOGE(TAG, "Failed to fetch HTTP headers");
+            int e = esp_http_client_get_errno(client);
+            ESP_LOGE(TAG, "esp_http_client_fetch_headers failed: errno=%d", e);
             esp_http_client_close(client);
             esp_http_client_cleanup(client);
             return ESP_FAIL;
@@ -103,6 +106,7 @@ static esp_err_t download_signature(const char *url, uint8_t *buf, size_t buf_le
             esp_http_client_get_header(client, "Location", &loc);
             ESP_LOGD(TAG, "Redirect location: %s", loc ? loc : "(none)");
             if (!loc) {
+                ESP_LOGE(TAG, "Redirect status without Location header");
                 esp_http_client_close(client);
                 esp_http_client_cleanup(client);
                 return ESP_FAIL;
@@ -122,7 +126,7 @@ static esp_err_t download_signature(const char *url, uint8_t *buf, size_t buf_le
         esp_http_client_get_header(client, "Content-Type", &ctype);
         ESP_LOGD(TAG, "Content-Type: %s", ctype ? ctype : "(none)");
         if (ctype && (strstr(ctype, "text/") || strstr(ctype, "json"))) {
-            ESP_LOGE(TAG, "Unexpected content type");
+            ESP_LOGE(TAG, "Unexpected content type: %s", ctype);
             esp_http_client_close(client);
             esp_http_client_cleanup(client);
             return ESP_FAIL;
@@ -130,7 +134,8 @@ static esp_err_t download_signature(const char *url, uint8_t *buf, size_t buf_le
         int r = esp_http_client_read_response(client, (char *)buf, buf_len);
         ESP_LOGD(TAG, "download_signature read %d bytes", r);
         if (r <= 0) {
-            ESP_LOGE(TAG, "Signature download failed");
+            int e = esp_http_client_get_errno(client);
+            ESP_LOGE(TAG, "Signature download failed: errno=%d", e);
             esp_http_client_close(client);
             esp_http_client_cleanup(client);
             return ESP_FAIL;
@@ -162,7 +167,7 @@ esp_err_t github_update_from_urls(const char *fw_url, const char *sig_url) {
     size_t sig_len = 0;
     esp_err_t sig_res = download_signature(sig_url, sig, sizeof(sig), &sig_len);
     if (sig_res != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to download signature");
+        ESP_LOGE(TAG, "Failed to download signature: %s", esp_err_to_name(sig_res));
         return sig_res;
     }
     ESP_LOGI(TAG, "Downloaded signature (%u bytes)", (unsigned)sig_len);
@@ -212,15 +217,32 @@ esp_err_t github_update_if_needed(const char *repo, bool prerelease) {
     esp_http_client_handle_t client = esp_http_client_init(&cfg);
     if (!client) { ESP_LOGE(TAG, "esp_http_client_init failed"); return ESP_FAIL; }
     esp_err_t err = esp_http_client_open(client, 0);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "esp_http_client_open failed: %s", esp_err_to_name(err));
+        esp_http_client_cleanup(client);
+        return err;
+    }
     ESP_LOGD(TAG, "esp_http_client_open -> %s", esp_err_to_name(err));
-    if (err != ESP_OK) { esp_http_client_cleanup(client); return err; }
     int len = esp_http_client_fetch_headers(client);
     ESP_LOGD(TAG, "Header length %d", len);
+    if (len < 0) {
+        ESP_LOGE(TAG, "esp_http_client_fetch_headers failed: errno=%d", esp_http_client_get_errno(client));
+        esp_http_client_close(client);
+        esp_http_client_cleanup(client);
+        return ESP_FAIL;
+    }
     char *data = malloc(len + 1);
     if (!data) { ESP_LOGE(TAG, "malloc failed"); esp_http_client_close(client); esp_http_client_cleanup(client); return ESP_ERR_NO_MEM; }
     int read = esp_http_client_read_response(client, data, len);
     int status = esp_http_client_get_status_code(client);
     ESP_LOGD(TAG, "Read %d bytes with HTTP status %d", read, status);
+    if (read <= 0) {
+        ESP_LOGE(TAG, "esp_http_client_read_response failed: errno=%d", esp_http_client_get_errno(client));
+        free(data);
+        esp_http_client_close(client);
+        esp_http_client_cleanup(client);
+        return ESP_FAIL;
+    }
     data[read] = '\0';
     esp_http_client_close(client);
     esp_http_client_cleanup(client);
@@ -257,15 +279,32 @@ esp_err_t github_update_if_needed(const char *repo, bool prerelease) {
             client = esp_http_client_init(&cfg);
             if (!client) return ESP_FAIL;
             err = esp_http_client_open(client, 0);
+            if (err != ESP_OK) {
+                ESP_LOGE(TAG, "esp_http_client_open failed: %s", esp_err_to_name(err));
+                esp_http_client_cleanup(client);
+                return err;
+            }
             ESP_LOGD(TAG, "esp_http_client_open -> %s", esp_err_to_name(err));
-            if (err != ESP_OK) { esp_http_client_cleanup(client); return err; }
             len = esp_http_client_fetch_headers(client);
             ESP_LOGD(TAG, "Header length %d", len);
+            if (len < 0) {
+                ESP_LOGE(TAG, "esp_http_client_fetch_headers failed: errno=%d", esp_http_client_get_errno(client));
+                esp_http_client_close(client);
+                esp_http_client_cleanup(client);
+                return ESP_FAIL;
+            }
             data = malloc(len + 1);
             if (!data) { ESP_LOGE(TAG, "malloc failed"); esp_http_client_close(client); esp_http_client_cleanup(client); return ESP_ERR_NO_MEM; }
             read = esp_http_client_read_response(client, data, len);
             status = esp_http_client_get_status_code(client);
             ESP_LOGD(TAG, "Read %d bytes with HTTP status %d", read, status);
+            if (read <= 0) {
+                ESP_LOGE(TAG, "esp_http_client_read_response failed: errno=%d", esp_http_client_get_errno(client));
+                free(data);
+                esp_http_client_close(client);
+                esp_http_client_cleanup(client);
+                return ESP_FAIL;
+            }
             data[read] = '\0';
             esp_http_client_close(client);
             esp_http_client_cleanup(client);

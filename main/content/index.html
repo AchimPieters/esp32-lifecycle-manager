@@ -338,7 +338,8 @@ async function updateFirmwareFields() {
     if (!fw || !sig) { status.textContent = `Release ${v} gevonden, maar geen main.bin/.sig`; return; }
     status.textContent = `Release ${v} gekozen (${allowPre ? "pre/stable" : "stable"})`;
   } catch (e) {
-    status.textContent = e.message || String(e);
+    console.warn(e);
+    status.textContent = "—";
   }
 }
 function debounce(fn, ms){let t;return(...a)=>{clearTimeout(t);t=setTimeout(()=>fn(...a),ms)}}
