@@ -83,8 +83,10 @@ static esp_err_t download_signature(const char *url, uint8_t *buf, size_t buf_le
     esp_err_t err;
     int redirects = 0;
     while (redirects < 5) {
-        const char *cur_url = esp_http_client_get_url(client);
-        ESP_LOGD(TAG, "Attempt %d URL: %s", redirects + 1, cur_url ? cur_url : "(null)");
+        char cur_url[512];
+        esp_err_t url_err = esp_http_client_get_url(client, cur_url, sizeof(cur_url));
+        ESP_LOGD(TAG, "Attempt %d URL: %s", redirects + 1,
+                 url_err == ESP_OK ? cur_url : "(null)");
         ESP_LOGD(TAG, "Opening HTTP connection");
         err = esp_http_client_open(client, 0);
         if (err != ESP_OK) {
