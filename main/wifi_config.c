@@ -1031,15 +1031,27 @@ void wifi_config_start() {
         }
 }
 
+#define WIFI_READY_TASK_STACK_SIZE 4096
+#define WIFI_READY_TASK_PRIORITY 5
+
+static void wifi_config_on_wifi_ready_task(void *pvParameter) {
+        void (*callback)() = pvParameter;
+        callback();
+        vTaskDelete(NULL);
+}
 
 void wifi_config_legacy_support_on_event(wifi_config_event_t event) {
         DEBUG("Legacy event handler received event %d", event);
         if (event == WIFI_CONFIG_CONNECTED) {
                 INFO("WiFi connected event received");
                 if (context->on_wifi_ready) {
-                        INFO("Calling on_wifi_ready callback");
-                        context->on_wifi_ready();
-                        INFO("on_wifi_ready callback finished");
+                        INFO("Scheduling on_wifi_ready callback");
+                        xTaskCreate(wifi_config_on_wifi_ready_task,
+                                    "wifi_ready",
+                                    WIFI_READY_TASK_STACK_SIZE,
+                                    (void *)context->on_wifi_ready,
+                                    WIFI_READY_TASK_PRIORITY,
+                                    NULL);
                 }
         }
 #ifndef WIFI_CONFIG_NO_RESTART
