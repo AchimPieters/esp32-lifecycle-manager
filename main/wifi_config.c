@@ -1031,12 +1031,13 @@ void wifi_config_start() {
         }
 }
 
-#define WIFI_READY_TASK_STACK_SIZE 4096
+#define WIFI_READY_TASK_STACK_SIZE 8192
 #define WIFI_READY_TASK_PRIORITY 5
 
 static void wifi_config_on_wifi_ready_task(void *pvParameter) {
         void (*callback)() = pvParameter;
         callback();
+        INFO("wifi_ready stack high water mark: %u", uxTaskGetStackHighWaterMark(NULL));
         vTaskDelete(NULL);
 }
 
