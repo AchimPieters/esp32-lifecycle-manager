@@ -70,8 +70,9 @@ static esp_err_t download_signature(const char *url, uint8_t *buf, size_t buf_le
         .crt_bundle_attach = esp_crt_bundle_attach,
         .user_agent = "esp32-ota",
         // GitHub release assets use redirects with extremely long Location headers
-        // (currently >5k), so give the HTTP client a generously sized buffer.
-        .buffer_size = 8192,
+        // (currently >5k and sometimes exceeding 8k), so give the HTTP client a
+        // generously sized buffer to ensure the Location header fits entirely.
+        .buffer_size = 16384,
     };
     esp_http_client_handle_t client = esp_http_client_init(&cfg);
     if (!client) {
@@ -82,6 +83,8 @@ static esp_err_t download_signature(const char *url, uint8_t *buf, size_t buf_le
     esp_err_t err;
     int redirects = 0;
     while (redirects < 5) {
+        const char *cur_url = esp_http_client_get_url(client);
+        ESP_LOGD(TAG, "Attempt %d URL: %s", redirects + 1, cur_url ? cur_url : "(null)");
         ESP_LOGD(TAG, "Opening HTTP connection");
         err = esp_http_client_open(client, 0);
         if (err != ESP_OK) {
@@ -112,6 +115,7 @@ static esp_err_t download_signature(const char *url, uint8_t *buf, size_t buf_le
                 return ESP_FAIL;
             }
             esp_http_client_set_url(client, loc);
+            ESP_LOGD(TAG, "Following redirect to %s", loc);
             esp_http_client_close(client);
             redirects++;
             continue;
