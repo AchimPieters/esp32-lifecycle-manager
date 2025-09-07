@@ -107,17 +107,17 @@ static esp_err_t download_signature(const char *url, uint8_t *buf, size_t buf_le
         int status = esp_http_client_get_status_code(client);
         ESP_LOGD(TAG, "HTTP status %d", status);
         if (status == 301 || status == 302 || status == 303 || status == 307 || status == 308) {
-            char *loc = NULL;
-            esp_http_client_get_header(client, "Location", &loc);
-            ESP_LOGD(TAG, "Redirect location: %s", loc ? loc : "(none)");
-            if (!loc) {
-                ESP_LOGE(TAG, "Redirect status without Location header");
+            ESP_LOGD(TAG, "Handling HTTP redirect");
+            esp_err_t redir = esp_http_client_set_redirection(client);
+            if (redir != ESP_OK) {
+                ESP_LOGE(TAG, "Failed to set redirection: %s", esp_err_to_name(redir));
                 esp_http_client_close(client);
                 esp_http_client_cleanup(client);
                 return ESP_FAIL;
             }
-            esp_http_client_set_url(client, loc);
-            ESP_LOGD(TAG, "Following redirect to %s", loc);
+            if (esp_http_client_get_url(client, cur_url, sizeof(cur_url)) == ESP_OK) {
+                ESP_LOGD(TAG, "Following redirect to %s", cur_url);
+            }
             esp_http_client_close(client);
             redirects++;
             continue;
