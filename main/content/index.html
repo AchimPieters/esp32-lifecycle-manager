@@ -211,7 +211,7 @@
           Gebruik pre-release
         </label>
 
-        <div id="releaseStatus" class="muted">—</div>
+        <div id="releaseStatus" class="muted">Geen release geselecteerd</div>
 
       </section>
       <input type="submit" id="join" value="Join" disabled />
@@ -302,12 +302,12 @@ async function pickRelease(ownerRepo, allowPrerelease) {
   const latest = async () => {
     const r = await fetch(`https://api.github.com/repos/${owner}/${repo}/releases/latest`, {headers});
     if (r.status === 404) throw new Error("Geen releases gevonden.");
-    if (!r.ok) throw new Error(`GitHub API error: ${r.status}`);
+    if (!r.ok) throw new Error(`GitHub API-fout: ${r.status}`);
     return r.json();
   };
   const list = async () => {
     const r = await fetch(`https://api.github.com/repos/${owner}/${repo}/releases?per_page=5`, {headers});
-    if (!r.ok) throw new Error(`GitHub API error: ${r.status}`);
+    if (!r.ok) throw new Error(`GitHub API-fout: ${r.status}`);
     const arr = await r.json();
     if (!Array.isArray(arr) || arr.length === 0) throw new Error("Geen releases gevonden.");
     if (allowPrerelease) return arr[0];
@@ -327,7 +327,7 @@ async function updateFirmwareFields() {
   const repo = document.getElementById("repo").value.trim();
   const allowPre = document.getElementById("use_prerelease").checked;
   const status = document.getElementById("releaseStatus");
-  if (!repo) { status.textContent = "—"; return; }
+  if (!repo) { status.textContent = "Geen release geselecteerd"; return; }
 
   status.textContent = "Zoeken naar release…";
   try {
@@ -339,7 +339,9 @@ async function updateFirmwareFields() {
     status.textContent = `Release ${v} gekozen (${allowPre ? "pre/stable" : "stable"})`;
   } catch (e) {
     console.warn(e);
-    status.textContent = "—";
+    let msg = e?.message || String(e);
+    if (msg === "Failed to fetch") msg = "Netwerkfout (GitHub API onbereikbaar).";
+    status.textContent = `Fout: ${msg}`;
   }
 }
 function debounce(fn, ms){let t;return(...a)=>{clearTimeout(t);t=setTimeout(()=>fn(...a),ms)}}
