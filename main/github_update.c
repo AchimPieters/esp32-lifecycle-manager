@@ -69,8 +69,9 @@ static esp_err_t download_signature(const char *url, uint8_t *buf, size_t buf_le
         .url = url,
         .crt_bundle_attach = esp_crt_bundle_attach,
         .user_agent = "esp32-ota",
-        // GitHub release assets use redirects with very long Location headers
-        .buffer_size = 2048,
+        // GitHub release assets use redirects with extremely long Location headers
+        // (currently >5k), so give the HTTP client a generously sized buffer.
+        .buffer_size = 8192,
     };
     esp_http_client_handle_t client = esp_http_client_init(&cfg);
     if (!client) {
