@@ -83,6 +83,8 @@ static esp_err_t download_signature(const char *url, uint8_t *buf, size_t buf_le
     esp_err_t err;
     int redirects = 0;
     while (redirects < 5) {
+        const char *cur_url = esp_http_client_get_url(client);
+        ESP_LOGD(TAG, "Attempt %d URL: %s", redirects + 1, cur_url ? cur_url : "(null)");
         ESP_LOGD(TAG, "Opening HTTP connection");
         err = esp_http_client_open(client, 0);
         if (err != ESP_OK) {
@@ -113,6 +115,7 @@ static esp_err_t download_signature(const char *url, uint8_t *buf, size_t buf_le
                 return ESP_FAIL;
             }
             esp_http_client_set_url(client, loc);
+            ESP_LOGD(TAG, "Following redirect to %s", loc);
             esp_http_client_close(client);
             redirects++;
             continue;
