@@ -188,6 +188,12 @@ esp_err_t github_update_from_urls(const char *fw_url, const char *sig_url) {
     esp_http_client_config_t http_cfg = {
         .url = fw_url,
         .crt_bundle_attach = esp_crt_bundle_attach,
+        .user_agent = "esp32-ota",
+        // GitHub release assets use redirects with extremely long headers
+        // (sometimes over 8 KB), so enlarge the HTTP client buffers to avoid
+        // `HTTP_CLIENT: Out of buffer` errors when fetching the image.
+        .buffer_size = 32768,
+        .buffer_size_tx = 32768,
     };
     esp_https_ota_config_t ota_cfg = {
         .http_config = &http_cfg,
