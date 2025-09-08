@@ -12,7 +12,10 @@ import os
 import sys
 from pathlib import Path
 
-import requests
+import json
+import urllib.error
+import urllib.parse
+import urllib.request
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import ec, padding, rsa
 from cryptography.hazmat.primitives import serialization
@@ -52,34 +55,55 @@ def sign_firmware(fw_path: Path, key_path: Path) -> bytes:
     return signature
 
 
+class _Response:
+    def __init__(self, status_code: int, data: bytes, headers):
+        self.status_code = status_code
+        self.data = data
+        self.headers = headers
+
+    def json(self):
+        return json.loads(self.data.decode())
+
+
 def github_request(method: str, url: str, token: str, **kwargs):
+    params = kwargs.pop('params', None)
+    data = kwargs.pop('data', None)
+    json_data = kwargs.pop('json', None)
     headers = kwargs.pop('headers', {})
+
+    if params:
+        url = f"{url}?{urllib.parse.urlencode(params)}"
+
+    if json_data is not None:
+        data = json.dumps(json_data).encode()
+        headers.setdefault('Content-Type', 'application/json')
+
     headers['Authorization'] = f'token {token}'
     headers.setdefault('Accept', 'application/vnd.github+json')
-    response = requests.request(method, url, headers=headers, **kwargs)
-    if response.status_code >= 400:
-        raise RuntimeError(f"GitHub API error {response.status_code}: {response.text}")
-    return response
+
+    req = urllib.request.Request(url, data=data, headers=headers, method=method)
+
+    try:
+        with urllib.request.urlopen(req) as resp:
+            return _Response(resp.status, resp.read(), resp.headers)
+    except urllib.error.HTTPError as e:
+        return _Response(e.code, e.read(), e.headers)
 
 
 def get_or_create_release(owner: str, repo: str, tag: str, token: str) -> dict:
-    headers = {
-        'Authorization': f'token {token}',
-        'Accept': 'application/vnd.github+json',
-    }
     url = f"https://api.github.com/repos/{owner}/{repo}/releases/tags/{tag}"
-    r = requests.get(url, headers=headers)
+    r = github_request('GET', url, token)
     if r.status_code == 200:
         return r.json()
     if r.status_code != 404:
-        raise RuntimeError(f"GitHub API error {r.status_code}: {r.text}")
+        raise RuntimeError(f"GitHub API error {r.status_code}: {r.data.decode()}")
 
     # Create release if it does not exist
     url = f"https://api.github.com/repos/{owner}/{repo}/releases"
     data = {"tag_name": tag, "name": tag, "draft": False}
-    r = requests.post(url, headers=headers, json=data)
+    r = github_request('POST', url, token, json=data)
     if r.status_code >= 400:
-        raise RuntimeError(f"GitHub API error {r.status_code}: {r.text}")
+        raise RuntimeError(f"GitHub API error {r.status_code}: {r.data.decode()}")
     return r.json()
 
 
