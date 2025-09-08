@@ -72,7 +72,8 @@ static esp_err_t download_signature(const char *url, uint8_t *buf, size_t buf_le
         // GitHub release assets use redirects with extremely long Location headers
         // (currently >5k and sometimes exceeding 8k), so give the HTTP client a
         // generously sized buffer to ensure the Location header fits entirely.
-        .buffer_size = 16384,
+        .buffer_size = 32768,
+        .buffer_size_tx = 32768,
     };
     esp_http_client_handle_t client = esp_http_client_init(&cfg);
     if (!client) {
