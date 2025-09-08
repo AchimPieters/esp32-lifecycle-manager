@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Sign a firmware image and upload it plus its signature to a GitHub release.
+"""Sign the firmware at ``build/main.bin`` and upload it plus its signature to a
+GitHub release.
 
-This script generates an ECDSA or RSA signature for a given firmware binary
-using a private key that matches the public key embedded on the ESP32 device.
-The firmware and its signature are then uploaded as assets to a GitHub release
-using the GitHub REST API.
+This script generates an ECDSA or RSA signature for the firmware binary located
+in the ``build`` directory using a private key that matches the public key
+embedded on the ESP32 device. The firmware and its signature are then uploaded
+as assets to a GitHub release using the GitHub REST API.
 """
 import argparse
 import hashlib
@@ -121,7 +122,6 @@ def main():
     p.add_argument('--owner', required=True, help='GitHub repository owner')
     p.add_argument('--repo', required=True, help='GitHub repository name')
     p.add_argument('--tag', required=True, help='Release tag to create/update')
-    p.add_argument('--firmware', required=True, type=Path, help='Path to firmware binary')
     p.add_argument('--key', required=True, type=Path, help='Path to private key (PEM)')
     p.add_argument('--token', default=os.getenv('GITHUB_TOKEN'), help='GitHub token')
     args = p.parse_args()
@@ -130,16 +130,21 @@ def main():
         print('GitHub token must be provided via --token or GITHUB_TOKEN env var', file=sys.stderr)
         return 1
 
-    signature = sign_firmware(args.firmware, args.key)
-    sig_path = args.firmware.with_suffix(args.firmware.suffix + '.sig')
+    fw_path = Path('build/main.bin')
+    if not fw_path.exists():
+        print('Firmware binary build/main.bin not found', file=sys.stderr)
+        return 1
+
+    signature = sign_firmware(fw_path, args.key)
+    sig_path = fw_path.with_suffix(fw_path.suffix + '.sig')
     with sig_path.open('wb') as f:
         f.write(signature)
 
     release = get_or_create_release(args.owner, args.repo, args.tag, args.token)
     upload_url = release['upload_url']
-    upload_asset(upload_url, args.firmware, args.token)
+    upload_asset(upload_url, fw_path, args.token)
     upload_asset(upload_url, sig_path, args.token)
-    print(f"Uploaded {args.firmware.name} and {sig_path.name} to release {args.tag}")
+    print(f"Uploaded {fw_path.name} and {sig_path.name} to release {args.tag}")
     return 0
 
 
