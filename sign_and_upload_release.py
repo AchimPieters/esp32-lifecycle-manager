@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
-"""Sign the firmware at ``build/main.bin`` and generate ``build/main.bin.sig``.
+"""Sign ``build/main.bin`` and emit the signature path.
 
-This script generates an ECDSA or RSA signature for the firmware binary located
-in the ``build`` directory using a private key that matches the public key
-embedded on the ESP32 device. The resulting signature is written next to the
-firmware image.
+This utility searches for ``build/main.bin`` and, when found, generates a
+``build/main.bin.sig`` using a private key. The key is read from the ``--key``
+argument or the ``OTA_PRIVATE_KEY`` environment variable. Upon success a JSON
+object describing the signature file is written to stdout, which can be
+consumed by GitHub Actions or the GitHub API.
 """
 import argparse
 import hashlib
+import json
+import os
 import sys
 from pathlib import Path
 
@@ -52,20 +55,26 @@ def sign_firmware(fw_path: Path, key_path: Path) -> bytes:
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument('--key', required=True, type=Path, help='Path to private key (PEM)')
+    p.add_argument('--key', type=Path, help='Path to private key (PEM)')
     args = p.parse_args()
+
+    key_path = args.key or os.environ.get('OTA_PRIVATE_KEY')
+    if not key_path:
+        print('Private key path not provided (use --key or OTA_PRIVATE_KEY)', file=sys.stderr)
+        return 1
+    key_path = Path(key_path)
 
     fw_path = Path('build/main.bin')
     if not fw_path.exists():
         print('Firmware binary build/main.bin not found', file=sys.stderr)
         return 1
 
-    signature = sign_firmware(fw_path, args.key)
+    signature = sign_firmware(fw_path, key_path)
     sig_path = fw_path.with_suffix(fw_path.suffix + '.sig')
     with sig_path.open('wb') as f:
         f.write(signature)
 
-    print(f"Generated {sig_path} from {fw_path}")
+    print(json.dumps({'signature_path': str(sig_path)}))
     return 0
 
 
