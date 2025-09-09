@@ -3,9 +3,10 @@
 
 This utility searches for ``build/main.bin`` and, when found, generates a
 ``build/main.bin.sig`` using a private key. The key is read from the ``--key``
-argument or the ``OTA_PRIVATE_KEY`` environment variable. Upon success a JSON
-object describing the signature file is written to stdout, which can be
-consumed by GitHub Actions or the GitHub API.
+argument or the ``OTA_PRIVATE_KEY`` environment variable. If neither is
+provided, a ``private_key.pem`` in the current directory is used, generating
+one if necessary. Upon success a JSON object describing the signature file is
+written to stdout, which can be consumed by GitHub Actions or the GitHub API.
 """
 import argparse
 import hashlib
@@ -59,10 +60,24 @@ def main():
     args = p.parse_args()
 
     key_path = args.key or os.environ.get('OTA_PRIVATE_KEY')
-    if not key_path:
-        print('Private key path not provided (use --key or OTA_PRIVATE_KEY)', file=sys.stderr)
-        return 1
-    key_path = Path(key_path)
+    if key_path:
+        key_path = Path(key_path)
+        if not key_path.exists():
+            print(f'Private key {key_path} not found', file=sys.stderr)
+            return 1
+    else:
+        key_path = Path('private_key.pem')
+        if not key_path.exists():
+            key = ec.generate_private_key(ec.SECP256R1())
+            with key_path.open('wb') as f:
+                f.write(
+                    key.private_bytes(
+                        encoding=serialization.Encoding.PEM,
+                        format=serialization.PrivateFormat.TraditionalOpenSSL,
+                        encryption_algorithm=serialization.NoEncryption(),
+                    )
+                )
+            print(f'Generated new private key at {key_path}', file=sys.stderr)
 
     fw_path = Path('build/main.bin')
     if not fw_path.exists():
