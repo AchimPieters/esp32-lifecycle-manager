@@ -8,7 +8,7 @@ provided, ``private_key.pem`` in the current directory is used. The key must
 already exist – one will not be generated automatically – to prevent signing
 with a key that doesn't match the device firmware. The signature is verified
 against a public key loaded from ``--pubkey``, ``ota_pubkey.pem`` or
-``main/ota_pubkey.c``. Upon success a JSON object describing the signature
+``main/ota_pubkey.c``; if none are found a built-in default is used. Upon success a JSON object describing the signature
 file is written to stdout, which can be consumed by GitHub Actions or the
 GitHub API.
 """
@@ -23,6 +23,13 @@ from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import ec, padding, rsa, utils
 from cryptography.hazmat.primitives import serialization
+
+
+DEFAULT_PUBLIC_KEY_PEM = b"""-----BEGIN PUBLIC KEY-----
+MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEdvNFFIe+YXpUxiwFYlWAy3M3t6Sa
+BP6750XmINFU950HVj8YfJIa/ILfYQKMxiCrhiyzcz09kkRKY8iW8zrfhQ==
+-----END PUBLIC KEY-----
+"""
 
 
 def load_private_key(path: Path):
@@ -113,6 +120,12 @@ def main():
                     pubkey = serialization.load_pem_public_key(pem_data)
                 except Exception as e:
                     print(f'Failed to parse {ota_c}: {e}', file=sys.stderr)
+                    return 1
+            else:
+                try:
+                    pubkey = serialization.load_pem_public_key(DEFAULT_PUBLIC_KEY_PEM)
+                except Exception as e:
+                    print(f'Failed to load built-in public key: {e}', file=sys.stderr)
                     return 1
     if pubkey is None:
         print('Public key not found; provide --pubkey or ota_pubkey.pem', file=sys.stderr)
