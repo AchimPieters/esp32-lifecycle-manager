@@ -14,3 +14,25 @@ python3 sign_and_upload_release.py --key ota_private_key.pem
 
 The generated signature is roughly 64–72 bytes for ECDSA or 256 bytes for RSA
 keys.
+
+### Generating a private key
+
+If you do not yet have a signing key, create one before running the script.
+`espsecure.py` from ESP-IDF can generate an ECDSA key suitable for signing:
+
+```bash
+espsecure.py generate_signing_key --version 2 private_key.pem
+```
+
+Alternatively, OpenSSL can create ECDSA or RSA keys:
+
+```bash
+# ECDSA P-256
+openssl ecparam -genkey -name prime256v1 -noout -out private_key.pem
+
+# RSA 2048-bit
+openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out private_key.pem
+```
+
+Keep the private key secure and ensure the corresponding public key is
+embedded in your firmware.

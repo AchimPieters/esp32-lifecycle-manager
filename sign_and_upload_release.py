@@ -25,11 +25,12 @@ from cryptography.hazmat.primitives.asymmetric import ec, padding, rsa, utils
 from cryptography.hazmat.primitives import serialization
 
 
-DEFAULT_PUBLIC_KEY_PEM = b"""-----BEGIN PUBLIC KEY-----
-MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEdvNFFIe+YXpUxiwFYlWAy3M3t6Sa
-BP6750XmINFU950HVj8YfJIa/ILfYQKMxiCrhiyzcz09kkRKY8iW8zrfhQ==
------END PUBLIC KEY-----
-"""
+DEFAULT_PUBLIC_KEY_PEM = (
+    b"-----BEGIN PUBLIC KEY-----\n"
+    b"MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEdvNFFIe+YXpUxiwFYlWAy3M3t6Sa\n"
+    b"BP6750XmINFU950HVj8YfJIa/ILfYQKMxiCrhiyzcz09kkRKY8iW8zrfhQ==\n"
+    b"-----END PUBLIC KEY-----\n"
+)
 
 
 def load_private_key(path: Path):
