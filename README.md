@@ -5,6 +5,8 @@
 Use `sign_and_upload_release.py` to sign the firmware binary located at
 `build/main.bin`. The script writes the signature to `build/main.bin.sig` using
 an ECDSA or RSA private key that matches the public key embedded in the device.
+Specify the key with `--key` or the `OTA_PRIVATE_KEY` environment variable. If
+neither is supplied, `private_key.pem` in the current directory is used.
 
 ```bash
 python3 sign_and_upload_release.py --key ota_private_key.pem

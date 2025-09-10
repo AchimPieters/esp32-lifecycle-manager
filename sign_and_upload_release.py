@@ -96,7 +96,11 @@ def main():
     key_path = args.key or os.environ.get('OTA_PRIVATE_KEY') or 'private_key.pem'
     key_path = Path(key_path)
     if not key_path.exists():
-        print(f'Private key {key_path} not found', file=sys.stderr)
+        print(
+            f"Private key {key_path} not found. Provide a key with --key or set "
+            "the OTA_PRIVATE_KEY environment variable.",
+            file=sys.stderr,
+        )
         return 1
 
     pubkey_path = args.pubkey or os.environ.get('OTA_PUBLIC_KEY')
