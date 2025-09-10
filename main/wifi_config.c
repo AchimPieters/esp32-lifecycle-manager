@@ -243,6 +243,7 @@ typedef struct {
 
         int first_time;
         TimerHandle_t network_monitor_timer;
+        TaskHandle_t monitor_task_handle;
         TaskHandle_t http_task_handle;
         TaskHandle_t dns_task_handle;
 } wifi_config_context_t;
@@ -890,14 +891,13 @@ static void wifi_config_softap_stop() {
 }
 
 
-static void wifi_config_monitor_callback(TimerHandle_t xTimer) {
+static void wifi_config_monitor_work(void) {
         int status = sdk_wifi_station_get_connect_status();
-        DEBUG("Monitor callback fired, status=%d", status);
+        DEBUG("Monitor task running, status=%d", status);
         if (status == STATION_GOT_IP) {
                 if (sdk_wifi_get_opmode() == STATION_MODE && !context->first_time)
                         return;
 
-                // Connected to station, all is dandy
                 INFO("Connected to WiFi network");
 
                 wifi_config_softap_stop();
@@ -911,12 +911,9 @@ static void wifi_config_monitor_callback(TimerHandle_t xTimer) {
 
                 context->first_time = false;
 
-                // change monitoring poll interval
                 xTimerChangePeriod(
                         context->network_monitor_timer,
                         pdMS_TO_TICKS(WIFI_CONFIG_CONNECTED_MONITOR_INTERVAL), 0);
-
-                return;
         } else {
                 if (wifi_config_has_configuration())
                         wifi_config_station_connect();
@@ -932,12 +929,24 @@ static void wifi_config_monitor_callback(TimerHandle_t xTimer) {
                         DEBUG("Event handler returned");
                 }
 
-                // change monitoring poll interval
                 xTimerChangePeriod(
                         context->network_monitor_timer,
                         pdMS_TO_TICKS(WIFI_CONFIG_DISCONNECTED_MONITOR_INTERVAL), 0);
 
                 wifi_config_softap_start();
+        }
+}
+
+static void wifi_config_monitor_callback(TimerHandle_t xTimer) {
+        if (context && context->monitor_task_handle) {
+                xTaskNotifyGive(context->monitor_task_handle);
+        }
+}
+
+static void wifi_config_monitor_task(void *arg) {
+        while (true) {
+                ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+                wifi_config_monitor_work();
         }
 }
 
@@ -1008,6 +1017,10 @@ void wifi_config_start() {
         ESP_LOGD("wifi_config", "wifi_config_station_connect -> %d", res);
         if (res) {
                 wifi_config_softap_start();
+        }
+
+        if (!context->monitor_task_handle) {
+                xTaskCreate(wifi_config_monitor_task, "wifi_cfg_mon_task", 4096, NULL, 5, &context->monitor_task_handle);
         }
 
         if (!context->network_monitor_timer) {

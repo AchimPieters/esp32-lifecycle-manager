@@ -7,6 +7,7 @@
 #include "esp_crt_bundle.h"
 #include "mbedtls/sha256.h"
 #include "mbedtls/pk.h"
+#include "esp_image_format.h"
 #include "cJSON.h"
 #include "nvs.h"
 #include "nvs_flash.h"
@@ -168,6 +169,32 @@ out:
     return ret;
 }
 
+static esp_err_t partition_sha256(const esp_partition_t *part, uint32_t len, uint8_t *out)
+{
+    mbedtls_sha256_context ctx;
+    uint8_t *buf = malloc(4096);
+    if (!buf) return ESP_ERR_NO_MEM;
+    mbedtls_sha256_init(&ctx);
+    mbedtls_sha256_starts(&ctx, 0);
+    uint32_t offset = 0;
+    while (offset < len) {
+        uint32_t to_read = len - offset;
+        if (to_read > 4096) to_read = 4096;
+        esp_err_t r = esp_partition_read(part, offset, buf, to_read);
+        if (r != ESP_OK) {
+            free(buf);
+            mbedtls_sha256_free(&ctx);
+            return r;
+        }
+        mbedtls_sha256_update(&ctx, buf, to_read);
+        offset += to_read;
+    }
+    mbedtls_sha256_finish(&ctx, out);
+    mbedtls_sha256_free(&ctx);
+    free(buf);
+    return ESP_OK;
+}
+
 esp_err_t github_update_from_urls(const char *fw_url, const char *sig_url) {
     ESP_LOGI(TAG, "Downloading signature from %s", sig_url);
     uint8_t sig[80];
@@ -205,9 +232,17 @@ esp_err_t github_update_from_urls(const char *fw_url, const char *sig_url) {
         ESP_LOGE(TAG, "OTA failed: %s", esp_err_to_name(ret));
         return ret;
     }
+    esp_partition_pos_t pos = { .offset = update_part->address, .size = update_part->size };
+    esp_image_metadata_t meta;
+    esp_err_t meta_res = esp_image_get_metadata(&pos, &meta);
+    ESP_LOGD(TAG, "esp_image_get_metadata -> %s", esp_err_to_name(meta_res));
+    if (meta_res != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to get image metadata: %s", esp_err_to_name(meta_res));
+        return meta_res;
+    }
     uint8_t actual[32];
-    esp_err_t hash_res = esp_partition_get_sha256(update_part, actual);
-    ESP_LOGD(TAG, "esp_partition_get_sha256 -> %s", esp_err_to_name(hash_res));
+    esp_err_t hash_res = partition_sha256(update_part, meta.image_len, actual);
+    ESP_LOGD(TAG, "partition_sha256 -> %s", esp_err_to_name(hash_res));
     ESP_LOGD(TAG, "Image SHA256:");
     ESP_LOG_BUFFER_HEX_LEVEL(TAG, actual, sizeof(actual), ESP_LOG_DEBUG);
     if (verify_sig_der(actual, sig, sig_len, ota_pubkey_pem, ota_pubkey_pem_len) != 0) {
