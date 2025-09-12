@@ -3,8 +3,9 @@
 
 This utility searches for ``build/main.bin`` and, when found, generates a
 ``build/main.bin.sig`` using a private key. The key is read from the ``--key``
-argument or the ``OTA_PRIVATE_KEY`` environment variable. If neither is
-provided, ``private_key.pem`` in the current directory is used. The key must
+argument or the ``OTA_PRIVATE_KEY`` environment variable. ``OTA_PRIVATE_KEY``
+may contain either a filesystem path or the PEM-encoded key itself. If neither
+is provided, ``private_key.pem`` in the current directory is used. The key must
 already exist – one will not be generated automatically – to prevent signing
 with a key that doesn't match the device firmware. The signature is verified
 against a public key loaded from ``--pubkey``, ``ota_pubkey.pem`` or
@@ -94,15 +95,34 @@ def main():
     p.add_argument('--pubkey', type=Path, help='Path to public key (PEM) for verification')
     args = p.parse_args()
 
-    key_path = args.key or os.environ.get('OTA_PRIVATE_KEY') or 'private_key.pem'
-    key_path = Path(key_path)
-    if not key_path.exists():
-        print(
-            f"Private key {key_path} not found. Provide a key with --key or set "
-            "the OTA_PRIVATE_KEY environment variable.",
-            file=sys.stderr,
-        )
-        return 1
+    key: ec.EllipticCurvePrivateKey | rsa.RSAPrivateKey | None = None
+    if args.key:
+        if not args.key.exists():
+            print(f"Private key {args.key} not found", file=sys.stderr)
+            return 1
+        key = load_private_key(args.key)
+    else:
+        key_env = os.environ.get('OTA_PRIVATE_KEY')
+        if key_env:
+            env_path = Path(key_env)
+            if env_path.exists():
+                key = load_private_key(env_path)
+            else:
+                try:
+                    key = serialization.load_pem_private_key(key_env.encode(), password=None)
+                except Exception:
+                    print('Failed to parse private key from OTA_PRIVATE_KEY', file=sys.stderr)
+                    return 1
+        else:
+            default_path = Path('private_key.pem')
+            if not default_path.exists():
+                print(
+                    "Private key private_key.pem not found. Provide a key with --key or set "
+                    "the OTA_PRIVATE_KEY environment variable.",
+                    file=sys.stderr,
+                )
+                return 1
+            key = load_private_key(default_path)
 
     pubkey_path = args.pubkey or os.environ.get('OTA_PUBLIC_KEY')
     pubkey = None
@@ -140,7 +160,6 @@ def main():
         print('Firmware binary build/main.bin not found', file=sys.stderr)
         return 1
 
-    key = load_private_key(key_path)
     digest, signature = sign_firmware(fw_path, key)
 
     sig_path = fw_path.with_suffix(fw_path.suffix + '.sig')
