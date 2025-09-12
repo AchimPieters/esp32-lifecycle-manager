@@ -29,8 +29,9 @@ from cryptography.hazmat.primitives import serialization
 
 DEFAULT_PUBLIC_KEY_PEM = (
     b"-----BEGIN PUBLIC KEY-----\n"
-    b"MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEdvNFFIe+YXpUxiwFYlWAy3M3t6Sa\n"
-    b"BP6750XmINFU950HVj8YfJIa/ILfYQKMxiCrhiyzcz09kkRKY8iW8zrfhQ==\n"
+    b"MHYwEAYHKoZIzj0CAQYFK4EEACIDYgAEhPap2UPkZ6n97Wr3uKHv6iU9OumtrQmG\n"
+    b"nBHWYATFD5a8QOilZSySo5QI/Ers7t5KmiwFTRB4HLLpLRKGiTqrgKNf/n+2HGCv\n"
+    b"60KaXmXtERmxnGrNF0i3cQDv6LczUdLK\n"
     b"-----END PUBLIC KEY-----\n"
 )
 
@@ -69,23 +70,23 @@ def sign_firmware(fw_path: Path, key) -> tuple[bytes, bytes]:
     with fw_path.open('rb') as f:
         firmware = f.read()
 
-    digest = hashlib.sha256(firmware).digest()
+    digest = hashlib.sha384(firmware).digest()
 
     if isinstance(key, rsa.RSAPrivateKey):
         signature = key.sign(
             digest,
             padding.PKCS1v15(),
-            utils.Prehashed(hashes.SHA256()),
+            utils.Prehashed(hashes.SHA384()),
         )
     elif isinstance(key, ec.EllipticCurvePrivateKey):
-        signature = key.sign(digest, ec.ECDSA(utils.Prehashed(hashes.SHA256())))
+        signature = key.sign(digest, ec.ECDSA(utils.Prehashed(hashes.SHA384())))
     else:
         raise ValueError("Unsupported key type")
 
     sig_len = len(signature)
-    if sig_len not in (256,) and not (64 <= sig_len <= 72):
+    if sig_len not in (256,) and not (64 <= sig_len <= 72) and not (96 <= sig_len <= 104):
         raise ValueError(
-            f"Unexpected signature length {sig_len} bytes; expected 64–72 or 256"
+            f"Unexpected signature length {sig_len} bytes; expected 64–72, 96–104 or 256"
         )
     return digest, signature
 
@@ -184,13 +185,13 @@ def main():
                 signature,
                 digest,
                 padding.PKCS1v15(),
-                utils.Prehashed(hashes.SHA256()),
+                utils.Prehashed(hashes.SHA384()),
             )
         else:
             pubkey.verify(
                 signature,
                 digest,
-                ec.ECDSA(utils.Prehashed(hashes.SHA256())),
+                ec.ECDSA(utils.Prehashed(hashes.SHA384())),
             )
     except InvalidSignature:
         print('Signature verification failed', file=sys.stderr)
