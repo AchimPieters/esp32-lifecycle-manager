@@ -6,13 +6,11 @@
 #include "esp_ota_ops.h"
 #include "esp_crt_bundle.h"
 #include "mbedtls/sha512.h"
-#include "mbedtls/pk.h"
 #include "esp_image_format.h"
 #include "cJSON.h"
 #include "nvs.h"
 #include "nvs_flash.h"
 #include "github_update.h"
-#include "ota_pubkey.h"
 
 static const char *TAG = "github_update";
 
@@ -158,17 +156,6 @@ static esp_err_t download_signature(const char *url, uint8_t *buf, size_t buf_le
     return ESP_FAIL;
 }
 
-static int verify_sig_der(const uint8_t *hash, const uint8_t *sig_der, size_t sig_len,
-                          const unsigned char *pubkey_pem, size_t pubkey_pem_len) {
-    int ret; mbedtls_pk_context pk;
-    mbedtls_pk_init(&pk);
-    if ((ret = mbedtls_pk_parse_public_key(&pk, pubkey_pem, pubkey_pem_len)) != 0) goto out;
-    ret = mbedtls_pk_verify(&pk, MBEDTLS_MD_SHA384, hash, 0, sig_der, sig_len);
-out:
-    mbedtls_pk_free(&pk);
-    return ret;
-}
-
 static esp_err_t partition_sha384(const esp_partition_t *part, uint32_t len, uint8_t *out)
 {
     mbedtls_sha512_context ctx;
@@ -197,7 +184,7 @@ static esp_err_t partition_sha384(const esp_partition_t *part, uint32_t len, uin
 
 esp_err_t github_update_from_urls(const char *fw_url, const char *sig_url) {
     ESP_LOGI(TAG, "Downloading signature from %s", sig_url);
-    uint8_t sig[120];
+    uint8_t sig[52];
     size_t sig_len = 0;
     esp_err_t sig_res = download_signature(sig_url, sig, sizeof(sig), &sig_len);
     if (sig_res != ESP_OK) {
@@ -205,6 +192,10 @@ esp_err_t github_update_from_urls(const char *fw_url, const char *sig_url) {
         return sig_res;
     }
     ESP_LOGI(TAG, "Downloaded signature (%u bytes)", (unsigned)sig_len);
+    if (sig_len != sizeof(sig)) {
+        ESP_LOGE(TAG, "Signature length %u unexpected", (unsigned)sig_len);
+        return ESP_FAIL;
+    }
 
     const esp_partition_t *update_part = esp_ota_get_next_update_partition(NULL);
     if (!update_part) {
@@ -240,13 +231,22 @@ esp_err_t github_update_from_urls(const char *fw_url, const char *sig_url) {
         ESP_LOGE(TAG, "Failed to get image metadata: %s", esp_err_to_name(meta_res));
         return meta_res;
     }
+    uint8_t expected_hash[48];
+    memcpy(expected_hash, sig, sizeof(expected_hash));
+    uint32_t expected_len = ((uint32_t)sig[48] << 24) | ((uint32_t)sig[49] << 16) |
+                            ((uint32_t)sig[50] << 8) | (uint32_t)sig[51];
+    if (expected_len != meta.image_len) {
+        ESP_LOGE(TAG, "Image length mismatch: expected %u got %u", (unsigned)expected_len,
+                 (unsigned)meta.image_len);
+        return ESP_FAIL;
+    }
     uint8_t actual[48];
     esp_err_t hash_res = partition_sha384(update_part, meta.image_len, actual);
     ESP_LOGD(TAG, "partition_sha384 -> %s", esp_err_to_name(hash_res));
     ESP_LOGD(TAG, "Image SHA384:");
     ESP_LOG_BUFFER_HEX_LEVEL(TAG, actual, sizeof(actual), ESP_LOG_DEBUG);
-    if (verify_sig_der(actual, sig, sig_len, ota_pubkey_pem, ota_pubkey_pem_len) != 0) {
-        ESP_LOGE(TAG, "Invalid signature");
+    if (memcmp(actual, expected_hash, sizeof(actual)) != 0) {
+        ESP_LOGE(TAG, "SHA384 mismatch");
         return ESP_FAIL;
     }
     ESP_LOGI(TAG, "Signature verified, rebooting");

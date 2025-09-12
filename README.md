@@ -2,48 +2,22 @@
 
 ## Signing firmware
 
-Use `sign_and_upload_release.py` to sign the firmware binary located at
-`build/main.bin`. The script writes the signature to `build/main.bin.sig` using
-an ECDSA or RSA private key that matches the public key embedded in the device.
-Specify the key with `--key` or the `OTA_PRIVATE_KEY` environment variable.
-`OTA_PRIVATE_KEY` accepts either a path to the PEM file, the PEM data itself,
-or a base64-encoded key.
-If neither is supplied, `private_key.pem` in the current directory is used.
-If no public key is specified, the script checks the key embedded in
-`main/ota_pubkey.c` (or a built-in default) and refuses to sign if the private
-key does not match.
+After building your firmware, generate a `main.bin.sig` file containing the
+SHA-384 hash of the image followed by its length in bytes. From the directory
+where `make` is run execute:
 
 ```bash
-python3 sign_and_upload_release.py --key ota_private_key.pem
+openssl sha384 -binary -out firmware/main.bin.sig firmware/main.bin
+printf "%08x" `cat firmware/main.bin | wc -c` | xxd -r -p >> firmware/main.bin.sig
 ```
 
-The generated signature is roughly 96–104 bytes for ECDSA P-384 or 256 bytes for
-RSA keys.
-
-### Generating a private key
-
-If you do not yet have a signing key, create one before running the script.
-`espsecure.py` from ESP-IDF can generate an ECDSA key suitable for signing:
-
-```bash
-espsecure.py generate_signing_key --version 2 private_key.pem
-```
-
-Alternatively, OpenSSL can create ECDSA or RSA keys:
-
-```bash
-# ECDSA P-384
-openssl ecparam -genkey -name secp384r1 -noout -out private_key.pem
-
-# RSA 2048-bit
-openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out private_key.pem
-```
-
-Keep the private key secure and ensure the corresponding public key is
-embedded in your firmware.
+The resulting `firmware/main.bin.sig` must accompany `firmware/main.bin` when
+publishing releases. During an OTA update the device downloads both files,
+computes the SHA-384 hash of the image, checks the expected length, and
+activates the update only if they match.
 
 ## OTA verification
 
-The device embeds the trusted public key in `main/ota_pubkey.c`. During an OTA
-update it downloads `main.bin` and its signature, hashes the image, and verifies
-the signature against the embedded key before activating the update.
+The device downloads `main.bin` and `main.bin.sig` during an OTA update. The
+signature file contains the expected SHA-384 hash and image length, allowing the
+device to verify the firmware before applying it.
