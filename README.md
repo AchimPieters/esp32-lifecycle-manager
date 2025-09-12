@@ -8,6 +8,9 @@ an ECDSA or RSA private key that matches the public key embedded in the device.
 Specify the key with `--key` or the `OTA_PRIVATE_KEY` environment variable.
 `OTA_PRIVATE_KEY` accepts either a path to the PEM file or the PEM data itself.
 If neither is supplied, `private_key.pem` in the current directory is used.
+If no public key is specified, the script checks the key embedded in
+`main/ota_pubkey.c` (or a built-in default) and refuses to sign if the private
+key does not match.
 
 ```bash
 python3 sign_and_upload_release.py --key ota_private_key.pem
@@ -37,3 +40,9 @@ openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out private_key.pe
 
 Keep the private key secure and ensure the corresponding public key is
 embedded in your firmware.
+
+## OTA verification
+
+The device embeds the trusted public key in `main/ota_pubkey.c`. During an OTA
+update it downloads `main.bin` and its signature, hashes the image, and verifies
+the signature against the embedded key before activating the update.

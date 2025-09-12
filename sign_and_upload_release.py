@@ -160,12 +160,6 @@ def main():
         print('Firmware binary build/main.bin not found', file=sys.stderr)
         return 1
 
-    digest, signature = sign_firmware(fw_path, key)
-
-    sig_path = fw_path.with_suffix(fw_path.suffix + '.sig')
-    with sig_path.open('wb') as f:
-        f.write(signature)
-
     derived = key.public_key().public_bytes(
         encoding=serialization.Encoding.PEM,
         format=serialization.PublicFormat.SubjectPublicKeyInfo,
@@ -177,6 +171,8 @@ def main():
     if derived != expected:
         print('Private key does not match provided public key', file=sys.stderr)
         return 1
+
+    digest, signature = sign_firmware(fw_path, key)
     try:
         if isinstance(pubkey, rsa.RSAPublicKey):
             pubkey.verify(
@@ -194,6 +190,10 @@ def main():
     except InvalidSignature:
         print('Signature verification failed', file=sys.stderr)
         return 1
+
+    sig_path = fw_path.with_suffix(fw_path.suffix + '.sig')
+    with sig_path.open('wb') as f:
+        f.write(signature)
 
     print(json.dumps({'signature_path': str(sig_path)}))
     return 0
