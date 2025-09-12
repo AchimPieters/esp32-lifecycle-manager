@@ -17,8 +17,8 @@ key does not match.
 python3 sign_and_upload_release.py --key ota_private_key.pem
 ```
 
-The generated signature is roughly 64–72 bytes for ECDSA or 256 bytes for RSA
-keys.
+The generated signature is roughly 96–104 bytes for ECDSA P-384 or 256 bytes for
+RSA keys.
 
 ### Generating a private key
 
@@ -32,8 +32,8 @@ espsecure.py generate_signing_key --version 2 private_key.pem
 Alternatively, OpenSSL can create ECDSA or RSA keys:
 
 ```bash
-# ECDSA P-256
-openssl ecparam -genkey -name prime256v1 -noout -out private_key.pem
+# ECDSA P-384
+openssl ecparam -genkey -name secp384r1 -noout -out private_key.pem
 
 # RSA 2048-bit
 openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out private_key.pem

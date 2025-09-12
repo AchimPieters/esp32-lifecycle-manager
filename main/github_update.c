@@ -5,7 +5,7 @@
 #include "esp_http_client.h"
 #include "esp_ota_ops.h"
 #include "esp_crt_bundle.h"
-#include "mbedtls/sha256.h"
+#include "mbedtls/sha512.h"
 #include "mbedtls/pk.h"
 #include "esp_image_format.h"
 #include "cJSON.h"
@@ -163,19 +163,19 @@ static int verify_sig_der(const uint8_t *hash, const uint8_t *sig_der, size_t si
     int ret; mbedtls_pk_context pk;
     mbedtls_pk_init(&pk);
     if ((ret = mbedtls_pk_parse_public_key(&pk, pubkey_pem, pubkey_pem_len)) != 0) goto out;
-    ret = mbedtls_pk_verify(&pk, MBEDTLS_MD_SHA256, hash, 0, sig_der, sig_len);
+    ret = mbedtls_pk_verify(&pk, MBEDTLS_MD_SHA384, hash, 0, sig_der, sig_len);
 out:
     mbedtls_pk_free(&pk);
     return ret;
 }
 
-static esp_err_t partition_sha256(const esp_partition_t *part, uint32_t len, uint8_t *out)
+static esp_err_t partition_sha384(const esp_partition_t *part, uint32_t len, uint8_t *out)
 {
-    mbedtls_sha256_context ctx;
+    mbedtls_sha512_context ctx;
     uint8_t *buf = malloc(4096);
     if (!buf) return ESP_ERR_NO_MEM;
-    mbedtls_sha256_init(&ctx);
-    mbedtls_sha256_starts(&ctx, 0);
+    mbedtls_sha512_init(&ctx);
+    mbedtls_sha512_starts(&ctx, 1); // 1 -> SHA-384
     uint32_t offset = 0;
     while (offset < len) {
         uint32_t to_read = len - offset;
@@ -183,21 +183,21 @@ static esp_err_t partition_sha256(const esp_partition_t *part, uint32_t len, uin
         esp_err_t r = esp_partition_read(part, offset, buf, to_read);
         if (r != ESP_OK) {
             free(buf);
-            mbedtls_sha256_free(&ctx);
+            mbedtls_sha512_free(&ctx);
             return r;
         }
-        mbedtls_sha256_update(&ctx, buf, to_read);
+        mbedtls_sha512_update(&ctx, buf, to_read);
         offset += to_read;
     }
-    mbedtls_sha256_finish(&ctx, out);
-    mbedtls_sha256_free(&ctx);
+    mbedtls_sha512_finish(&ctx, out);
+    mbedtls_sha512_free(&ctx);
     free(buf);
     return ESP_OK;
 }
 
 esp_err_t github_update_from_urls(const char *fw_url, const char *sig_url) {
     ESP_LOGI(TAG, "Downloading signature from %s", sig_url);
-    uint8_t sig[80];
+    uint8_t sig[120];
     size_t sig_len = 0;
     esp_err_t sig_res = download_signature(sig_url, sig, sizeof(sig), &sig_len);
     if (sig_res != ESP_OK) {
@@ -240,10 +240,10 @@ esp_err_t github_update_from_urls(const char *fw_url, const char *sig_url) {
         ESP_LOGE(TAG, "Failed to get image metadata: %s", esp_err_to_name(meta_res));
         return meta_res;
     }
-    uint8_t actual[32];
-    esp_err_t hash_res = partition_sha256(update_part, meta.image_len, actual);
-    ESP_LOGD(TAG, "partition_sha256 -> %s", esp_err_to_name(hash_res));
-    ESP_LOGD(TAG, "Image SHA256:");
+    uint8_t actual[48];
+    esp_err_t hash_res = partition_sha384(update_part, meta.image_len, actual);
+    ESP_LOGD(TAG, "partition_sha384 -> %s", esp_err_to_name(hash_res));
+    ESP_LOGD(TAG, "Image SHA384:");
     ESP_LOG_BUFFER_HEX_LEVEL(TAG, actual, sizeof(actual), ESP_LOG_DEBUG);
     if (verify_sig_der(actual, sig, sig_len, ota_pubkey_pem, ota_pubkey_pem_len) != 0) {
         ESP_LOGE(TAG, "Invalid signature");
