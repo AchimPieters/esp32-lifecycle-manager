@@ -3,8 +3,9 @@
 
 This utility searches for ``build/main.bin`` and, when found, generates a
 ``build/main.bin.sig`` using a private key. The key is read from the ``--key``
-argument or the ``OTA_PRIVATE_KEY`` environment variable. If neither is
-provided, ``private_key.pem`` in the current directory is used. The key must
+argument or the ``OTA_PRIVATE_KEY`` environment variable. ``OTA_PRIVATE_KEY``
+may contain either a filesystem path or the PEM-encoded key itself. If neither
+is provided, ``private_key.pem`` in the current directory is used. The key must
 already exist – one will not be generated automatically – to prevent signing
 with a key that doesn't match the device firmware. The signature is verified
 against a public key loaded from ``--pubkey``, ``ota_pubkey.pem`` or
@@ -94,43 +95,72 @@ def main():
     p.add_argument('--pubkey', type=Path, help='Path to public key (PEM) for verification')
     args = p.parse_args()
 
-    key_path = args.key or os.environ.get('OTA_PRIVATE_KEY') or 'private_key.pem'
-    key_path = Path(key_path)
-    if not key_path.exists():
-        print(
-            f"Private key {key_path} not found. Provide a key with --key or set "
-            "the OTA_PRIVATE_KEY environment variable.",
-            file=sys.stderr,
-        )
-        return 1
-
-    pubkey_path = args.pubkey or os.environ.get('OTA_PUBLIC_KEY')
-    pubkey = None
-    if pubkey_path:
-        pubkey_path = Path(pubkey_path)
-        if not pubkey_path.exists():
-            print(f'Public key {pubkey_path} not found', file=sys.stderr)
+    key: ec.EllipticCurvePrivateKey | rsa.RSAPrivateKey | None = None
+    if args.key:
+        if not args.key.exists():
+            print(f"Private key {args.key} not found", file=sys.stderr)
             return 1
-        pubkey = load_public_key(pubkey_path)
+        key = load_private_key(args.key)
     else:
-        candidate = Path('ota_pubkey.pem')
-        if candidate.exists():
-            pubkey = load_public_key(candidate)
-        else:
-            ota_c = Path('main/ota_pubkey.c')
-            if ota_c.exists():
-                try:
-                    pem_data = extract_public_key_from_c(ota_c)
-                    pubkey = serialization.load_pem_public_key(pem_data)
-                except Exception as e:
-                    print(f'Failed to parse {ota_c}: {e}', file=sys.stderr)
-                    return 1
+        key_env = os.environ.get('OTA_PRIVATE_KEY')
+        if key_env:
+            env_path = Path(key_env)
+            if env_path.exists():
+                key = load_private_key(env_path)
             else:
                 try:
-                    pubkey = serialization.load_pem_public_key(DEFAULT_PUBLIC_KEY_PEM)
-                except Exception as e:
-                    print(f'Failed to load built-in public key: {e}', file=sys.stderr)
+                    key = serialization.load_pem_private_key(key_env.encode(), password=None)
+                except Exception:
+                    print('Failed to parse private key from OTA_PRIVATE_KEY', file=sys.stderr)
                     return 1
+        else:
+            default_path = Path('private_key.pem')
+            if not default_path.exists():
+                print(
+                    "Private key private_key.pem not found. Provide a key with --key or set "
+                    "the OTA_PRIVATE_KEY environment variable.",
+                    file=sys.stderr,
+                )
+                return 1
+            key = load_private_key(default_path)
+
+    pubkey = None
+    if args.pubkey:
+        if not args.pubkey.exists():
+            print(f"Public key {args.pubkey} not found", file=sys.stderr)
+            return 1
+        pubkey = load_public_key(args.pubkey)
+    else:
+        pubkey_env = os.environ.get('OTA_PUBLIC_KEY')
+        if pubkey_env:
+            env_path = Path(pubkey_env)
+            if env_path.exists():
+                pubkey = load_public_key(env_path)
+            else:
+                try:
+                    pubkey = serialization.load_pem_public_key(pubkey_env.encode())
+                except Exception:
+                    print('Failed to parse public key from OTA_PUBLIC_KEY', file=sys.stderr)
+                    return 1
+        else:
+            candidate = Path('ota_pubkey.pem')
+            if candidate.exists():
+                pubkey = load_public_key(candidate)
+            else:
+                ota_c = Path('main/ota_pubkey.c')
+                if ota_c.exists():
+                    try:
+                        pem_data = extract_public_key_from_c(ota_c)
+                        pubkey = serialization.load_pem_public_key(pem_data)
+                    except Exception as e:
+                        print(f'Failed to parse {ota_c}: {e}', file=sys.stderr)
+                        return 1
+                else:
+                    try:
+                        pubkey = serialization.load_pem_public_key(DEFAULT_PUBLIC_KEY_PEM)
+                    except Exception as e:
+                        print(f'Failed to load built-in public key: {e}', file=sys.stderr)
+                        return 1
     if pubkey is None:
         print('Public key not found; provide --pubkey or ota_pubkey.pem', file=sys.stderr)
         return 1
@@ -140,7 +170,6 @@ def main():
         print('Firmware binary build/main.bin not found', file=sys.stderr)
         return 1
 
-    key = load_private_key(key_path)
     digest, signature = sign_firmware(fw_path, key)
 
     sig_path = fw_path.with_suffix(fw_path.suffix + '.sig')
