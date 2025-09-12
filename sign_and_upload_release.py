@@ -14,6 +14,7 @@ success a JSON object describing the signature file is written to stdout, which
 can be consumed by GitHub Actions or the GitHub API.
 """
 import argparse
+import base64
 import hashlib
 import json
 import os
@@ -111,8 +112,12 @@ def main():
                 try:
                     key = serialization.load_pem_private_key(key_env.encode(), password=None)
                 except Exception:
-                    print('Failed to parse private key from OTA_PRIVATE_KEY', file=sys.stderr)
-                    return 1
+                    try:
+                        der = base64.b64decode(key_env)
+                        key = serialization.load_der_private_key(der, password=None)
+                    except Exception:
+                        print('Failed to parse private key from OTA_PRIVATE_KEY', file=sys.stderr)
+                        return 1
         else:
             default_path = Path('private_key.pem')
             if not default_path.exists():
