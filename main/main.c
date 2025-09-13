@@ -35,6 +35,7 @@
 #define LED_GPIO CONFIG_ESP_LED_GPIO
 #define BUTTON_GPIO CONFIG_ESP_BUTTON_GPIO
 #define DEBOUNCE_TIME_MS 50
+#define RESET_HOLD_MS 3000
 
 static const char *TAG = "main";
 
@@ -93,19 +94,29 @@ void factory_reset() {
 // Task button
 void button_task(void *pvParameter) {
     ESP_LOGI(TAG, "Button task started");
-    bool last_state = true;
+    bool pressed = false;
+    TickType_t press_start = 0;
 
     while (1) {
-        bool current_state = gpio_get_level(BUTTON_GPIO);
-        ESP_LOGD(TAG, "Button state: %d", current_state);
+        bool state = gpio_get_level(BUTTON_GPIO) == 0; // active low
+        ESP_LOGD(TAG, "Button state: %d", state);
 
-        // Detecteer overgang van HIGH naar LOW (knop ingedrukt)
-        if (last_state && !current_state) {
-            ESP_LOGW(TAG, "BUTTON PRESSED → RESETTING CONFIGURATION");
-            factory_reset();
+        if (state) {
+            if (!pressed) {
+                press_start = xTaskGetTickCount();
+                pressed = true;
+                ESP_LOGD(TAG, "Button press detected");
+            } else if (xTaskGetTickCount() - press_start >= pdMS_TO_TICKS(RESET_HOLD_MS)) {
+                ESP_LOGW(TAG, "Button held for %dms → resetting configuration", RESET_HOLD_MS);
+                factory_reset();
+                vTaskDelay(pdMS_TO_TICKS(1000));
+                pressed = false; // prevent retrigger before reboot
+            }
+        } else if (pressed) {
+            pressed = false;
+            ESP_LOGD(TAG, "Button released");
         }
 
-        last_state = current_state;
         vTaskDelay(pdMS_TO_TICKS(DEBOUNCE_TIME_MS));
     }
 }
