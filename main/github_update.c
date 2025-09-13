@@ -4,7 +4,7 @@
 #include "esp_https_ota.h"
 #include "esp_http_client.h"
 #include "esp_ota_ops.h"
-#include "esp_app_format.h"
+#include "esp_app_desc.h"
 #include "esp_crt_bundle.h"
 #include "mbedtls/sha512.h"
 #include "esp_image_format.h"
@@ -295,7 +295,7 @@ esp_err_t github_update_if_needed(const char *repo, bool prerelease) {
         .user_agent = "esp32-ota" };
     ESP_LOGI(TAG, "Checking updates for repo %s (pre=%d)", repo, prerelease);
     ESP_LOGD(TAG, "Release API URL: %s", api);
-    const esp_app_desc_t *cur = esp_ota_get_app_description();
+    const esp_app_desc_t *cur = esp_app_get_description();
     int curMaj, curMin, curPat;
     parse_version(cur ? cur->version : NULL, &curMaj, &curMin, &curPat);
     ESP_LOGI(TAG, "Current firmware version %d.%d.%d", curMaj, curMin, curPat);
