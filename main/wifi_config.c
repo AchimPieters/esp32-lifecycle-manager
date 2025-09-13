@@ -1067,13 +1067,19 @@ void wifi_config_legacy_support_on_event(wifi_config_event_t event) {
                                     WIFI_READY_TASK_PRIORITY,
                                     NULL);
                 }
-        }
-#ifndef WIFI_CONFIG_NO_RESTART
-        else if (event == WIFI_CONFIG_DISCONNECTED) {
+        } else if (event == WIFI_CONFIG_DISCONNECTED) {
                 INFO("WiFi disconnected event received");
+#ifdef CONFIG_WIFI_CONFIG_RESTART_ON_DISCONNECT
+                INFO("Restarting due to WiFi disconnect");
                 esp_restart();
-        }
+#else
+                INFO("Attempting to reconnect to WiFi");
+                esp_err_t err = esp_wifi_connect();
+                if (err != ESP_OK) {
+                        ERROR("Reconnection failed: %s", esp_err_to_name(err));
+                }
 #endif
+        }
 }
 
 

@@ -12,4 +12,10 @@ menu "StudioPieters"
               help
                   The GPIO number the button is connected to.
 
+      config WIFI_CONFIG_RESTART_ON_DISCONNECT
+              bool "Restart when WiFi is disconnected"
+              default n
+              help
+                  Enable this option to reboot the device if the WiFi connection is lost.
+
 endmenu
