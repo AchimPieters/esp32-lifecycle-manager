@@ -735,6 +735,7 @@ static void http_task(void *arg) {
         }
 
         lwip_close(listenfd);
+        context->http_task_handle = NULL;
         vTaskDelete(NULL);
 }
 
@@ -749,6 +750,8 @@ static void http_stop() {
                 return;
 
         xTaskNotify(context->http_task_handle, 1, eSetValueWithOverwrite);
+        while (context->http_task_handle)
+                vTaskDelay(pdMS_TO_TICKS(10));
 }
 
 
@@ -833,6 +836,7 @@ static void dns_task(void *arg)
 
         lwip_close(fd);
 
+        context->dns_task_handle = NULL;
         vTaskDelete(NULL);
 }
 
@@ -847,6 +851,8 @@ static void dns_stop() {
                 return;
 
         xTaskNotify(context->dns_task_handle, 1, eSetValueWithOverwrite);
+        while (context->dns_task_handle)
+                vTaskDelay(pdMS_TO_TICKS(10));
 }
 
 
