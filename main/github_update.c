@@ -4,6 +4,7 @@
 #include "esp_https_ota.h"
 #include "esp_http_client.h"
 #include "esp_ota_ops.h"
+#include "esp_app_format.h"
 #include "esp_crt_bundle.h"
 #include "mbedtls/sha512.h"
 #include "esp_image_format.h"
@@ -13,6 +14,20 @@
 #include "github_update.h"
 
 static const char *TAG = "github_update";
+
+static void parse_version(const char *str, int *maj, int *min, int *pat) {
+    *maj = *min = *pat = 0;
+    if (!str) return;
+    if (str[0] == 'v' || str[0] == 'V') str++;
+    sscanf(str, "%d.%d.%d", maj, min, pat);
+}
+
+static int cmp_version(int aMaj, int aMin, int aPat,
+                       int bMaj, int bMin, int bPat) {
+    if (aMaj != bMaj) return aMaj - bMaj;
+    if (aMin != bMin) return aMin - bMin;
+    return aPat - bPat;
+}
 
 esp_err_t save_fw_config(const char *repo, bool pre) {
     ESP_LOGD(TAG, "Saving firmware config repo=%s pre=%d", repo ? repo : "(null)", pre);
@@ -280,6 +295,10 @@ esp_err_t github_update_if_needed(const char *repo, bool prerelease) {
         .user_agent = "esp32-ota" };
     ESP_LOGI(TAG, "Checking updates for repo %s (pre=%d)", repo, prerelease);
     ESP_LOGD(TAG, "Release API URL: %s", api);
+    const esp_app_desc_t *cur = esp_ota_get_app_description();
+    int curMaj, curMin, curPat;
+    parse_version(cur ? cur->version : NULL, &curMaj, &curMin, &curPat);
+    ESP_LOGI(TAG, "Current firmware version %d.%d.%d", curMaj, curMin, curPat);
     esp_http_client_handle_t client = esp_http_client_init(&cfg);
     if (!client) { ESP_LOGE(TAG, "esp_http_client_init failed"); return ESP_FAIL; }
     esp_err_t err = esp_http_client_open(client, 0);
@@ -388,9 +407,17 @@ esp_err_t github_update_if_needed(const char *repo, bool prerelease) {
     ESP_LOGD(TAG, "Release selected");
     cJSON *assets = cJSON_GetObjectItem(release, "assets");
     if (!cJSON_IsArray(assets)) { cJSON_Delete(json); return ESP_FAIL; }
-    ESP_LOGD(TAG, "Scanning assets for firmware and signature");
     const char *fw=NULL,*sig=NULL;
     cJSON *tag = cJSON_GetObjectItem(release, "tag_name");
+    int relMaj, relMin, relPat;
+    parse_version(cJSON_IsString(tag)?tag->valuestring:NULL, &relMaj, &relMin, &relPat);
+    ESP_LOGI(TAG, "Latest release version %d.%d.%d", relMaj, relMin, relPat);
+    if (cmp_version(relMaj, relMin, relPat, curMaj, curMin, curPat) <= 0) {
+        ESP_LOGI(TAG, "Firmware already up to date");
+        cJSON_Delete(json);
+        return ESP_OK;
+    }
+    ESP_LOGD(TAG, "Scanning assets for firmware and signature");
     for (int i=0;i<cJSON_GetArraySize(assets);++i){
         cJSON *a = cJSON_GetArrayItem(assets,i);
         cJSON *name = cJSON_GetObjectItem(a,"name");
