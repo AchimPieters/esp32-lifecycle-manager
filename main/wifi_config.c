@@ -345,6 +345,7 @@ SemaphoreHandle_t wifi_networks_mutex;
 static void wifi_scan_task(void *arg)
 {
         INFO("Starting WiFi scan");
+        ESP_LOGD("wifi_config", "wifi_scan_task initialized");
         while (true) {
                 if (sdk_wifi_get_opmode() != STATIONAP_MODE)
                         break;
@@ -353,6 +354,7 @@ static void wifi_scan_task(void *arg)
 
                 uint16_t ap_num = 0;
                 esp_wifi_scan_get_ap_num(&ap_num);
+                ESP_LOGD("wifi_config", "Scan complete, found %u APs", ap_num);
                 wifi_ap_record_t *records = calloc(ap_num, sizeof(wifi_ap_record_t));
                 if (records && esp_wifi_scan_get_ap_records(&ap_num, records) == ESP_OK) {
                         xSemaphoreTake(wifi_networks_mutex, portMAX_DELAY);
@@ -386,6 +388,7 @@ static void wifi_scan_task(void *arg)
                 }
 
                 free(records);
+                ESP_LOGD("wifi_config", "WiFi scan cycle finished");
                 vTaskDelay(10000 / portTICK_PERIOD_MS);
         }
 
@@ -401,6 +404,7 @@ static void wifi_scan_task(void *arg)
 
         xSemaphoreGive(wifi_networks_mutex);
 
+        ESP_LOGD("wifi_config", "wifi_scan_task exiting");
         vTaskDelete(NULL);
 }
 
@@ -631,12 +635,15 @@ static void http_task(void *arg) {
                 struct timeval timeout = { 1, 0 }; // 1 second timeout
                 int triggered_nfds = lwip_select(max_fd + 1, &read_fds, NULL, NULL, &timeout);
 
+                ESP_LOGD("wifi_config", "HTTP select triggered with %d fds", triggered_nfds);
+
                 if (triggered_nfds <= 0)
                         continue;
 
                 if (FD_ISSET(listenfd, &read_fds)) {
                         int fd = accept(listenfd, (struct sockaddr *)NULL, (socklen_t *)NULL);
                         if (fd > 0) {
+                                ESP_LOGD("wifi_config", "Accepted new client fd=%d", fd);
                                 const struct timeval timeout = { 2, 0 }; /* 2 second timeout */
                                 setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
 
@@ -850,6 +857,8 @@ static void wifi_config_softap_start() {
 
         uint8_t macaddr[6];
         sdk_wifi_get_macaddr(SOFTAP_IF, macaddr);
+        ESP_LOGD("wifi_config", "SoftAP MAC %02X:%02X:%02X:%02X:%02X:%02X",
+                 macaddr[0], macaddr[1], macaddr[2], macaddr[3], macaddr[4], macaddr[5]);
 
         wifi_config_t ap_cfg;
         sdk_wifi_softap_get_config(&ap_cfg);
@@ -875,7 +884,11 @@ static void wifi_config_softap_start() {
         wifi_networks_mutex = xSemaphoreCreateBinary();
         xSemaphoreGive(wifi_networks_mutex);
 
-        xTaskCreate(wifi_scan_task, "wifi_config scan", 4096, NULL, 2, NULL);
+        if (xTaskCreate(wifi_scan_task, "wifi_config scan", 4096, NULL, 2, NULL) != pdPASS) {
+                ESP_LOGE("wifi_config", "Failed to create wifi_scan_task");
+        } else {
+                ESP_LOGD("wifi_config", "wifi_scan_task started");
+        }
 
         INFO("Starting AP interface");
 
@@ -885,9 +898,11 @@ static void wifi_config_softap_start() {
 
 
 static void wifi_config_softap_stop() {
+        INFO("Stopping AP interface");
         dns_stop();
         http_stop();
         sdk_wifi_set_opmode(STATION_MODE);
+        ESP_LOGD("wifi_config", "AP interface stopped");
 }
 
 
@@ -938,14 +953,17 @@ static void wifi_config_monitor_work(void) {
 }
 
 static void wifi_config_monitor_callback(TimerHandle_t xTimer) {
+        ESP_LOGD("wifi_config", "Monitor timer callback fired");
         if (context && context->monitor_task_handle) {
                 xTaskNotifyGive(context->monitor_task_handle);
         }
 }
 
 static void wifi_config_monitor_task(void *arg) {
+        ESP_LOGD("wifi_config", "Monitor task started");
         while (true) {
                 ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+                ESP_LOGD("wifi_config", "Monitor task triggered");
                 wifi_config_monitor_work();
         }
 }
@@ -966,6 +984,7 @@ static int wifi_config_has_configuration() {
 
 
 static int wifi_config_station_connect() {
+        ESP_LOGD("wifi_config", "wifi_config_station_connect called");
         char *wifi_ssid = NULL;
         char *wifi_password = NULL;
         sysparam_get_string("wifi_ssid", &wifi_ssid);
