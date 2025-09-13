@@ -22,13 +22,24 @@ esp_err_t save_fw_config(const char *repo, bool pre) {
         ESP_LOGE(TAG, "nvs_open failed: %s", esp_err_to_name(err));
         return err;
     }
-    err |= nvs_set_str(h, "repo", repo ? repo : "");
-    err |= nvs_set_u8(h, "pre", pre ? 1 : 0);
-    if (err == ESP_OK) {
-        err = nvs_commit(h);
-        ESP_LOGD(TAG, "nvs_commit -> %s", esp_err_to_name(err));
+
+    if ((err = nvs_set_str(h, "repo", repo ? repo : "")) != ESP_OK) {
+        ESP_LOGE(TAG, "nvs_set_str failed: %s", esp_err_to_name(err));
+        nvs_close(h);
+        return err;
+    }
+
+    if ((err = nvs_set_u8(h, "pre", pre ? 1 : 0)) != ESP_OK) {
+        ESP_LOGE(TAG, "nvs_set_u8 failed: %s", esp_err_to_name(err));
+        nvs_close(h);
+        return err;
+    }
+
+    err = nvs_commit(h);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "nvs_commit failed: %s", esp_err_to_name(err));
     } else {
-        ESP_LOGE(TAG, "Failed to set fw config values: %s", esp_err_to_name(err));
+        ESP_LOGD(TAG, "Firmware config saved");
     }
     nvs_close(h);
     return err;
@@ -37,22 +48,26 @@ esp_err_t save_fw_config(const char *repo, bool pre) {
 bool load_fw_config(char *repo, size_t repo_len, bool *pre) {
     ESP_LOGD(TAG, "Loading firmware config");
     nvs_handle_t h;
-    if (nvs_open("fwcfg", NVS_READONLY, &h) != ESP_OK) {
+    esp_err_t err = nvs_open("fwcfg", NVS_READONLY, &h);
+    if (err != ESP_OK) {
         ESP_LOGW(TAG, "fwcfg namespace not found");
         return false;
     }
-    size_t len;
+
     if (repo) {
-        len = repo_len;
-        if (nvs_get_str(h, "repo", repo, &len) != ESP_OK) {
-            ESP_LOGW(TAG, "repo key missing");
+        size_t len = repo_len;
+        err = nvs_get_str(h, "repo", repo, &len);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "nvs_get_str(repo) failed: %s", esp_err_to_name(err));
             nvs_close(h);
             return false;
         }
     }
+
     uint8_t pre_u8;
-    if (nvs_get_u8(h, "pre", &pre_u8) != ESP_OK) {
-        ESP_LOGW(TAG, "pre key missing");
+    err = nvs_get_u8(h, "pre", &pre_u8);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "nvs_get_u8(pre) failed: %s", esp_err_to_name(err));
         nvs_close(h);
         return false;
     }
@@ -202,7 +217,8 @@ esp_err_t github_update_from_urls(const char *fw_url, const char *sig_url) {
         ESP_LOGE(TAG, "No OTA partition available");
         return ESP_FAIL;
     }
-    ESP_LOGD(TAG, "Update partition at 0x%lx, size %lu", (unsigned long)update_part->address, (unsigned long)update_part->size);
+    ESP_LOGI(TAG, "Using OTA partition at 0x%lx (%lu bytes)",
+             (unsigned long)update_part->address, (unsigned long)update_part->size);
     esp_http_client_config_t http_cfg = {
         .url = fw_url,
         .crt_bundle_attach = esp_crt_bundle_attach,
@@ -223,6 +239,7 @@ esp_err_t github_update_from_urls(const char *fw_url, const char *sig_url) {
         ESP_LOGE(TAG, "OTA failed: %s", esp_err_to_name(ret));
         return ret;
     }
+    ESP_LOGI(TAG, "OTA download complete");
     esp_partition_pos_t pos = { .offset = update_part->address, .size = update_part->size };
     esp_image_metadata_t meta;
     esp_err_t meta_res = esp_image_get_metadata(&pos, &meta);
@@ -240,6 +257,7 @@ esp_err_t github_update_from_urls(const char *fw_url, const char *sig_url) {
                  (unsigned)meta.image_len);
         return ESP_FAIL;
     }
+    ESP_LOGI(TAG, "Image length verified (%u bytes)", (unsigned)meta.image_len);
     uint8_t actual[48];
     esp_err_t hash_res = partition_sha384(update_part, meta.image_len, actual);
     ESP_LOGD(TAG, "partition_sha384 -> %s", esp_err_to_name(hash_res));
