@@ -7,7 +7,8 @@ CONFIG_COMPILER_OPTIMIZATION_SIZE=y
 
 
 # Binary Size Reduction
-CONFIG_LOG_DEFAULT_LEVEL_ERROR=y
+# Enable info-level logging so runtime messages like WiFi readiness are visible
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
 CONFIG_ESP_CONSOLE_UART_DEFAULT=n
 
 # TLS cert bundle
