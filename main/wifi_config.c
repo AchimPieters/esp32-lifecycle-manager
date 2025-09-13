@@ -1073,9 +1073,13 @@ void wifi_config_start() {
 #define WIFI_READY_TASK_PRIORITY 5
 
 static void wifi_config_on_wifi_ready_task(void *pvParameter) {
-        void (*callback)() = pvParameter;
-        callback();
-        INFO("wifi_ready stack high water mark: %u", uxTaskGetStackHighWaterMark(NULL));
+        (void)pvParameter;
+        if (context && context->on_wifi_ready) {
+                context->on_wifi_ready();
+                INFO("wifi_ready stack high water mark: %u", uxTaskGetStackHighWaterMark(NULL));
+        } else {
+                ERROR("on_wifi_ready callback not set");
+        }
         vTaskDelete(NULL);
 }
 
@@ -1088,7 +1092,7 @@ void wifi_config_legacy_support_on_event(wifi_config_event_t event) {
                         xTaskCreate(wifi_config_on_wifi_ready_task,
                                     "wifi_ready",
                                     WIFI_READY_TASK_STACK_SIZE,
-                                    (void *)context->on_wifi_ready,
+                                    NULL,
                                     WIFI_READY_TASK_PRIORITY,
                                     NULL);
                 }
