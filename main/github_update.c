@@ -101,6 +101,59 @@ bool load_fw_config(char *repo, size_t repo_len, bool *pre) {
     return true;
 }
 
+esp_err_t save_led_config(bool enabled, int gpio) {
+    nvs_handle_t h;
+    esp_err_t err = nvs_open("fwcfg", NVS_READWRITE, &h);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "nvs_open failed: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    if ((err = nvs_set_u8(h, "led_en", enabled ? 1 : 0)) != ESP_OK) {
+        ESP_LOGE(TAG, "nvs_set_u8(led_en) failed: %s", esp_err_to_name(err));
+        nvs_close(h);
+        return err;
+    }
+
+    if ((err = nvs_set_i32(h, "led_gpio", gpio)) != ESP_OK) {
+        ESP_LOGE(TAG, "nvs_set_i32(led_gpio) failed: %s", esp_err_to_name(err));
+        nvs_close(h);
+        return err;
+    }
+
+    err = nvs_commit(h);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "nvs_commit failed: %s", esp_err_to_name(err));
+    }
+    nvs_close(h);
+    return err;
+}
+
+bool load_led_config(bool *enabled, int *gpio) {
+    nvs_handle_t h;
+    esp_err_t err = nvs_open("fwcfg", NVS_READONLY, &h);
+    if (err != ESP_OK) {
+        return false;
+    }
+
+    uint8_t en;
+    int32_t pin;
+    err = nvs_get_u8(h, "led_en", &en);
+    if (err != ESP_OK) {
+        nvs_close(h);
+        return false;
+    }
+    err = nvs_get_i32(h, "led_gpio", &pin);
+    if (err != ESP_OK) {
+        nvs_close(h);
+        return false;
+    }
+    if (enabled) *enabled = en != 0;
+    if (gpio) *gpio = (int)pin;
+    nvs_close(h);
+    return true;
+}
+
 static esp_err_t download_signature(const char *url, uint8_t *buf, size_t buf_len, size_t *out_len) {
     ESP_LOGD(TAG, "Initializing HTTP client for %s", url);
     esp_http_client_config_t cfg = {
