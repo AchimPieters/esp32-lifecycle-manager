@@ -15,11 +15,20 @@
 
 static const char *TAG = "github_update";
 
-static void parse_version(const char *str, int *maj, int *min, int *pat) {
+static bool parse_version(const char *str, int *maj, int *min, int *pat) {
     *maj = *min = *pat = 0;
-    if (!str) return;
+    if (!str) {
+        ESP_LOGE(TAG, "Version string is null");
+        return false;
+    }
     if (str[0] == 'v' || str[0] == 'V') str++;
-    sscanf(str, "%d.%d.%d", maj, min, pat);
+    int parsed = sscanf(str, "%d.%d.%d", maj, min, pat);
+    if (parsed < 3) {
+        ESP_LOGE(TAG, "Invalid version string: %s", str);
+        *maj = *min = *pat = 0;
+        return false;
+    }
+    return true;
 }
 
 static int cmp_version(int aMaj, int aMin, int aPat,
@@ -297,8 +306,11 @@ esp_err_t github_update_if_needed(const char *repo, bool prerelease) {
     ESP_LOGD(TAG, "Release API URL: %s", api);
     const esp_app_desc_t *cur = esp_app_get_description();
     int curMaj, curMin, curPat;
-    parse_version(cur ? cur->version : NULL, &curMaj, &curMin, &curPat);
+    bool curValid = parse_version(cur ? cur->version : NULL, &curMaj, &curMin, &curPat);
     ESP_LOGI(TAG, "Current firmware version %d.%d.%d", curMaj, curMin, curPat);
+    if (!curValid) {
+        ESP_LOGE(TAG, "Invalid current firmware version, assuming 0.0.0");
+    }
     esp_http_client_handle_t client = esp_http_client_init(&cfg);
     if (!client) { ESP_LOGE(TAG, "esp_http_client_init failed"); return ESP_FAIL; }
     esp_err_t err = esp_http_client_open(client, 0);
@@ -410,9 +422,12 @@ esp_err_t github_update_if_needed(const char *repo, bool prerelease) {
     const char *fw=NULL,*sig=NULL;
     cJSON *tag = cJSON_GetObjectItem(release, "tag_name");
     int relMaj, relMin, relPat;
-    parse_version(cJSON_IsString(tag)?tag->valuestring:NULL, &relMaj, &relMin, &relPat);
+    bool relValid = parse_version(cJSON_IsString(tag)?tag->valuestring:NULL, &relMaj, &relMin, &relPat);
     ESP_LOGI(TAG, "Latest release version %d.%d.%d", relMaj, relMin, relPat);
-    if (cmp_version(relMaj, relMin, relPat, curMaj, curMin, curPat) <= 0) {
+    if (!relValid) {
+        ESP_LOGE(TAG, "Invalid release version, assuming 0.0.0");
+    }
+    if (relValid && curValid && cmp_version(relMaj, relMin, relPat, curMaj, curMin, curPat) <= 0) {
         ESP_LOGI(TAG, "Firmware already up to date");
         cJSON_Delete(json);
         return ESP_OK;
