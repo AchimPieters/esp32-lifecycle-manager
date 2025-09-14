@@ -7,11 +7,11 @@ SHA-384 hash of the image followed by its length in bytes. From the directory
 where `make` is run execute:
 
 ```bash
-openssl sha384 -binary -out firmware/main.bin.sig firmware/main.bin
-printf "%08x" `cat firmware/main.bin | wc -c` | xxd -r -p >> firmware/main.bin.sig
+openssl sha384 -binary -out build/main.bin.sig build/main.bin
+printf "%08x" `cat build/main.bin | wc -c` | xxd -r -p >> build/main.bin.sig
 ```
 
-The resulting `firmware/main.bin.sig` must accompany `firmware/main.bin` when
+The resulting `build/main.bin.sig` must accompany `build/main.bin` when
 publishing releases. During an OTA update the device downloads both files,
 computes the SHA-384 hash of the image, checks the expected length, and
 activates the update only if they match.
