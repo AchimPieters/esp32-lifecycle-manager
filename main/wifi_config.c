@@ -24,6 +24,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <lwip/sockets.h>
 #include <lwip/ip_addr.h>
 
@@ -468,6 +469,8 @@ static void wifi_config_server_on_settings_update(client_t *client) {
     form_param_t *password_param = form_params_find(form, "password");
     form_param_t *repo_param = form_params_find(form, "repo");
     form_param_t *pre_param = form_params_find(form, "use_prerelease");
+    form_param_t *led_param = form_params_find(form, "led_indicator");
+    form_param_t *gpio_param = form_params_find(form, "led_gpio");
 
     if (!ssid_param) {
         DEBUG("Invalid form data, redirecting to /settings");
@@ -483,6 +486,8 @@ static void wifi_config_server_on_settings_update(client_t *client) {
     DEBUG("Setting wifi_password param = %s", password_param ? password_param->value : "(none)");
     DEBUG("Setting ota.repo_url param = %s", repo_param ? repo_param->value : "(none)");
     DEBUG("Setting ota.pre param = %s", pre_param ? pre_param->value : "(none)");
+    DEBUG("Setting led_indicator param = %s", led_param ? led_param->value : "(none)");
+    DEBUG("Setting led_gpio param = %s", gpio_param ? gpio_param->value : "(none)");
 
     sysparam_set_string("wifi_ssid", ssid_param->value);
 
@@ -496,6 +501,13 @@ static void wifi_config_server_on_settings_update(client_t *client) {
         bool pre = pre_param && (strcmp(pre_param->value, "on") == 0 || strcmp(pre_param->value, "1") == 0);
         save_fw_config(repo_param ? repo_param->value : "", pre);
     }
+
+    bool led = led_param && (strcmp(led_param->value, "on") == 0 || strcmp(led_param->value, "1") == 0);
+    int gpio = -1;
+    if (gpio_param && gpio_param->value && strcmp(gpio_param->value, "n") != 0) {
+        gpio = atoi(gpio_param->value);
+    }
+    save_led_config(led, gpio);
 
     form_params_free(form);
 

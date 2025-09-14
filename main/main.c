@@ -30,9 +30,9 @@
 #include <wifi_config.h>
 #include <esp_sntp.h>
 #include "github_update.h"
+#include <driver/ledc.h>
 
 // GPIO-definities
-#define LED_GPIO CONFIG_ESP_LED_GPIO
 #define BUTTON_GPIO CONFIG_ESP_BUTTON_GPIO
 #define DEBOUNCE_TIME_MS 50
 #define RESET_HOLD_MS 3000
@@ -42,20 +42,81 @@ static const char *TAG = "main";
 static void sntp_start_and_wait(void);
 void wifi_ready(void);
 
-bool led_on = false;
+static int led_gpio = CONFIG_ESP_LED_GPIO;
+static bool led_enabled = true;
+static bool led_on = false;
+static TaskHandle_t led_task = NULL;
+static bool led_breathing = false;
 
 void led_write(bool on) {
+    if (led_gpio < 0) return;
     ESP_LOGD(TAG, "Setting LED %s", on ? "ON" : "OFF");
-    gpio_set_level(LED_GPIO, on ? 1 : 0);
+    gpio_set_level(led_gpio, on ? 1 : 0);
+}
+
+static void led_breath_task(void *pv) {
+    int duty = 0;
+    bool up = true;
+    ledc_timer_config_t tcfg = {
+        .speed_mode = LEDC_LOW_SPEED_MODE,
+        .timer_num = LEDC_TIMER_0,
+        .duty_resolution = LEDC_TIMER_8_BIT,
+        .freq_hz = 5000,
+        .clk_cfg = LEDC_AUTO_CLK,
+    };
+    ledc_timer_config(&tcfg);
+    ledc_channel_config_t cconf = {
+        .gpio_num = led_gpio,
+        .speed_mode = LEDC_LOW_SPEED_MODE,
+        .channel = LEDC_CHANNEL_0,
+        .intr_type = LEDC_INTR_DISABLE,
+        .timer_sel = LEDC_TIMER_0,
+        .duty = 0,
+        .hpoint = 0,
+    };
+    ledc_channel_config(&cconf);
+    while (led_breathing) {
+        ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, duty);
+        ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
+        vTaskDelay(pdMS_TO_TICKS(30));
+        if (up) {
+            duty++;
+            if (duty >= 255) { duty = 255; up = false; }
+        } else {
+            duty--;
+            if (duty <= 0) { duty = 0; up = true; }
+        }
+    }
+    ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, 0);
+    ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
+    vTaskDelete(NULL);
+}
+
+void led_breathing_start() {
+    if (led_gpio < 0 || !led_enabled || led_breathing) return;
+    led_breathing = true;
+    xTaskCreate(led_breath_task, "led_breath", 2048, NULL, 5, &led_task);
+}
+
+void led_breathing_stop() {
+    if (!led_breathing) return;
+    led_breathing = false;
+    if (led_task) {
+        vTaskDelete(led_task);
+        led_task = NULL;
+    }
+    led_write(false);
 }
 
 void gpio_init() {
     ESP_LOGD(TAG, "Initializing GPIO");
     // LED setup
-    gpio_reset_pin(LED_GPIO);
-    gpio_set_direction(LED_GPIO, GPIO_MODE_OUTPUT);
-    led_write(led_on);
-    ESP_LOGD(TAG, "LED GPIO configured on pin %d", LED_GPIO);
+    if (led_gpio >= 0) {
+        gpio_reset_pin(led_gpio);
+        gpio_set_direction(led_gpio, GPIO_MODE_OUTPUT);
+        led_write(led_on);
+        ESP_LOGD(TAG, "LED GPIO configured on pin %d", led_gpio);
+    }
 
     // Knop setup
     gpio_config_t io_conf = {
@@ -127,7 +188,9 @@ void app_main(void) {
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "NVS init failed: %s", esp_err_to_name(err));
     }
+    load_led_config(&led_enabled, &led_gpio);
     gpio_init();
+    led_breathing_start();
     if (xTaskCreate(button_task, "button_task", 2048, NULL, 10, NULL) != pdPASS) {
         ESP_LOGE(TAG, "Failed to create button task");
     }
@@ -164,10 +227,12 @@ void wifi_ready(void)
     bool pre=false;
     if (!load_fw_config(repo, sizeof(repo), &pre)) {
         ESP_LOGW("app", "Geen firmware-config in NVS; configureer via web UI.");
+        led_breathing_stop();
         return;
     }
     ESP_LOGI("app", "Firmware config loaded: repo=%s pre=%d", repo, pre);
     ESP_LOGI("app", "Checking for firmware update");
     github_update_if_needed(repo, pre);
+    led_breathing_stop();
     ESP_LOGI("app", "Firmware update check complete");
 }
