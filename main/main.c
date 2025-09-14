@@ -153,6 +153,14 @@ void factory_reset() {
     }
 }
 
+void led_config_update(bool enabled, int gpio) {
+    led_write(false);
+    led_enabled = enabled;
+    led_gpio = gpio;
+    led_on = enabled;
+    gpio_init();
+}
+
 // Task button
 void button_task(void *pvParameter) {
     ESP_LOGI(TAG, "Button task started");
