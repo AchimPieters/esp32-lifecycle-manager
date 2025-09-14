@@ -43,7 +43,8 @@ static void sntp_start_and_wait(void);
 void wifi_ready(void);
 
 static int led_gpio = CONFIG_ESP_LED_GPIO;
-static bool led_enabled = true;
+static bool led_enabled = false;
+static bool led_configured = false;
 static bool led_on = false;
 static TaskHandle_t led_task = NULL;
 static bool led_breathing = false;
@@ -78,7 +79,7 @@ static void led_breath_task(void *pv) {
     while (led_breathing) {
         ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, duty);
         ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
-        vTaskDelay(pdMS_TO_TICKS(30));
+        vTaskDelay(pdMS_TO_TICKS(20));
         if (up) {
             duty++;
             if (duty >= 255) { duty = 255; up = false; }
@@ -188,9 +189,8 @@ void app_main(void) {
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "NVS init failed: %s", esp_err_to_name(err));
     }
-    load_led_config(&led_enabled, &led_gpio);
+    led_configured = load_led_config(&led_enabled, &led_gpio);
     gpio_init();
-    led_breathing_start();
     if (xTaskCreate(button_task, "button_task", 2048, NULL, 10, NULL) != pdPASS) {
         ESP_LOGE(TAG, "Failed to create button task");
     }
@@ -227,12 +227,10 @@ void wifi_ready(void)
     bool pre=false;
     if (!load_fw_config(repo, sizeof(repo), &pre)) {
         ESP_LOGW("app", "Geen firmware-config in NVS; configureer via web UI.");
-        led_breathing_stop();
         return;
     }
     ESP_LOGI("app", "Firmware config loaded: repo=%s pre=%d", repo, pre);
     ESP_LOGI("app", "Checking for firmware update");
     github_update_if_needed(repo, pre);
-    led_breathing_stop();
     ESP_LOGI("app", "Firmware update check complete");
 }

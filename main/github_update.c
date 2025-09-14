@@ -15,6 +15,10 @@
 
 static const char *TAG = "github_update";
 
+// LED breathing control provided by main.c
+extern void led_breathing_start(void);
+extern void led_breathing_stop(void);
+
 static bool parse_version(const char *str, int *maj, int *min, int *pat) {
     *maj = *min = *pat = 0;
     if (!str) {
@@ -499,7 +503,9 @@ esp_err_t github_update_if_needed(const char *repo, bool prerelease) {
     ESP_LOGD(TAG, "Firmware URL: %s", fw);
     ESP_LOGD(TAG, "Signature URL: %s", sig);
     ESP_LOGI(TAG, "Release %s selected", cJSON_IsString(tag)?tag->valuestring:"?");
+    led_breathing_start();
     esp_err_t res = github_update_from_urls(fw, sig);
+    led_breathing_stop();
     ESP_LOGD(TAG, "github_update_from_urls -> %s", esp_err_to_name(res));
     cJSON_Delete(json);
     return res;
