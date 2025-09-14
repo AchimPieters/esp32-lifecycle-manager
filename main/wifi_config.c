@@ -508,6 +508,7 @@ static void wifi_config_server_on_settings_update(client_t *client) {
         gpio = atoi(gpio_param->value);
     }
     save_led_config(led, gpio);
+    led_config_update(led, gpio);
 
     form_params_free(form);
 
