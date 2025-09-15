@@ -53,19 +53,71 @@ void handle_error(esp_err_t err) {
 #define UPDATE_BUTTON_GPIO GPIO_NUM_15
 #define UPDATE_POLL_INTERVAL_MS 50
 #define UPDATE_DEBOUNCE_MS 50
+#define LED_BLINK_INTERVAL_MS 200
 bool led_on = false;
 
+static TaskHandle_t led_blink_task_handle = NULL;
+static bool led_blinking = false;
+
+static void led_blink_task(void *arg);
+void led_blinking_start(void);
+void led_blinking_stop(void);
 static void lcm_update_task(void *arg);
 
 void led_write(bool on) {
         gpio_set_level(LED_GPIO, on ? 1 : 0);
 }
 
+static void led_blink_task(void *arg) {
+        while (led_blinking) {
+                led_write(true);
+                vTaskDelay(pdMS_TO_TICKS(LED_BLINK_INTERVAL_MS));
+                led_write(false);
+                vTaskDelay(pdMS_TO_TICKS(LED_BLINK_INTERVAL_MS));
+        }
+
+        led_blink_task_handle = NULL;
+        if (!led_blinking) {
+                led_write(led_on);
+        }
+        vTaskDelete(NULL);
+}
+
+void led_blinking_start(void) {
+        if (led_blinking) {
+                return;
+        }
+
+        led_blinking = true;
+        if (xTaskCreate(led_blink_task, "led_blink", 2048, NULL, 5,
+                        &led_blink_task_handle) != pdPASS) {
+                ESP_LOGE("LCM", "Failed to create led_blink task");
+                led_blinking = false;
+                led_blink_task_handle = NULL;
+        }
+}
+
+void led_blinking_stop(void) {
+        if (!led_blinking) {
+                return;
+        }
+
+        led_blinking = false;
+        while (led_blink_task_handle != NULL) {
+                vTaskDelay(pdMS_TO_TICKS(10));
+        }
+        if (!led_blinking) {
+                led_write(led_on);
+        }
+}
+
 // All GPIO Settings
 void gpio_init() {
         gpio_reset_pin(LED_GPIO); // Reset GPIO pin to avoid conflicts
         gpio_set_direction(LED_GPIO, GPIO_MODE_OUTPUT);
-        led_write(led_on);
+        if (!led_blinking) {
+                led_write(led_on);
+        }
 
         gpio_reset_pin(UPDATE_BUTTON_GPIO);
         gpio_config_t button_conf = {
@@ -119,7 +171,9 @@ void accessory_identify_task(void *args) {
                 }
                 vTaskDelay(pdMS_TO_TICKS(250));
         }
-        led_write(led_on);
+        if (!led_blinking) {
+                led_write(led_on);
+        }
         vTaskDelete(NULL);
 }
 
@@ -138,7 +192,9 @@ void led_on_set(homekit_value_t value) {
                 return;
         }
         led_on = value.bool_value;
-        led_write(led_on);
+        if (!led_blinking) {
+                led_write(led_on);
+        }
 }
 
 // HomeKit characteristics

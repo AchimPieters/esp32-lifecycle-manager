@@ -32,6 +32,8 @@
 #include <nvs.h>
 #include <nvs_flash.h>
 
+#include "github_update.h"
+
 static const char *TAG = "WIFI";
 
 #define CHECK_ERROR(x) do {                      \
@@ -186,6 +188,16 @@ esp_err_t wifi_stop(void) {
 }
 
 esp_err_t lcm_update(void) {
-    ESP_LOGW(TAG, "lcm_update is not implemented in this example");
-    return ESP_ERR_NOT_SUPPORTED;
+    char repo[96] = {0};
+    bool prerelease = false;
+
+    if (!load_fw_config(repo, sizeof(repo), &prerelease)) {
+        ESP_LOGW(TAG,
+                 "Geen firmware-config gevonden in NVS; update wordt overgeslagen");
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    ESP_LOGI(TAG, "Controleer firmware-update voor repo=%s (prerelease=%d)", repo,
+             prerelease);
+    return github_update_if_needed(repo, prerelease);
 }
