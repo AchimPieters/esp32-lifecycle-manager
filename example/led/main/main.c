@@ -20,7 +20,7 @@
 
    for more information visit https://www.studiopieters.nl
  **/
- 
+
 #include <stdio.h>
 #include <esp_log.h>
 #include <nvs_flash.h>
@@ -30,7 +30,7 @@
 #include <homekit/homekit.h>
 #include <homekit/characteristics.h>
 
-#include "esp32-wifi.h"   // <— nieuwe wifi module
+#include "esp32-lcm.h"   // <— nieuwe wifi module
 
 // Custom error handling macro
 #define CHECK_ERROR(x) do {                        \
