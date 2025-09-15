@@ -1,7 +1,7 @@
 #include "github_update.h"
 #include "cJSON.h"
 #include "esp_app_desc.h"
-#include "esp_crt_bundle.h"
+#include "sdkconfig.h"
 #include "esp_http_client.h"
 #include "esp_https_ota.h"
 #include "esp_image_format.h"
@@ -12,6 +12,13 @@
 #include "nvs_flash.h"
 #include <stdlib.h>
 #include <string.h>
+
+#if CONFIG_MBEDTLS_CERTIFICATE_BUNDLE || CONFIG_WOLFSSL_CERTIFICATE_BUNDLE
+extern esp_err_t esp_crt_bundle_attach(void *conf);
+#define GITHUB_UPDATE_HAS_CRT_BUNDLE 1
+#else
+#define GITHUB_UPDATE_HAS_CRT_BUNDLE 0
+#endif
 
 static const char *TAG = "github_update";
 
@@ -171,7 +178,9 @@ static esp_err_t download_signature(const char *url, uint8_t *buf,
     ESP_LOGD(TAG, "Initializing HTTP client for %s", url);
     esp_http_client_config_t cfg = {
         .url = url,
+#if GITHUB_UPDATE_HAS_CRT_BUNDLE
         .crt_bundle_attach = esp_crt_bundle_attach,
+#endif
         .user_agent = "esp32-ota",
         // GitHub release assets use redirects with extremely long Location
         // headers (currently >5k and sometimes exceeding 8k), so give the HTTP
@@ -322,7 +331,9 @@ esp_err_t github_update_from_urls(const char *fw_url, const char *sig_url) {
              (unsigned long)update_part->size);
     esp_http_client_config_t http_cfg = {
         .url = fw_url,
+#if GITHUB_UPDATE_HAS_CRT_BUNDLE
         .crt_bundle_attach = esp_crt_bundle_attach,
+#endif
         .user_agent = "esp32-ota",
         // GitHub release assets use redirects with extremely long headers
         // (sometimes over 8 KB), so enlarge the HTTP client buffers to avoid
@@ -380,9 +391,13 @@ esp_err_t github_update_if_needed(const char *repo, bool prerelease) {
     char api[256];
     snprintf(api, sizeof(api), "https://api.github.com/repos/%s/releases%s",
              repo, prerelease ? "?per_page=5" : "/latest");
-    esp_http_client_config_t cfg = {.url = api,
-                                    .crt_bundle_attach = esp_crt_bundle_attach,
-                                    .user_agent = "esp32-ota"};
+    esp_http_client_config_t cfg = {
+        .url = api,
+#if GITHUB_UPDATE_HAS_CRT_BUNDLE
+        .crt_bundle_attach = esp_crt_bundle_attach,
+#endif
+        .user_agent = "esp32-ota",
+    };
     ESP_LOGI(TAG, "Checking updates for repo %s (pre=%d)", repo, prerelease);
     ESP_LOGD(TAG, "Release API URL: %s", api);
     const esp_app_desc_t *cur = esp_app_get_description();

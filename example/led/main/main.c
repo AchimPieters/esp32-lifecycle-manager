@@ -55,7 +55,7 @@ bool led_on = false;
 
 static QueueHandle_t s_update_button_queue = NULL;
 
-static void IRAM_ATTR update_button_isr(void *arg);
+static void update_button_isr(void *arg);
 static void update_button_task(void *arg);
 
 void led_write(bool on) {
