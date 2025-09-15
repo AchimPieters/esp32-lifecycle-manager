@@ -27,6 +27,7 @@
 #include <nvs_flash.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
+#include <freertos/queue.h>
 #include <driver/gpio.h>
 #include <homekit/homekit.h>
 #include <homekit/characteristics.h>
@@ -51,18 +52,22 @@ void handle_error(esp_err_t err) {
 // LED control
 #define LED_GPIO CONFIG_ESP_LED_GPIO
 #define UPDATE_BUTTON_GPIO GPIO_NUM_15
-#define UPDATE_POLL_INTERVAL_MS 50
 #define UPDATE_DEBOUNCE_MS 50
 #define LED_BLINK_INTERVAL_MS 200
 bool led_on = false;
 
 static TaskHandle_t led_blink_task_handle = NULL;
 static bool led_blinking = false;
+static QueueHandle_t s_update_evt_queue = NULL;
+static volatile TickType_t s_last_button_isr_tick = 0;
+
+#define UPDATE_DEBOUNCE_TICKS pdMS_TO_TICKS(UPDATE_DEBOUNCE_MS)
 
 static void led_blink_task(void *arg);
 void led_blinking_start(void);
 void led_blinking_stop(void);
 static void lcm_update_task(void *arg);
+static void update_button_isr(void *arg);
 
 void led_write(bool on) {
         gpio_set_level(LED_GPIO, on ? 1 : 0);
@@ -111,6 +116,25 @@ void led_blinking_stop(void) {
         }
 }
 
+static void IRAM_ATTR update_button_isr(void *arg) {
+        if (!s_update_evt_queue) {
+                return;
+        }
+
+        TickType_t now = xTaskGetTickCountFromISR();
+        if ((now - s_last_button_isr_tick) < UPDATE_DEBOUNCE_TICKS) {
+                return;
+        }
+        s_last_button_isr_tick = now;
+
+        uint32_t evt = 1;
+        BaseType_t higher_prio_task_woken = pdFALSE;
+        xQueueSendFromISR(s_update_evt_queue, &evt, &higher_prio_task_woken);
+        if (higher_prio_task_woken == pdTRUE) {
+                portYIELD_FROM_ISR();
+        }
+}
+
 // All GPIO Settings
 void gpio_init() {
         gpio_reset_pin(LED_GPIO); // Reset GPIO pin to avoid conflicts
@@ -125,38 +149,38 @@ void gpio_init() {
                 .mode = GPIO_MODE_INPUT,
                 .pull_up_en = GPIO_PULLUP_ENABLE,
                 .pull_down_en = GPIO_PULLDOWN_DISABLE,
-                .intr_type = GPIO_INTR_DISABLE,
+                .intr_type = GPIO_INTR_NEGEDGE,
         };
         CHECK_ERROR(gpio_config(&button_conf));
+
+        esp_err_t isr_err = gpio_install_isr_service(ESP_INTR_FLAG_IRAM);
+        if (isr_err != ESP_OK && isr_err != ESP_ERR_INVALID_STATE) {
+                CHECK_ERROR(isr_err);
+        }
+
+        CHECK_ERROR(gpio_isr_handler_add(UPDATE_BUTTON_GPIO, update_button_isr, NULL));
 }
 
 static void lcm_update_task(void *arg) {
-        bool last_pressed = false;
+        uint32_t evt = 0;
 
-        while (1) {
-                bool pressed = gpio_get_level(UPDATE_BUTTON_GPIO) == 0;
+        while (xQueueReceive(s_update_evt_queue, &evt, portMAX_DELAY) == pdTRUE) {
+                (void)evt;
+                ESP_LOGI("LCM", "Update button pressed – checking for updates");
 
-                if (pressed && !last_pressed) {
-                        vTaskDelay(pdMS_TO_TICKS(UPDATE_DEBOUNCE_MS));
-                        if (gpio_get_level(UPDATE_BUTTON_GPIO) == 0) {
-                                ESP_LOGI("LCM", "Update button pressed – checking for updates");
-                                esp_err_t update_res = lcm_update();
-                                if (update_res == ESP_OK) {
-                                        ESP_LOGI("LCM", "Update successful, restarting device");
-                                        vTaskDelay(pdMS_TO_TICKS(100));
-                                        esp_restart();
-                                } else {
-                                        ESP_LOGE("LCM", "Update failed: %s", esp_err_to_name(update_res));
-                                }
+                led_blinking_start();
+                esp_err_t update_res = lcm_update();
+                led_blinking_stop();
 
-                                while (gpio_get_level(UPDATE_BUTTON_GPIO) == 0) {
-                                        vTaskDelay(pdMS_TO_TICKS(UPDATE_POLL_INTERVAL_MS));
-                                }
-                        }
+                if (update_res == ESP_OK) {
+                        ESP_LOGI("LCM", "Update succesvol, apparaat wordt herstart");
+                        vTaskDelay(pdMS_TO_TICKS(100));
+                        esp_restart();
+                } else if (update_res == ESP_ERR_NOT_FOUND) {
+                        ESP_LOGW("LCM", "Geen firmware-config gevonden; update overgeslagen");
+                } else {
+                        ESP_LOGE("LCM", "Update mislukt: %s", esp_err_to_name(update_res));
                 }
-
-                last_pressed = pressed;
-                vTaskDelay(pdMS_TO_TICKS(UPDATE_POLL_INTERVAL_MS));
         }
 }
 
@@ -254,6 +278,12 @@ void app_main(void) {
                 ret = nvs_flash_init();
         }
         CHECK_ERROR(ret);
+
+        s_update_evt_queue = xQueueCreate(4, sizeof(uint32_t));
+        if (!s_update_evt_queue) {
+                ESP_LOGE("LCM", "Kon update-queue niet aanmaken");
+                handle_error(ESP_ERR_NO_MEM);
+        }
 
         // Start GPIO / LED
         gpio_init();
