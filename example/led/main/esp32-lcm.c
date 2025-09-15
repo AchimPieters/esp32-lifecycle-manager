@@ -21,15 +21,19 @@
    for more information visit https://www.studiopieters.nl
  **/
  
+#include <stdbool.h>
 #include <string.h>
 #include <stdlib.h>
 
+#include <esp_err.h>
 #include <esp_wifi.h>
 #include <esp_event.h>
 #include <esp_log.h>
 #include <esp_netif.h>
 #include <nvs.h>
 #include <nvs_flash.h>
+
+#include "github_update.h"
 
 static const char *TAG = "WIFI";
 
@@ -182,4 +186,17 @@ esp_err_t wifi_stop(void) {
     if (r2 != ESP_OK) return r2;
     if (r3 != ESP_OK) return r3;
     return ESP_OK;
+}
+
+esp_err_t lcm_update(void) {
+    char repo[96] = {0};
+    bool prerelease = false;
+
+    if (!load_fw_config(repo, sizeof(repo), &prerelease)) {
+        ESP_LOGW(TAG, "Geen firmware-config gevonden in NVS; update wordt overgeslagen");
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    ESP_LOGI(TAG, "Controleer firmware-update voor repo=%s (prerelease=%d)", repo, prerelease);
+    return github_update_if_needed(repo, prerelease);
 }

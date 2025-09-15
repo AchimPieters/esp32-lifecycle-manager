@@ -1,4 +1,25 @@
 idf_component_register(
-    SRCS "main.c" "esp32-lcm.c"
-    REQUIRES freertos esp_wifi nvs_flash driver esp32-homekit
+    SRCS
+        "main.c"
+        "esp32-lcm.c"
+        "../../../main/github_update.c"
+    INCLUDE_DIRS
+        "."
+    PRIV_INCLUDE_DIRS
+        "../../../main/include"
+    REQUIRES
+        app_update
+        driver
+        esp32-homekit
+        esp_event
+        esp_http_client
+        esp_https_ota
+        esp_netif
+        esp_timer
+        esp_wifi
+        freertos
+        http_parser
+        json
+        mbedtls
+        nvs_flash
 )
