@@ -24,6 +24,7 @@
 #include <string.h>
 #include <stdlib.h>
 
+#include <esp_err.h>
 #include <esp_wifi.h>
 #include <esp_event.h>
 #include <esp_log.h>
@@ -182,4 +183,9 @@ esp_err_t wifi_stop(void) {
     if (r2 != ESP_OK) return r2;
     if (r3 != ESP_OK) return r3;
     return ESP_OK;
+}
+
+esp_err_t lcm_update(void) {
+    ESP_LOGW(TAG, "lcm_update is not implemented in this example");
+    return ESP_ERR_NOT_SUPPORTED;
 }

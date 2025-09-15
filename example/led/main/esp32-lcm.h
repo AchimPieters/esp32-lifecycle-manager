@@ -12,6 +12,9 @@ esp_err_t wifi_start(void (*on_ready)(void));
 // Optioneel: stop WiFi netjes
 esp_err_t wifi_stop(void);
 
+// Trigger een firmware update via de lifecycle manager.
+esp_err_t lcm_update(void);
+
 #ifdef __cplusplus
 }
 #endif
