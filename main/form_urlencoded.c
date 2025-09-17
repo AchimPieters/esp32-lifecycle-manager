@@ -85,6 +85,11 @@ char *url_unescape(const char *buffer, size_t size) {
 
 
 form_param_t *form_params_parse(const char *s) {
+        if (!s) {
+                ESP_LOGW(TAG, "form_params_parse called with NULL input");
+                return NULL;
+        }
+
         form_param_t *params = NULL;
 
         int i = 0;

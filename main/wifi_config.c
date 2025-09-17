@@ -527,14 +527,21 @@ static void wifi_config_server_on_settings(client_t *client) {
 
 
 static void wifi_config_server_on_settings_update(client_t *client) {
-    DEBUG("Update settings, body = %s", client->body);
+        const char *body_log = client->body ? (const char *)client->body : "(null)";
+        DEBUG("Update settings, body length = %zu, body = %s", client->body_length, body_log);
 
-    form_param_t *form = form_params_parse((char *)client->body);
-    if (!form) {
-        DEBUG("Couldn't parse form data, redirecting to /settings");
-        client_send_redirect(client, 302, "/settings");
-        return;
-    }
+        if (!client->body || client->body_length == 0) {
+                DEBUG("Empty HTTP body received, redirecting to /settings");
+                client_send_redirect(client, 302, "/settings");
+                return;
+        }
+
+        form_param_t *form = form_params_parse((char *)client->body);
+        if (!form) {
+                DEBUG("Couldn't parse form data, redirecting to /settings");
+                client_send_redirect(client, 302, "/settings");
+                return;
+        }
 
     form_param_t *ssid_param = form_params_find(form, "ssid");
     form_param_t *password_param = form_params_find(form, "password");
