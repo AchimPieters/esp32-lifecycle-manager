@@ -29,56 +29,54 @@
 
 static const char *TAG = "form_urlencoded";
 
+static inline int hex_to_val(unsigned char c)
+{
+        if (c >= '0' && c <= '9')
+                return c - '0';
+        c = (unsigned char)toupper(c);
+        if (c >= 'A' && c <= 'F')
+                return c - 'A' + 10;
+        return -1;
+}
+
 
 char *url_unescape(const char *buffer, size_t size) {
         ESP_LOGD(TAG, "Decoding URL-escaped string of size %d", (int)size);
-        int len = 0;
-
-        int ishex(int c) {
-                c = toupper(c);
-                return ('0' <= c && c <= '9') || ('A' <= c && c <= 'F');
+        if (!buffer || size == 0) {
+                char *empty = malloc(1);
+                if (empty)
+                        empty[0] = '\0';
+                return empty;
         }
 
-        int hexvalue(int c) {
-                c = toupper(c);
-                if ('0' <= c && c <= '9')
-                        return c - '0';
-                else
-                        return c - 'A' + 10;
-        }
-
-        int i = 0, j;
-        while (i < size) {
-                len++;
-                if (buffer[i] == '%') {
-                        i += 3;
-                } else {
-                        i++;
-                }
-        }
-
-        char *result = malloc(len+1);
+        char *result = malloc(size + 1);
         if (!result) {
                 ESP_LOGE(TAG, "malloc failed in url_unescape");
                 return NULL;
         }
-        i = j = 0;
+
+        size_t i = 0, j = 0;
         while (i < size) {
-                if (buffer[i] == '+') {
+                unsigned char c = (unsigned char)buffer[i];
+                if (c == '+') {
                         result[j++] = ' ';
                         i++;
-                } else if (buffer[i] != '%') {
-                        result[j++] = buffer[i++];
-                } else {
-                        if (i+2 < size && ishex(buffer[i+1]) && ishex(buffer[i+2])) {
-                                result[j++] = hexvalue(buffer[i+1])*16 + hexvalue(buffer[i+2]);
+                        continue;
+                }
+                if (c == '%' && i + 2 < size) {
+                        int hi = hex_to_val((unsigned char)buffer[i + 1]);
+                        int lo = hex_to_val((unsigned char)buffer[i + 2]);
+                        if (hi >= 0 && lo >= 0) {
+                                result[j++] = (char)((hi << 4) | lo);
                                 i += 3;
-                        } else {
-                                result[j++] = buffer[i++];
+                                continue;
                         }
                 }
+                result[j++] = (char)c;
+                i++;
         }
-        result[j] = 0;
+
+        result[j] = '\0';
         ESP_LOGD(TAG, "Decoded string: %s", result);
         return result;
 }
@@ -92,39 +90,58 @@ form_param_t *form_params_parse(const char *s) {
 
         form_param_t *params = NULL;
 
-        int i = 0;
-        while (1) {
-                int pos = i;
-                while (s[i] && s[i] != '=' && s[i] != '&') i++;
-                if (i == pos) {
+        size_t i = 0;
+        while (s[i]) {
+                size_t name_start = i;
+                while (s[i] && s[i] != '=' && s[i] != '&')
                         i++;
-                        continue;
+                size_t name_len = i - name_start;
+                if (name_len == 0) {
+                        if (s[i] == '&') {
+                                i++;
+                                continue;
+                        }
+                        break;
                 }
 
-                form_param_t *param = malloc(sizeof(form_param_t));
+                form_param_t *param = calloc(1, sizeof(form_param_t));
                 if (!param) {
-                        ESP_LOGE(TAG, "malloc failed in form_params_parse");
+                        ESP_LOGE(TAG, "calloc failed in form_params_parse");
                         form_params_free(params);
                         return NULL;
                 }
-                param->name = url_unescape(s+pos, i-pos);
-                param->value = NULL;
-                param->next = params;
-                params = param;
+
+                param->name = url_unescape(s + name_start, name_len);
+                if (!param->name) {
+                        free(param);
+                        form_params_free(params);
+                        return NULL;
+                }
                 ESP_LOGD(TAG, "Parsed param name=%s", param->name);
 
                 if (s[i] == '=') {
                         i++;
-                        pos = i;
-                        while (s[i] && s[i] != '&') i++;
-                        if (i != pos) {
-                                param->value = url_unescape(s+pos, i-pos);
-                                ESP_LOGD(TAG, "Param %s value=%s", param->name, param->value ? param->value : "(null)");
+                        size_t value_start = i;
+                        while (s[i] && s[i] != '&')
+                                i++;
+                        size_t value_len = i - value_start;
+                        if (value_len > 0) {
+                                param->value = url_unescape(s + value_start, value_len);
+                                if (!param->value) {
+                                        free(param->name);
+                                        free(param);
+                                        form_params_free(params);
+                                        return NULL;
+                                }
+                                ESP_LOGD(TAG, "Param %s value=%s", param->name, param->value);
                         }
                 }
 
-                if (!s[i])
-                        break;
+                param->next = params;
+                params = param;
+
+                if (s[i] == '&')
+                        i++;
         }
 
         return params;
