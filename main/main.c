@@ -27,6 +27,7 @@
 #include <esp_log.h>
 #include <esp_sntp.h>
 #include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
 #include <freertos/task.h>
 #include <nvs_flash.h>
 #include <stdio.h>
@@ -47,7 +48,8 @@ static bool led_enabled = false;
 static bool led_configured = false;
 static bool led_on = false;
 static TaskHandle_t led_task = NULL;
-static bool led_blinking = false;
+static SemaphoreHandle_t led_stop_sem = NULL;
+static volatile bool led_blinking = false;
 
 void led_write(bool on) {
     if (led_gpio < 0)
@@ -67,25 +69,37 @@ static void led_apply_idle_state(void) {
 static void led_blink_task(void *pv) {
     (void)pv;
     const TickType_t half_period = pdMS_TO_TICKS(500);
-    TickType_t last_toggle = xTaskGetTickCount();
+    bool level = false;
 
     while (led_blinking) {
-        led_write(true);
-        vTaskDelayUntil(&last_toggle, half_period);
+        level = !level;
+        led_write(level);
         if (!led_blinking)
             break;
-        led_write(false);
-        vTaskDelayUntil(&last_toggle, half_period);
+        if (ulTaskNotifyTake(pdTRUE, half_period) > 0)
+            break;
     }
 
-    led_write(false);
-    led_task = NULL;
+    led_apply_idle_state();
+    if (led_task == xTaskGetCurrentTaskHandle())
+        led_task = NULL;
+    if (led_stop_sem)
+        xSemaphoreGive(led_stop_sem);
     vTaskDelete(NULL);
 }
 
 void led_blinking_start() {
-    if (led_gpio < 0 || !led_enabled || led_blinking)
+    if (led_gpio < 0 || !led_enabled || led_blinking || led_task)
         return;
+    if (!led_stop_sem) {
+        led_stop_sem = xSemaphoreCreateBinary();
+        if (!led_stop_sem) {
+            ESP_LOGE(TAG, "Failed to allocate LED stop semaphore");
+            return;
+        }
+    } else {
+        xSemaphoreTake(led_stop_sem, 0);
+    }
     led_blinking = true;
     BaseType_t rc =
         xTaskCreate(led_blink_task, "led_blink", 2048, NULL, 5, &led_task);
@@ -97,13 +111,22 @@ void led_blinking_start() {
 }
 
 void led_blinking_stop() {
-    if (!led_blinking)
+    if (!led_blinking && !led_task)
         return;
     led_blinking = false;
     TaskHandle_t task = led_task;
-    led_task = NULL;
-    if (task)
-        vTaskDelete(task);
+    if (task) {
+        xTaskNotifyGive(task);
+        bool stopped = (led_task == NULL);
+        if (!stopped && led_stop_sem) {
+            if (xSemaphoreTake(led_stop_sem, pdMS_TO_TICKS(1000)) != pdPASS)
+                ESP_LOGW(TAG, "Timeout waiting for LED blink task to stop");
+            else
+                stopped = true;
+        }
+        if (stopped)
+            led_task = NULL;
+    }
     led_apply_idle_state();
 }
 
