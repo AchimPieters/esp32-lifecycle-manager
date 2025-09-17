@@ -39,6 +39,36 @@ static inline int hex_to_val(unsigned char c)
         return -1;
 }
 
+static size_t url_decode_inplace(char *buffer)
+{
+        if (!buffer)
+                return 0;
+
+        char *src = buffer;
+        char *dst = buffer;
+
+        while (*src) {
+                if (*src == '+') {
+                        *dst++ = ' ';
+                        ++src;
+                } else if (*src == '%' && isxdigit((unsigned char)src[1]) && isxdigit((unsigned char)src[2])) {
+                        int hi = hex_to_val((unsigned char)src[1]);
+                        int lo = hex_to_val((unsigned char)src[2]);
+                        if (hi >= 0 && lo >= 0) {
+                                *dst++ = (char)((hi << 4) | lo);
+                                src += 3;
+                                continue;
+                        }
+                        *dst++ = *src++;
+                } else {
+                        *dst++ = *src++;
+                }
+        }
+
+        *dst = '\0';
+        return (size_t)(dst - buffer);
+}
+
 
 char *url_unescape(const char *buffer, size_t size) {
         ESP_LOGD(TAG, "Decoding URL-escaped string of size %d", (int)size);
@@ -55,34 +85,15 @@ char *url_unescape(const char *buffer, size_t size) {
                 return NULL;
         }
 
-        size_t i = 0, j = 0;
-        while (i < size) {
-                unsigned char c = (unsigned char)buffer[i];
-                if (c == '+') {
-                        result[j++] = ' ';
-                        i++;
-                        continue;
-                }
-                if (c == '%' && i + 2 < size) {
-                        int hi = hex_to_val((unsigned char)buffer[i + 1]);
-                        int lo = hex_to_val((unsigned char)buffer[i + 2]);
-                        if (hi >= 0 && lo >= 0) {
-                                result[j++] = (char)((hi << 4) | lo);
-                                i += 3;
-                                continue;
-                        }
-                }
-                result[j++] = (char)c;
-                i++;
-        }
-
-        result[j] = '\0';
+        memcpy(result, buffer, size);
+        result[size] = '\0';
+        url_decode_inplace(result);
         ESP_LOGD(TAG, "Decoded string: %s", result);
         return result;
 }
 
 
-form_param_t *form_params_parse(const char *s) {
+form_param_t *form_params_parse(char *s) {
         if (!s) {
                 ESP_LOGW(TAG, "form_params_parse called with NULL input");
                 return NULL;
@@ -90,19 +101,30 @@ form_param_t *form_params_parse(const char *s) {
 
         form_param_t *params = NULL;
 
-        size_t i = 0;
-        while (s[i]) {
-                size_t name_start = i;
-                while (s[i] && s[i] != '=' && s[i] != '&')
-                        i++;
-                size_t name_len = i - name_start;
-                if (name_len == 0) {
-                        if (s[i] == '&') {
-                                i++;
-                                continue;
-                        }
-                        break;
+        while (*s) {
+                char *name = s;
+                while (*s && *s != '=' && *s != '&')
+                        ++s;
+
+                char separator = *s;
+                if (separator == '=' || separator == '&')
+                        *s++ = '\0';
+
+                char *value = NULL;
+                if (separator == '=') {
+                        value = s;
+                        while (*s && *s != '&')
+                                ++s;
+                        if (*s == '&')
+                                *s++ = '\0';
                 }
+
+                url_decode_inplace(name);
+                if (value)
+                        url_decode_inplace(value);
+
+                if (*name == '\0')
+                        continue;
 
                 form_param_t *param = calloc(1, sizeof(form_param_t));
                 if (!param) {
@@ -111,37 +133,12 @@ form_param_t *form_params_parse(const char *s) {
                         return NULL;
                 }
 
-                param->name = url_unescape(s + name_start, name_len);
-                if (!param->name) {
-                        free(param);
-                        form_params_free(params);
-                        return NULL;
-                }
-                ESP_LOGD(TAG, "Parsed param name=%s", param->name);
-
-                if (s[i] == '=') {
-                        i++;
-                        size_t value_start = i;
-                        while (s[i] && s[i] != '&')
-                                i++;
-                        size_t value_len = i - value_start;
-                        if (value_len > 0) {
-                                param->value = url_unescape(s + value_start, value_len);
-                                if (!param->value) {
-                                        free(param->name);
-                                        free(param);
-                                        form_params_free(params);
-                                        return NULL;
-                                }
-                                ESP_LOGD(TAG, "Param %s value=%s", param->name, param->value);
-                        }
-                }
+                param->name = name;
+                param->value = value;
+                ESP_LOGD(TAG, "Parsed param name=%s value=%s", param->name, param->value ? param->value : "(null)");
 
                 param->next = params;
                 params = param;
-
-                if (s[i] == '&')
-                        i++;
         }
 
         return params;
@@ -165,11 +162,6 @@ form_param_t *form_params_find(form_param_t *params, const char *name) {
 void form_params_free(form_param_t *params) {
         while (params) {
                 form_param_t *next = params->next;
-                ESP_LOGD(TAG, "Freeing param %s", params->name ? params->name : "(null)");
-                if (params->name)
-                        free(params->name);
-                if (params->value)
-                        free(params->value);
                 free(params);
 
                 params = next;

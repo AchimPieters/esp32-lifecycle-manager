@@ -1,5 +1,6 @@
 #include <string.h>
 #include <stdlib.h>
+#include <limits.h>
 #include "esp_log.h"
 #include "esp_https_ota.h"
 #include "esp_http_client.h"
@@ -52,6 +53,7 @@ static void rollback_to_running_partition(const esp_partition_t *running_partiti
 
 static char *http_get_json(const esp_http_client_config_t *cfg, esp_err_t *out_err)
 {
+    const size_t max_json_size = 32 * 1024;
     if (out_err)
         *out_err = ESP_FAIL;
 
@@ -61,55 +63,91 @@ static char *http_get_json(const esp_http_client_config_t *cfg, esp_err_t *out_e
         return NULL;
     }
 
+    esp_err_t result = ESP_FAIL;
+    char *data = NULL;
+    bool opened = false;
+
     esp_err_t err = esp_http_client_open(client, 0);
     ESP_LOGD(TAG, "esp_http_client_open -> %s", esp_err_to_name(err));
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "esp_http_client_open failed: %s", esp_err_to_name(err));
-        esp_http_client_cleanup(client);
-        if (out_err)
-            *out_err = err;
-        return NULL;
+        result = err;
+        goto cleanup;
     }
+    opened = true;
 
-    int len = esp_http_client_fetch_headers(client);
-    ESP_LOGD(TAG, "Header length %d", len);
+    int64_t len = esp_http_client_fetch_headers(client);
+    ESP_LOGD(TAG, "Header length %lld", (long long)len);
     if (len < 0) {
         ESP_LOGE(TAG, "esp_http_client_fetch_headers failed: errno=%d", esp_http_client_get_errno(client));
-        esp_http_client_close(client);
-        esp_http_client_cleanup(client);
-        return NULL;
+        goto cleanup;
+    }
+    if (len > 0 && (size_t)len > max_json_size) {
+        ESP_LOGE(TAG, "JSON payload too large (%lld bytes)", (long long)len);
+        goto cleanup;
     }
 
-    char *data = malloc(len + 1);
+    size_t capacity = len > 0 ? (size_t)len + 1 : 256;
+    if (capacity > max_json_size + 1)
+        capacity = max_json_size + 1;
+
+    data = malloc(capacity);
     if (!data) {
         ESP_LOGE(TAG, "malloc failed");
-        esp_http_client_close(client);
-        esp_http_client_cleanup(client);
-        if (out_err)
-            *out_err = ESP_ERR_NO_MEM;
-        return NULL;
+        result = ESP_ERR_NO_MEM;
+        goto cleanup;
     }
 
-    int read = esp_http_client_read_response(client, data, len);
+    size_t total = 0;
+    while (true) {
+        if (capacity - total <= 1) {
+            if (capacity >= max_json_size + 1) {
+                ESP_LOGE(TAG, "JSON response exceeds %u bytes", (unsigned)max_json_size);
+                goto cleanup;
+            }
+            size_t new_capacity = capacity * 2;
+            if (new_capacity > max_json_size + 1)
+                new_capacity = max_json_size + 1;
+            char *tmp = realloc(data, new_capacity);
+            if (!tmp) {
+                ESP_LOGE(TAG, "realloc failed");
+                result = ESP_ERR_NO_MEM;
+                goto cleanup;
+            }
+            data = tmp;
+            capacity = new_capacity;
+        }
+
+        int chunk = esp_http_client_read(client, data + total, capacity - total - 1);
+        if (chunk < 0) {
+            ESP_LOGE(TAG, "esp_http_client_read failed: errno=%d", esp_http_client_get_errno(client));
+            goto cleanup;
+        }
+        if (chunk == 0)
+            break;
+        total += (size_t)chunk;
+    }
+
+    data[total] = '\0';
     int status = esp_http_client_get_status_code(client);
-    ESP_LOGD(TAG, "Read %d bytes with HTTP status %d", read, status);
-    if (read <= 0) {
-        ESP_LOGE(TAG, "esp_http_client_read_response failed: errno=%d", esp_http_client_get_errno(client));
+    ESP_LOGD(TAG, "HTTP status %d, body %u bytes", status, (unsigned)total);
+    if (status < 200 || status >= 300) {
+        ESP_LOGE(TAG, "Unexpected HTTP status %d", status);
+        goto cleanup;
+    }
+
+    result = ESP_OK;
+
+cleanup:
+    if (opened)
+        esp_http_client_close(client);
+    esp_http_client_cleanup(client);
+    if (out_err)
+        *out_err = result;
+    if (result != ESP_OK) {
         free(data);
         data = NULL;
-    } else {
-        data[read] = '\0';
-        if (status < 200 || status >= 300) {
-            ESP_LOGE(TAG, "Unexpected HTTP status %d", status);
-            free(data);
-            data = NULL;
-        } else if (out_err) {
-            *out_err = ESP_OK;
-        }
     }
-
-    esp_http_client_close(client);
-    esp_http_client_cleanup(client);
     return data;
 }
 

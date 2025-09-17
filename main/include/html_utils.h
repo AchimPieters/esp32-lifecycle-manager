@@ -2,6 +2,14 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <stdbool.h>
+
+/**
+ * Escape `input` into the caller-provided `dst` buffer. Returns true on
+ * success. When false is returned, `out_len` (if non-NULL) receives the number
+ * of bytes required, including the terminating NUL.
+ */
+bool html_escape_into(const char *input, char *dst, size_t dst_len, size_t *out_len);
 
 /**
  * Allocate and return a new string containing an HTML-escaped version of

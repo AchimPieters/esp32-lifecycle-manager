@@ -3,6 +3,92 @@
 #include <stdlib.h>
 #include <string.h>
 
+static size_t html_escape_required_len(const unsigned char *src)
+{
+        size_t required = 0;
+
+        while (*src) {
+                switch (*src++) {
+                case '&':
+                        required += 5;
+                        break;
+                case '<':
+                case '>':
+                        required += 4;
+                        break;
+                case '"':
+                        required += 6;
+                        break;
+                case '\'':
+                        required += 5;
+                        break;
+                default:
+                        required += 1;
+                        break;
+                }
+        }
+
+        return required;
+}
+
+bool html_escape_into(const char *input, char *dst, size_t dst_len, size_t *out_len)
+{
+        if (!dst || dst_len == 0)
+                return false;
+
+        if (!input) {
+                *dst = '\0';
+                if (out_len)
+                        *out_len = 0;
+                return true;
+        }
+
+        const unsigned char *src = (const unsigned char *)input;
+        size_t required = html_escape_required_len(src);
+
+        if (required + 1 > dst_len) {
+                if (out_len)
+                        *out_len = required + 1;
+                return false;
+        }
+
+        if (out_len)
+                *out_len = required;
+
+        char *write = dst;
+        while (*src) {
+                switch (*src) {
+                case '&':
+                        memcpy(write, "&amp;", 5);
+                        write += 5;
+                        break;
+                case '<':
+                        memcpy(write, "&lt;", 4);
+                        write += 4;
+                        break;
+                case '>':
+                        memcpy(write, "&gt;", 4);
+                        write += 4;
+                        break;
+                case '"':
+                        memcpy(write, "&quot;", 6);
+                        write += 6;
+                        break;
+                case '\'':
+                        memcpy(write, "&#39;", 5);
+                        write += 5;
+                        break;
+                default:
+                        *write++ = (char)*src;
+                        break;
+                }
+                ++src;
+        }
+
+        *write = '\0';
+        return true;
+}
+
 char *html_escape(const char *input)
 {
         if (!input) {
@@ -12,66 +98,16 @@ char *html_escape(const char *input)
                 return empty;
         }
 
-        const unsigned char *src = (const unsigned char *)input;
-        size_t len = 0;
-        size_t extra = 0;
-        for (const unsigned char *p = src; *p; ++p) {
-                ++len;
-                switch (*p) {
-                case '&':
-                        extra += 4; // "&amp;" replaces 1 char with 5 chars (delta 4)
-                        break;
-                case '<':
-                case '>':
-                        extra += 3; // "&lt;" or "&gt;"
-                        break;
-                case '"':
-                        extra += 5; // "&quot;"
-                        break;
-                case '\'':
-                        extra += 4; // "&#39;"
-                        break;
-                default:
-                        break;
-                }
-        }
-
-        size_t out_len = len + extra;
-        char *out = malloc(out_len + 1);
+        size_t required = html_escape_required_len((const unsigned char *)input);
+        char *out = malloc(required + 1);
         if (!out)
                 return NULL;
 
-        char *dst = out;
-        for (size_t i = 0; i < len; ++i) {
-                unsigned char c = src[i];
-                switch (c) {
-                case '&':
-                        memcpy(dst, "&amp;", 5);
-                        dst += 5;
-                        break;
-                case '<':
-                        memcpy(dst, "&lt;", 4);
-                        dst += 4;
-                        break;
-                case '>':
-                        memcpy(dst, "&gt;", 4);
-                        dst += 4;
-                        break;
-                case '"':
-                        memcpy(dst, "&quot;", 6);
-                        dst += 6;
-                        break;
-                case '\'':
-                        memcpy(dst, "&#39;", 5);
-                        dst += 5;
-                        break;
-                default:
-                        *dst++ = (char)c;
-                        break;
-                }
+        if (!html_escape_into(input, out, required + 1, NULL)) {
+                free(out);
+                return NULL;
         }
 
-        *dst = '\0';
         return out;
 }
 

@@ -22,6 +22,31 @@ int main(void)
                 return 1;
         }
 
+        char into_buf[128];
+        size_t out_len = 0;
+        if (!html_escape_into(malicious, into_buf, sizeof(into_buf), &out_len)) {
+                fprintf(stderr, "html_escape_into reported failure\n");
+                free(escaped);
+                return 1;
+        }
+        if (strcmp(into_buf, expected) != 0 || out_len != strlen(expected)) {
+                fprintf(stderr, "html_escape_into produced unexpected result: %s (len=%zu)\n", into_buf, out_len);
+                free(escaped);
+                return 1;
+        }
+        char small_buf[8];
+        size_t needed_len = 0;
+        if (html_escape_into(malicious, small_buf, sizeof(small_buf), &needed_len)) {
+                fprintf(stderr, "html_escape_into succeeded unexpectedly with small buffer\n");
+                free(escaped);
+                return 1;
+        }
+        if (needed_len != strlen(expected) + 1) {
+                fprintf(stderr, "html_escape_into reported wrong required length: %zu\n", needed_len);
+                free(escaped);
+                return 1;
+        }
+
         size_t needed = (size_t)snprintf(NULL, 0, html_network_item, "secure", escaped);
         char *buffer = malloc(needed + 1);
         if (!buffer) {
