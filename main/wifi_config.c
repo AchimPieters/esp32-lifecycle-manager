@@ -24,6 +24,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <lwip/sockets.h>
 #include <lwip/ip_addr.h>
 
@@ -410,6 +411,37 @@ static void wifi_scan_task(void *arg)
 
 #include "index.html.h"
 
+static void wifi_config_send_led_preferences(client_t *client) {
+        bool enabled = true;
+        int gpio = CONFIG_ESP_LED_GPIO;
+
+        if (!load_led_config(&enabled, &gpio)) {
+                enabled = true;
+                gpio = CONFIG_ESP_LED_GPIO;
+        }
+
+        const char *value = "n";
+        char value_buf[12];
+        if (gpio >= 0 && gpio <= 32) {
+                snprintf(value_buf, sizeof(value_buf), "%d", gpio);
+                value = value_buf;
+        }
+
+        char script[160];
+        int written = snprintf(
+                script,
+                sizeof(script),
+                "<script>if(window.applyLedPreferences){window.applyLedPreferences(%s,'%s');}</script>",
+                enabled ? "true" : "false",
+                value);
+        if (written <= 0 || written >= (int)sizeof(script)) {
+                ESP_LOGE("wifi_config", "Failed to compose LED preference script");
+                return;
+        }
+
+        client_send_chunk(client, script);
+}
+
 static void wifi_config_server_on_settings(client_t *client) {
         static const char http_prologue[] =
                 "HTTP/1.1 200 \r\n"
@@ -450,6 +482,7 @@ static void wifi_config_server_on_settings(client_t *client) {
         }
 
         client_send_chunk(client, html_settings_footer);
+        wifi_config_send_led_preferences(client);
         client_send_chunk(client, "");
 }
 
@@ -468,6 +501,8 @@ static void wifi_config_server_on_settings_update(client_t *client) {
     form_param_t *password_param = form_params_find(form, "password");
     form_param_t *repo_param = form_params_find(form, "repo");
     form_param_t *pre_param = form_params_find(form, "use_prerelease");
+    form_param_t *led_param = form_params_find(form, "led_indicator");
+    form_param_t *gpio_param = form_params_find(form, "led_gpio");
 
     if (!ssid_param) {
         DEBUG("Invalid form data, redirecting to /settings");
@@ -483,6 +518,8 @@ static void wifi_config_server_on_settings_update(client_t *client) {
     DEBUG("Setting wifi_password param = %s", password_param ? password_param->value : "(none)");
     DEBUG("Setting ota.repo_url param = %s", repo_param ? repo_param->value : "(none)");
     DEBUG("Setting ota.pre param = %s", pre_param ? pre_param->value : "(none)");
+    DEBUG("Setting led_indicator param = %s", led_param ? led_param->value : "(none)");
+    DEBUG("Setting led_gpio param = %s", gpio_param ? gpio_param->value : "(none)");
 
     sysparam_set_string("wifi_ssid", ssid_param->value);
 
@@ -496,6 +533,19 @@ static void wifi_config_server_on_settings_update(client_t *client) {
         bool pre = pre_param && (strcmp(pre_param->value, "on") == 0 || strcmp(pre_param->value, "1") == 0);
         save_fw_config(repo_param ? repo_param->value : "", pre);
     }
+
+    bool led = led_param && (strcmp(led_param->value, "on") == 0 || strcmp(led_param->value, "1") == 0);
+    int gpio = -1;
+    if (gpio_param && gpio_param->value && strcmp(gpio_param->value, "n") != 0) {
+        int candidate = atoi(gpio_param->value);
+        if (candidate >= 0 && candidate <= 32) {
+            gpio = candidate;
+        } else {
+            ESP_LOGW("wifi_config", "Ignoring invalid LED GPIO selection: %s", gpio_param->value);
+        }
+    }
+    DEBUG("Persisting led_indicator=%d gpio=%d", led, gpio);
+    save_led_config(led, gpio);
 
     form_params_free(form);
 
