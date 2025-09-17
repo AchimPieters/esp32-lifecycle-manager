@@ -20,18 +20,17 @@
 
    for more information visit https://www.studiopieters.nl
  **/
-
+ 
 #include <stdio.h>
 #include <esp_log.h>
 #include <nvs_flash.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
-#include <freertos/queue.h>
 #include <driver/gpio.h>
 #include <homekit/homekit.h>
 #include <homekit/characteristics.h>
 
-#include "esp32-lcm.h"   // <— nieuwe wifi module
+#include "esp32-wifi.h"   // <— nieuwe wifi module
 
 // Custom error handling macro
 #define CHECK_ERROR(x) do {                        \
@@ -50,13 +49,7 @@ void handle_error(esp_err_t err) {
 
 // LED control
 #define LED_GPIO CONFIG_ESP_LED_GPIO
-#define UPDATE_BUTTON_GPIO CONFIG_ESP_UPDATE_BUTTON_GPIO
 bool led_on = false;
-
-static QueueHandle_t s_update_button_queue = NULL;
-
-static void IRAM_ATTR update_button_isr(void *arg);
-static void update_button_task(void *arg);
 
 void led_write(bool on) {
         gpio_set_level(LED_GPIO, on ? 1 : 0);
@@ -67,65 +60,6 @@ void gpio_init() {
         gpio_reset_pin(LED_GPIO); // Reset GPIO pin to avoid conflicts
         gpio_set_direction(LED_GPIO, GPIO_MODE_OUTPUT);
         led_write(led_on);
-
-        gpio_reset_pin(UPDATE_BUTTON_GPIO);
-        gpio_config_t button_conf = {
-                .pin_bit_mask = 1ULL << UPDATE_BUTTON_GPIO,
-                .mode = GPIO_MODE_INPUT,
-                .pull_up_en = GPIO_PULLUP_ENABLE,
-                .pull_down_en = GPIO_PULLDOWN_DISABLE,
-                .intr_type = GPIO_INTR_NEGEDGE,
-        };
-        CHECK_ERROR(gpio_config(&button_conf));
-
-        if (!s_update_button_queue) {
-                s_update_button_queue = xQueueCreate(4, sizeof(uint32_t));
-                if (!s_update_button_queue) {
-                        ESP_LOGE("ERROR", "Failed to allocate update button queue");
-                        handle_error(ESP_ERR_NO_MEM);
-                }
-        }
-
-        esp_err_t isr_err = gpio_install_isr_service(0);
-        if (isr_err != ESP_OK && isr_err != ESP_ERR_INVALID_STATE) {
-                handle_error(isr_err);
-        }
-        CHECK_ERROR(gpio_isr_handler_add(UPDATE_BUTTON_GPIO, update_button_isr, (void *)UPDATE_BUTTON_GPIO));
-}
-
-static void IRAM_ATTR update_button_isr(void *arg) {
-        if (!s_update_button_queue) {
-                return;
-        }
-        uint32_t gpio_num = (uint32_t)arg;
-        BaseType_t xHigherPriorityTaskWoken = pdFALSE;
-        xQueueSendFromISR(s_update_button_queue, &gpio_num, &xHigherPriorityTaskWoken);
-        if (xHigherPriorityTaskWoken == pdTRUE) {
-                portYIELD_FROM_ISR();
-        }
-}
-
-static void update_button_task(void *arg) {
-        uint32_t io_num;
-        while (xQueueReceive(s_update_button_queue, &io_num, portMAX_DELAY)) {
-                vTaskDelay(pdMS_TO_TICKS(50));
-                if (gpio_get_level(io_num) == 0) {
-                        ESP_LOGI("INFORMATION", "Update button pressed, checking for firmware updates...");
-                        esp_err_t err = lcm_update();
-                        if (err == ESP_OK) {
-                                ESP_LOGI("INFORMATION", "Firmware update check completed (device restarts if an update was applied).");
-                        } else if (err == ESP_ERR_NOT_FOUND) {
-                                ESP_LOGW("WARNING", "Firmware update configuration missing; skipping update.");
-                        } else {
-                                ESP_LOGE("ERROR", "Firmware update failed: %s", esp_err_to_name(err));
-                        }
-
-                        while (gpio_get_level(io_num) == 0) {
-                                vTaskDelay(pdMS_TO_TICKS(10));
-                        }
-                }
-        }
-        vTaskDelete(NULL);
 }
 
 // Accessory identification
@@ -221,11 +155,6 @@ void app_main(void) {
 
         // Start GPIO / LED
         gpio_init();
-
-        if (xTaskCreate(update_button_task, "update_button_task", 4096, NULL, 5, NULL) != pdPASS) {
-                ESP_LOGE("ERROR", "Failed to create update button task");
-                handle_error(ESP_FAIL);
-        }
 
         // Start WiFi op basis van NVS en geef callback door
         CHECK_ERROR(wifi_start(on_wifi_ready));

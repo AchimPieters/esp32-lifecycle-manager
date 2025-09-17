@@ -6,12 +6,6 @@ menu "StudioPieters"
               help
                   The GPIO number the LED is connected to.
 
-      config ESP_UPDATE_BUTTON_GPIO
-              int "Set the GPIO for the update button"
-              default 15
-              help
-                  The GPIO number the firmware update button is connected to.
-
       config ESP_SETUP_CODE
               string "HomeKit Setup Code"
               default "338-77-883"

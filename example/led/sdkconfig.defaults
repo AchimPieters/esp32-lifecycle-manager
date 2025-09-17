@@ -1,7 +1,6 @@
 #
 # StudioPieters
 #
-CONFIG_ESP_UPDATE_BUTTON_GPIO=15
 
 # General Optimization
 CONFIG_COMPILER_OPTIMIZATION_SIZE=y

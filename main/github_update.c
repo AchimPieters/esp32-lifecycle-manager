@@ -1,23 +1,20 @@
-#include "github_update.h"
-#include "cJSON.h"
+#include <string.h>
+#include <stdlib.h>
+#include <limits.h>
+#include "esp_log.h"
+#include "esp_https_ota.h"
+#include "esp_http_client.h"
+#include "esp_ota_ops.h"
 #include "esp_app_desc.h"
 #include "esp_crt_bundle.h"
-#include "esp_http_client.h"
-#include "esp_https_ota.h"
-#include "esp_image_format.h"
-#include "esp_log.h"
-#include "esp_ota_ops.h"
 #include "mbedtls/sha512.h"
+#include "esp_image_format.h"
+#include "cJSON.h"
 #include "nvs.h"
 #include "nvs_flash.h"
-#include <stdlib.h>
-#include <string.h>
+#include "github_update.h"
 
 static const char *TAG = "github_update";
-
-// LED blinking control provided by main.c
-extern void led_blinking_start(void);
-extern void led_blinking_stop(void);
 
 static bool parse_version(const char *str, int *maj, int *min, int *pat) {
     *maj = *min = *pat = 0;
@@ -25,8 +22,7 @@ static bool parse_version(const char *str, int *maj, int *min, int *pat) {
         ESP_LOGE(TAG, "Version string is null");
         return false;
     }
-    if (str[0] == 'v' || str[0] == 'V')
-        str++;
+    if (str[0] == 'v' || str[0] == 'V') str++;
     int parsed = sscanf(str, "%d.%d.%d", maj, min, pat);
     if (parsed < 3) {
         ESP_LOGE(TAG, "Invalid version string: %s", str);
@@ -36,18 +32,127 @@ static bool parse_version(const char *str, int *maj, int *min, int *pat) {
     return true;
 }
 
-static int cmp_version(int aMaj, int aMin, int aPat, int bMaj, int bMin,
-                       int bPat) {
-    if (aMaj != bMaj)
-        return aMaj - bMaj;
-    if (aMin != bMin)
-        return aMin - bMin;
+static int cmp_version(int aMaj, int aMin, int aPat,
+                       int bMaj, int bMin, int bPat) {
+    if (aMaj != bMaj) return aMaj - bMaj;
+    if (aMin != bMin) return aMin - bMin;
     return aPat - bPat;
 }
 
+static void rollback_to_running_partition(const esp_partition_t *running_partition) {
+    esp_err_t rollback_err = esp_ota_set_boot_partition(running_partition);
+    if (rollback_err == ESP_OK) {
+        ESP_LOGW(TAG, "Rollback succeeded, booting partition at 0x%lx",
+                 (unsigned long)running_partition->address);
+    } else {
+        ESP_LOGE(TAG, "Rollback failed for partition at 0x%lx: %s",
+                 (unsigned long)running_partition->address,
+                 esp_err_to_name(rollback_err));
+    }
+}
+
+static char *http_get_json(const esp_http_client_config_t *cfg, esp_err_t *out_err)
+{
+    const size_t max_json_size = 32 * 1024;
+    if (out_err)
+        *out_err = ESP_FAIL;
+
+    esp_http_client_handle_t client = esp_http_client_init(cfg);
+    if (!client) {
+        ESP_LOGE(TAG, "esp_http_client_init failed");
+        return NULL;
+    }
+
+    esp_err_t result = ESP_FAIL;
+    char *data = NULL;
+    bool opened = false;
+
+    esp_err_t err = esp_http_client_open(client, 0);
+    ESP_LOGD(TAG, "esp_http_client_open -> %s", esp_err_to_name(err));
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "esp_http_client_open failed: %s", esp_err_to_name(err));
+        result = err;
+        goto cleanup;
+    }
+    opened = true;
+
+    int64_t len = esp_http_client_fetch_headers(client);
+    ESP_LOGD(TAG, "Header length %lld", (long long)len);
+    if (len < 0) {
+        ESP_LOGE(TAG, "esp_http_client_fetch_headers failed: errno=%d", esp_http_client_get_errno(client));
+        goto cleanup;
+    }
+    if (len > 0 && (size_t)len > max_json_size) {
+        ESP_LOGE(TAG, "JSON payload too large (%lld bytes)", (long long)len);
+        goto cleanup;
+    }
+
+    size_t capacity = len > 0 ? (size_t)len + 1 : 256;
+    if (capacity > max_json_size + 1)
+        capacity = max_json_size + 1;
+
+    data = malloc(capacity);
+    if (!data) {
+        ESP_LOGE(TAG, "malloc failed");
+        result = ESP_ERR_NO_MEM;
+        goto cleanup;
+    }
+
+    size_t total = 0;
+    while (true) {
+        if (capacity - total <= 1) {
+            if (capacity >= max_json_size + 1) {
+                ESP_LOGE(TAG, "JSON response exceeds %u bytes", (unsigned)max_json_size);
+                goto cleanup;
+            }
+            size_t new_capacity = capacity * 2;
+            if (new_capacity > max_json_size + 1)
+                new_capacity = max_json_size + 1;
+            char *tmp = realloc(data, new_capacity);
+            if (!tmp) {
+                ESP_LOGE(TAG, "realloc failed");
+                result = ESP_ERR_NO_MEM;
+                goto cleanup;
+            }
+            data = tmp;
+            capacity = new_capacity;
+        }
+
+        int chunk = esp_http_client_read(client, data + total, capacity - total - 1);
+        if (chunk < 0) {
+            ESP_LOGE(TAG, "esp_http_client_read failed: errno=%d", esp_http_client_get_errno(client));
+            goto cleanup;
+        }
+        if (chunk == 0)
+            break;
+        total += (size_t)chunk;
+    }
+
+    data[total] = '\0';
+    int status = esp_http_client_get_status_code(client);
+    ESP_LOGD(TAG, "HTTP status %d, body %u bytes", status, (unsigned)total);
+    if (status < 200 || status >= 300) {
+        ESP_LOGE(TAG, "Unexpected HTTP status %d", status);
+        goto cleanup;
+    }
+
+    result = ESP_OK;
+
+cleanup:
+    if (opened)
+        esp_http_client_close(client);
+    esp_http_client_cleanup(client);
+    if (out_err)
+        *out_err = result;
+    if (result != ESP_OK) {
+        free(data);
+        data = NULL;
+    }
+    return data;
+}
+
 esp_err_t save_fw_config(const char *repo, bool pre) {
-    ESP_LOGD(TAG, "Saving firmware config repo=%s pre=%d",
-             repo ? repo : "(null)", pre);
+    ESP_LOGD(TAG, "Saving firmware config repo=%s pre=%d", repo ? repo : "(null)", pre);
     nvs_handle_t h;
     esp_err_t err = nvs_open("fwcfg", NVS_READWRITE, &h);
     if (err != ESP_OK) {
@@ -103,80 +208,21 @@ bool load_fw_config(char *repo, size_t repo_len, bool *pre) {
         nvs_close(h);
         return false;
     }
-    if (pre)
-        *pre = pre_u8 != 0;
+    if (pre) *pre = pre_u8 != 0;
     nvs_close(h);
-    ESP_LOGD(TAG, "Loaded firmware config repo=%s pre=%d",
-             repo ? repo : "(null)", pre ? *pre : pre_u8);
+    ESP_LOGD(TAG, "Loaded firmware config repo=%s pre=%d", repo ? repo : "(null)", pre ? *pre : pre_u8);
     return true;
 }
 
-esp_err_t save_led_config(bool enabled, int gpio) {
-    nvs_handle_t h;
-    esp_err_t err = nvs_open("fwcfg", NVS_READWRITE, &h);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "nvs_open failed: %s", esp_err_to_name(err));
-        return err;
-    }
-
-    if ((err = nvs_set_u8(h, "led_en", enabled ? 1 : 0)) != ESP_OK) {
-        ESP_LOGE(TAG, "nvs_set_u8(led_en) failed: %s", esp_err_to_name(err));
-        nvs_close(h);
-        return err;
-    }
-
-    if ((err = nvs_set_i32(h, "led_gpio", gpio)) != ESP_OK) {
-        ESP_LOGE(TAG, "nvs_set_i32(led_gpio) failed: %s", esp_err_to_name(err));
-        nvs_close(h);
-        return err;
-    }
-
-    err = nvs_commit(h);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "nvs_commit failed: %s", esp_err_to_name(err));
-    }
-    nvs_close(h);
-    return err;
-}
-
-bool load_led_config(bool *enabled, int *gpio) {
-    nvs_handle_t h;
-    esp_err_t err = nvs_open("fwcfg", NVS_READONLY, &h);
-    if (err != ESP_OK) {
-        return false;
-    }
-
-    uint8_t en;
-    int32_t pin;
-    err = nvs_get_u8(h, "led_en", &en);
-    if (err != ESP_OK) {
-        nvs_close(h);
-        return false;
-    }
-    err = nvs_get_i32(h, "led_gpio", &pin);
-    if (err != ESP_OK) {
-        nvs_close(h);
-        return false;
-    }
-    if (enabled)
-        *enabled = en != 0;
-    if (gpio)
-        *gpio = (int)pin;
-    nvs_close(h);
-    return true;
-}
-
-static esp_err_t download_signature(const char *url, uint8_t *buf,
-                                    size_t buf_len, size_t *out_len) {
+static esp_err_t download_signature(const char *url, uint8_t *buf, size_t buf_len, size_t *out_len) {
     ESP_LOGD(TAG, "Initializing HTTP client for %s", url);
     esp_http_client_config_t cfg = {
         .url = url,
         .crt_bundle_attach = esp_crt_bundle_attach,
         .user_agent = "esp32-ota",
-        // GitHub release assets use redirects with extremely long Location
-        // headers (currently >5k and sometimes exceeding 8k), so give the HTTP
-        // client a generously sized buffer to ensure the Location header fits
-        // entirely.
+        // GitHub release assets use redirects with extremely long Location headers
+        // (currently >5k and sometimes exceeding 8k), so give the HTTP client a
+        // generously sized buffer to ensure the Location header fits entirely.
         .buffer_size = 32768,
         .buffer_size_tx = 32768,
     };
@@ -190,15 +236,13 @@ static esp_err_t download_signature(const char *url, uint8_t *buf,
     int redirects = 0;
     while (redirects < 5) {
         char cur_url[512];
-        esp_err_t url_err =
-            esp_http_client_get_url(client, cur_url, sizeof(cur_url));
+        esp_err_t url_err = esp_http_client_get_url(client, cur_url, sizeof(cur_url));
         ESP_LOGD(TAG, "Attempt %d URL: %s", redirects + 1,
                  url_err == ESP_OK ? cur_url : "(null)");
         ESP_LOGD(TAG, "Opening HTTP connection");
         err = esp_http_client_open(client, 0);
         if (err != ESP_OK) {
-            ESP_LOGE(TAG, "esp_http_client_open failed: %s",
-                     esp_err_to_name(err));
+            ESP_LOGE(TAG, "esp_http_client_open failed: %s", esp_err_to_name(err));
             esp_http_client_cleanup(client);
             return err;
         }
@@ -214,19 +258,16 @@ static esp_err_t download_signature(const char *url, uint8_t *buf,
         }
         int status = esp_http_client_get_status_code(client);
         ESP_LOGD(TAG, "HTTP status %d", status);
-        if (status == 301 || status == 302 || status == 303 || status == 307 ||
-            status == 308) {
+        if (status == 301 || status == 302 || status == 303 || status == 307 || status == 308) {
             ESP_LOGD(TAG, "Handling HTTP redirect");
             esp_err_t redir = esp_http_client_set_redirection(client);
             if (redir != ESP_OK) {
-                ESP_LOGE(TAG, "Failed to set redirection: %s",
-                         esp_err_to_name(redir));
+                ESP_LOGE(TAG, "Failed to set redirection: %s", esp_err_to_name(redir));
                 esp_http_client_close(client);
                 esp_http_client_cleanup(client);
                 return ESP_FAIL;
             }
-            if (esp_http_client_get_url(client, cur_url, sizeof(cur_url)) ==
-                ESP_OK) {
+            if (esp_http_client_get_url(client, cur_url, sizeof(cur_url)) == ESP_OK) {
                 ESP_LOGD(TAG, "Following redirect to %s", cur_url);
             }
             esp_http_client_close(client);
@@ -267,19 +308,17 @@ static esp_err_t download_signature(const char *url, uint8_t *buf,
     return ESP_FAIL;
 }
 
-static esp_err_t partition_sha384(const esp_partition_t *part, uint32_t len,
-                                  uint8_t *out) {
+static esp_err_t partition_sha384(const esp_partition_t *part, uint32_t len, uint8_t *out)
+{
     mbedtls_sha512_context ctx;
     uint8_t *buf = malloc(4096);
-    if (!buf)
-        return ESP_ERR_NO_MEM;
+    if (!buf) return ESP_ERR_NO_MEM;
     mbedtls_sha512_init(&ctx);
     mbedtls_sha512_starts(&ctx, 1); // 1 -> SHA-384
     uint32_t offset = 0;
     while (offset < len) {
         uint32_t to_read = len - offset;
-        if (to_read > 4096)
-            to_read = 4096;
+        if (to_read > 4096) to_read = 4096;
         esp_err_t r = esp_partition_read(part, offset, buf, to_read);
         if (r != ESP_OK) {
             free(buf);
@@ -301,8 +340,7 @@ esp_err_t github_update_from_urls(const char *fw_url, const char *sig_url) {
     size_t sig_len = 0;
     esp_err_t sig_res = download_signature(sig_url, sig, sizeof(sig), &sig_len);
     if (sig_res != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to download signature: %s",
-                 esp_err_to_name(sig_res));
+        ESP_LOGE(TAG, "Failed to download signature: %s", esp_err_to_name(sig_res));
         return sig_res;
     }
     ESP_LOGI(TAG, "Downloaded signature (%u bytes)", (unsigned)sig_len);
@@ -311,15 +349,18 @@ esp_err_t github_update_from_urls(const char *fw_url, const char *sig_url) {
         return ESP_FAIL;
     }
 
-    const esp_partition_t *update_part =
-        esp_ota_get_next_update_partition(NULL);
+    const esp_partition_t *update_part = esp_ota_get_next_update_partition(NULL);
     if (!update_part) {
         ESP_LOGE(TAG, "No OTA partition available");
         return ESP_FAIL;
     }
+    const esp_partition_t *running_partition = esp_ota_get_running_partition();
+    if (!running_partition) {
+        ESP_LOGE(TAG, "Failed to determine running partition");
+        return ESP_FAIL;
+    }
     ESP_LOGI(TAG, "Using OTA partition at 0x%lx (%lu bytes)",
-             (unsigned long)update_part->address,
-             (unsigned long)update_part->size);
+             (unsigned long)update_part->address, (unsigned long)update_part->size);
     esp_http_client_config_t http_cfg = {
         .url = fw_url,
         .crt_bundle_attach = esp_crt_bundle_attach,
@@ -341,251 +382,147 @@ esp_err_t github_update_from_urls(const char *fw_url, const char *sig_url) {
         return ret;
     }
     ESP_LOGI(TAG, "OTA download complete");
-    esp_partition_pos_t pos = {.offset = update_part->address,
-                               .size = update_part->size};
+    esp_partition_pos_t pos = { .offset = update_part->address, .size = update_part->size };
     esp_image_metadata_t meta;
+    esp_err_t result = ESP_FAIL;
     esp_err_t meta_res = esp_image_get_metadata(&pos, &meta);
     ESP_LOGD(TAG, "esp_image_get_metadata -> %s", esp_err_to_name(meta_res));
     if (meta_res != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to get image metadata: %s",
-                 esp_err_to_name(meta_res));
-        return meta_res;
+        ESP_LOGE(TAG, "Failed to get image metadata: %s", esp_err_to_name(meta_res));
+        result = meta_res;
+        goto rollback;
     }
     uint8_t expected_hash[48];
     memcpy(expected_hash, sig, sizeof(expected_hash));
-    uint32_t expected_len = ((uint32_t)sig[48] << 24) |
-                            ((uint32_t)sig[49] << 16) |
+    uint32_t expected_len = ((uint32_t)sig[48] << 24) | ((uint32_t)sig[49] << 16) |
                             ((uint32_t)sig[50] << 8) | (uint32_t)sig[51];
     if (expected_len != meta.image_len) {
-        ESP_LOGE(TAG, "Image length mismatch: expected %u got %u",
-                 (unsigned)expected_len, (unsigned)meta.image_len);
-        return ESP_FAIL;
+        ESP_LOGE(TAG, "Image length mismatch: expected %u got %u", (unsigned)expected_len,
+                 (unsigned)meta.image_len);
+        result = ESP_FAIL;
+        goto rollback;
     }
     ESP_LOGI(TAG, "Image length verified (%u bytes)", (unsigned)meta.image_len);
     uint8_t actual[48];
     esp_err_t hash_res = partition_sha384(update_part, meta.image_len, actual);
     ESP_LOGD(TAG, "partition_sha384 -> %s", esp_err_to_name(hash_res));
+    if (hash_res != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to compute image hash: %s", esp_err_to_name(hash_res));
+        result = hash_res;
+        goto rollback;
+    }
     ESP_LOGD(TAG, "Image SHA384:");
     ESP_LOG_BUFFER_HEX_LEVEL(TAG, actual, sizeof(actual), ESP_LOG_DEBUG);
     if (memcmp(actual, expected_hash, sizeof(actual)) != 0) {
         ESP_LOGE(TAG, "SHA384 mismatch");
-        return ESP_FAIL;
+        result = ESP_FAIL;
+        goto rollback;
     }
     ESP_LOGI(TAG, "Signature verified, rebooting");
     esp_restart();
     return ESP_OK;
+
+rollback:
+    rollback_to_running_partition(running_partition);
+    return result;
 }
 
 esp_err_t github_update_if_needed(const char *repo, bool prerelease) {
     char api[256];
-    snprintf(api, sizeof(api), "https://api.github.com/repos/%s/releases%s",
-             repo, prerelease ? "?per_page=5" : "/latest");
-    esp_http_client_config_t cfg = {.url = api,
-                                    .crt_bundle_attach = esp_crt_bundle_attach,
-                                    .user_agent = "esp32-ota"};
+    snprintf(api, sizeof(api), "https://api.github.com/repos/%s/releases%s", repo,
+             prerelease ? "?per_page=5" : "/latest");
+    esp_http_client_config_t cfg = { .url = api, .crt_bundle_attach = esp_crt_bundle_attach,
+        .user_agent = "esp32-ota" };
     ESP_LOGI(TAG, "Checking updates for repo %s (pre=%d)", repo, prerelease);
     ESP_LOGD(TAG, "Release API URL: %s", api);
     const esp_app_desc_t *cur = esp_app_get_description();
     int curMaj, curMin, curPat;
-    bool curValid =
-        parse_version(cur ? cur->version : NULL, &curMaj, &curMin, &curPat);
+    bool curValid = parse_version(cur ? cur->version : NULL, &curMaj, &curMin, &curPat);
     ESP_LOGI(TAG, "Current firmware version %d.%d.%d", curMaj, curMin, curPat);
     if (!curValid) {
         ESP_LOGE(TAG, "Invalid current firmware version, assuming 0.0.0");
     }
-    esp_http_client_handle_t client = esp_http_client_init(&cfg);
-    if (!client) {
-        ESP_LOGE(TAG, "esp_http_client_init failed");
-        return ESP_FAIL;
-    }
-    esp_err_t err = esp_http_client_open(client, 0);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "esp_http_client_open failed: %s", esp_err_to_name(err));
-        esp_http_client_cleanup(client);
-        return err;
-    }
-    ESP_LOGD(TAG, "esp_http_client_open -> %s", esp_err_to_name(err));
-    int len = esp_http_client_fetch_headers(client);
-    ESP_LOGD(TAG, "Header length %d", len);
-    if (len < 0) {
-        ESP_LOGE(TAG, "esp_http_client_fetch_headers failed: errno=%d",
-                 esp_http_client_get_errno(client));
-        esp_http_client_close(client);
-        esp_http_client_cleanup(client);
-        return ESP_FAIL;
-    }
-    char *data = malloc(len + 1);
+    esp_err_t http_err = ESP_OK;
+    char *data = http_get_json(&cfg, &http_err);
     if (!data) {
-        ESP_LOGE(TAG, "malloc failed");
-        esp_http_client_close(client);
-        esp_http_client_cleanup(client);
-        return ESP_ERR_NO_MEM;
+        return http_err;
     }
-    int read = esp_http_client_read_response(client, data, len);
-    int status = esp_http_client_get_status_code(client);
-    ESP_LOGD(TAG, "Read %d bytes with HTTP status %d", read, status);
-    if (read <= 0) {
-        ESP_LOGE(TAG, "esp_http_client_read_response failed: errno=%d",
-                 esp_http_client_get_errno(client));
-        free(data);
-        esp_http_client_close(client);
-        esp_http_client_cleanup(client);
-        return ESP_FAIL;
-    }
-    data[read] = '\0';
-    esp_http_client_close(client);
-    esp_http_client_cleanup(client);
 
     cJSON *json = cJSON_Parse(data);
     free(data);
-    if (!json) {
-        ESP_LOGE(TAG, "cJSON_Parse failed");
-        return ESP_FAIL;
-    }
+    if (!json) { ESP_LOGE(TAG, "cJSON_Parse failed"); return ESP_FAIL; }
     ESP_LOGD(TAG, "Release JSON parsed");
 
     cJSON *release = NULL;
     if (prerelease) {
         ESP_LOGD(TAG, "Prerelease mode: using first release from list");
-        if (!cJSON_IsArray(json)) {
-            cJSON_Delete(json);
-            return ESP_FAIL;
-        }
+        if (!cJSON_IsArray(json)) { cJSON_Delete(json); return ESP_FAIL; }
         release = cJSON_GetArrayItem(json, 0);
     } else {
         if (cJSON_IsArray(json)) {
             ESP_LOGD(TAG, "Array returned, searching for stable release");
-            for (int i = 0; i < cJSON_GetArraySize(json); ++i) {
+            for (int i=0; i<cJSON_GetArraySize(json); ++i) {
                 cJSON *rel = cJSON_GetArrayItem(json, i);
                 cJSON *pre = cJSON_GetObjectItem(rel, "prerelease");
-                if (!cJSON_IsTrue(pre)) {
-                    release = rel;
-                    break;
-                }
+                if (!cJSON_IsTrue(pre)) { release = rel; break; }
             }
         } else {
             ESP_LOGD(TAG, "Object returned from /latest endpoint");
             release = json;
             cJSON *pre = cJSON_GetObjectItem(release, "prerelease");
-            if (cJSON_IsTrue(pre))
-                release = NULL; // need to fetch list
+            if (cJSON_IsTrue(pre)) release = NULL; // need to fetch list
         }
         if (!release) {
             ESP_LOGW(TAG, "Falling back to full release list");
             cJSON_Delete(json);
-            snprintf(api, sizeof(api),
-                     "https://api.github.com/repos/%s/releases?per_page=5",
-                     repo);
+            snprintf(api, sizeof(api), "https://api.github.com/repos/%s/releases?per_page=5", repo);
             cfg.url = api;
-            client = esp_http_client_init(&cfg);
-            if (!client)
-                return ESP_FAIL;
-            err = esp_http_client_open(client, 0);
-            if (err != ESP_OK) {
-                ESP_LOGE(TAG, "esp_http_client_open failed: %s",
-                         esp_err_to_name(err));
-                esp_http_client_cleanup(client);
-                return err;
-            }
-            ESP_LOGD(TAG, "esp_http_client_open -> %s", esp_err_to_name(err));
-            len = esp_http_client_fetch_headers(client);
-            ESP_LOGD(TAG, "Header length %d", len);
-            if (len < 0) {
-                ESP_LOGE(TAG, "esp_http_client_fetch_headers failed: errno=%d",
-                         esp_http_client_get_errno(client));
-                esp_http_client_close(client);
-                esp_http_client_cleanup(client);
-                return ESP_FAIL;
-            }
-            data = malloc(len + 1);
+            data = http_get_json(&cfg, &http_err);
             if (!data) {
-                ESP_LOGE(TAG, "malloc failed");
-                esp_http_client_close(client);
-                esp_http_client_cleanup(client);
-                return ESP_ERR_NO_MEM;
+                return http_err;
             }
-            read = esp_http_client_read_response(client, data, len);
-            status = esp_http_client_get_status_code(client);
-            ESP_LOGD(TAG, "Read %d bytes with HTTP status %d", read, status);
-            if (read <= 0) {
-                ESP_LOGE(TAG, "esp_http_client_read_response failed: errno=%d",
-                         esp_http_client_get_errno(client));
-                free(data);
-                esp_http_client_close(client);
-                esp_http_client_cleanup(client);
-                return ESP_FAIL;
-            }
-            data[read] = '\0';
-            esp_http_client_close(client);
-            esp_http_client_cleanup(client);
             json = cJSON_Parse(data);
             free(data);
-            if (!json || !cJSON_IsArray(json) ||
-                cJSON_GetArraySize(json) == 0) {
-                ESP_LOGE(TAG, "No releases in list");
-                cJSON_Delete(json);
-                return ESP_FAIL;
-            }
-            for (int i = 0; i < cJSON_GetArraySize(json); ++i) {
+            if (!json || !cJSON_IsArray(json) || cJSON_GetArraySize(json)==0) { ESP_LOGE(TAG, "No releases in list"); cJSON_Delete(json); return ESP_FAIL; }
+            for (int i=0; i<cJSON_GetArraySize(json); ++i) {
                 cJSON *rel = cJSON_GetArrayItem(json, i);
                 cJSON *pre = cJSON_GetObjectItem(rel, "prerelease");
-                if (!cJSON_IsTrue(pre)) {
-                    release = rel;
-                    break;
-                }
+                if (!cJSON_IsTrue(pre)) { release = rel; break; }
             }
         }
     }
-    if (!release) {
-        cJSON_Delete(json);
-        ESP_LOGE(TAG, "No suitable release");
-        return ESP_FAIL;
-    }
+    if (!release) { cJSON_Delete(json); ESP_LOGE(TAG, "No suitable release"); return ESP_FAIL; }
     ESP_LOGD(TAG, "Release selected");
     cJSON *assets = cJSON_GetObjectItem(release, "assets");
-    if (!cJSON_IsArray(assets)) {
-        cJSON_Delete(json);
-        return ESP_FAIL;
-    }
-    const char *fw = NULL, *sig = NULL;
+    if (!cJSON_IsArray(assets)) { cJSON_Delete(json); return ESP_FAIL; }
+    const char *fw=NULL,*sig=NULL;
     cJSON *tag = cJSON_GetObjectItem(release, "tag_name");
     int relMaj, relMin, relPat;
-    bool relValid = parse_version(cJSON_IsString(tag) ? tag->valuestring : NULL,
-                                  &relMaj, &relMin, &relPat);
+    bool relValid = parse_version(cJSON_IsString(tag)?tag->valuestring:NULL, &relMaj, &relMin, &relPat);
     ESP_LOGI(TAG, "Latest release version %d.%d.%d", relMaj, relMin, relPat);
     if (!relValid) {
         ESP_LOGE(TAG, "Invalid release version, assuming 0.0.0");
     }
-    if (relValid && curValid &&
-        cmp_version(relMaj, relMin, relPat, curMaj, curMin, curPat) <= 0) {
+    if (relValid && curValid && cmp_version(relMaj, relMin, relPat, curMaj, curMin, curPat) <= 0) {
         ESP_LOGI(TAG, "Firmware already up to date");
         cJSON_Delete(json);
         return ESP_OK;
     }
     ESP_LOGD(TAG, "Scanning assets for firmware and signature");
-    for (int i = 0; i < cJSON_GetArraySize(assets); ++i) {
-        cJSON *a = cJSON_GetArrayItem(assets, i);
-        cJSON *name = cJSON_GetObjectItem(a, "name");
-        cJSON *url = cJSON_GetObjectItem(a, "browser_download_url");
+    for (int i=0;i<cJSON_GetArraySize(assets);++i){
+        cJSON *a = cJSON_GetArrayItem(assets,i);
+        cJSON *name = cJSON_GetObjectItem(a,"name");
+        cJSON *url = cJSON_GetObjectItem(a,"browser_download_url");
         if (cJSON_IsString(name) && cJSON_IsString(url)) {
-            if (!strcmp(name->valuestring, "main.bin"))
-                fw = url->valuestring;
-            else if (!strcmp(name->valuestring, "main.bin.sig"))
-                sig = url->valuestring;
+            if (!strcmp(name->valuestring, "main.bin")) fw = url->valuestring;
+            else if (!strcmp(name->valuestring, "main.bin.sig")) sig = url->valuestring;
         }
     }
-    if (!fw || !sig) {
-        cJSON_Delete(json);
-        ESP_LOGE(TAG, "Missing assets");
-        return ESP_FAIL;
-    }
+    if (!fw || !sig) { cJSON_Delete(json); ESP_LOGE(TAG, "Missing assets"); return ESP_FAIL; }
     ESP_LOGD(TAG, "Firmware URL: %s", fw);
     ESP_LOGD(TAG, "Signature URL: %s", sig);
-    ESP_LOGI(TAG, "Release %s selected",
-             cJSON_IsString(tag) ? tag->valuestring : "?");
-    led_blinking_start();
+    ESP_LOGI(TAG, "Release %s selected", cJSON_IsString(tag)?tag->valuestring:"?");
     esp_err_t res = github_update_from_urls(fw, sig);
-    led_blinking_stop();
     ESP_LOGD(TAG, "github_update_from_urls -> %s", esp_err_to_name(res));
     cJSON_Delete(json);
     return res;

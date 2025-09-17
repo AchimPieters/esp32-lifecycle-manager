@@ -12,9 +12,6 @@ esp_err_t wifi_start(void (*on_ready)(void));
 // Optioneel: stop WiFi netjes
 esp_err_t wifi_stop(void);
 
-// Controleer op firmware-updates via GitHub (config via NVS)
-esp_err_t lcm_update(void);
-
 #ifdef __cplusplus
 }
 #endif
