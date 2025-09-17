@@ -38,6 +38,18 @@ static int cmp_version(int aMaj, int aMin, int aPat,
     return aPat - bPat;
 }
 
+static void rollback_to_running_partition(const esp_partition_t *running_partition) {
+    esp_err_t rollback_err = esp_ota_set_boot_partition(running_partition);
+    if (rollback_err == ESP_OK) {
+        ESP_LOGW(TAG, "Rollback succeeded, booting partition at 0x%lx",
+                 (unsigned long)running_partition->address);
+    } else {
+        ESP_LOGE(TAG, "Rollback failed for partition at 0x%lx: %s",
+                 (unsigned long)running_partition->address,
+                 esp_err_to_name(rollback_err));
+    }
+}
+
 esp_err_t save_fw_config(const char *repo, bool pre) {
     ESP_LOGD(TAG, "Saving firmware config repo=%s pre=%d", repo ? repo : "(null)", pre);
     nvs_handle_t h;
@@ -241,6 +253,11 @@ esp_err_t github_update_from_urls(const char *fw_url, const char *sig_url) {
         ESP_LOGE(TAG, "No OTA partition available");
         return ESP_FAIL;
     }
+    const esp_partition_t *running_partition = esp_ota_get_running_partition();
+    if (!running_partition) {
+        ESP_LOGE(TAG, "Failed to determine running partition");
+        return ESP_FAIL;
+    }
     ESP_LOGI(TAG, "Using OTA partition at 0x%lx (%lu bytes)",
              (unsigned long)update_part->address, (unsigned long)update_part->size);
     esp_http_client_config_t http_cfg = {
@@ -266,11 +283,13 @@ esp_err_t github_update_from_urls(const char *fw_url, const char *sig_url) {
     ESP_LOGI(TAG, "OTA download complete");
     esp_partition_pos_t pos = { .offset = update_part->address, .size = update_part->size };
     esp_image_metadata_t meta;
+    esp_err_t result = ESP_FAIL;
     esp_err_t meta_res = esp_image_get_metadata(&pos, &meta);
     ESP_LOGD(TAG, "esp_image_get_metadata -> %s", esp_err_to_name(meta_res));
     if (meta_res != ESP_OK) {
         ESP_LOGE(TAG, "Failed to get image metadata: %s", esp_err_to_name(meta_res));
-        return meta_res;
+        result = meta_res;
+        goto rollback;
     }
     uint8_t expected_hash[48];
     memcpy(expected_hash, sig, sizeof(expected_hash));
@@ -279,21 +298,32 @@ esp_err_t github_update_from_urls(const char *fw_url, const char *sig_url) {
     if (expected_len != meta.image_len) {
         ESP_LOGE(TAG, "Image length mismatch: expected %u got %u", (unsigned)expected_len,
                  (unsigned)meta.image_len);
-        return ESP_FAIL;
+        result = ESP_FAIL;
+        goto rollback;
     }
     ESP_LOGI(TAG, "Image length verified (%u bytes)", (unsigned)meta.image_len);
     uint8_t actual[48];
     esp_err_t hash_res = partition_sha384(update_part, meta.image_len, actual);
     ESP_LOGD(TAG, "partition_sha384 -> %s", esp_err_to_name(hash_res));
+    if (hash_res != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to compute image hash: %s", esp_err_to_name(hash_res));
+        result = hash_res;
+        goto rollback;
+    }
     ESP_LOGD(TAG, "Image SHA384:");
     ESP_LOG_BUFFER_HEX_LEVEL(TAG, actual, sizeof(actual), ESP_LOG_DEBUG);
     if (memcmp(actual, expected_hash, sizeof(actual)) != 0) {
         ESP_LOGE(TAG, "SHA384 mismatch");
-        return ESP_FAIL;
+        result = ESP_FAIL;
+        goto rollback;
     }
     ESP_LOGI(TAG, "Signature verified, rebooting");
     esp_restart();
     return ESP_OK;
+
+rollback:
+    rollback_to_running_partition(running_partition);
+    return result;
 }
 
 esp_err_t github_update_if_needed(const char *repo, bool prerelease) {
