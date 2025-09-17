@@ -674,7 +674,7 @@ static void http_task(void *arg) {
 
         struct sockaddr_in serv_addr;
         int listenfd = socket(AF_INET, SOCK_STREAM, 0);
-        memset(&serv_addr, '0', sizeof(serv_addr));
+        memset(&serv_addr, 0, sizeof(serv_addr));
         serv_addr.sin_family = AF_INET;
         serv_addr.sin_addr.s_addr = htonl(INADDR_ANY);
         serv_addr.sin_port = htons(WIFI_CONFIG_SERVER_PORT);
@@ -851,7 +851,7 @@ static void dns_task(void *arg)
         struct sockaddr_in serv_addr;
         int fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
 
-        memset(&serv_addr, '0', sizeof(serv_addr));
+        memset(&serv_addr, 0, sizeof(serv_addr));
         serv_addr.sin_family = AF_INET;
         serv_addr.sin_addr.s_addr = htonl(INADDR_ANY);
         serv_addr.sin_port = htons(53);
