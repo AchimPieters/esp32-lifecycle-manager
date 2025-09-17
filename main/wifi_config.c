@@ -24,6 +24,8 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdint.h>
+#include <stdbool.h>
+#include <stdlib.h>
 #include <lwip/sockets.h>
 #include <lwip/ip_addr.h>
 
@@ -246,6 +248,7 @@ typedef struct {
         TaskHandle_t monitor_task_handle;
         TaskHandle_t http_task_handle;
         TaskHandle_t dns_task_handle;
+        TaskHandle_t scan_task_handle;
 } wifi_config_context_t;
 
 
@@ -339,7 +342,42 @@ typedef struct _wifi_network_info {
 
 
 wifi_network_info_t *wifi_networks = NULL;
-SemaphoreHandle_t wifi_networks_mutex;
+SemaphoreHandle_t wifi_networks_mutex = NULL;
+
+static void wifi_networks_clear(void)
+{
+        wifi_network_info_t *wifi_network = wifi_networks;
+        while (wifi_network) {
+                wifi_network_info_t *next = wifi_network->next;
+                free(wifi_network);
+                wifi_network = next;
+        }
+        wifi_networks = NULL;
+}
+
+static bool wifi_networks_mutex_create(void)
+{
+        if (wifi_networks_mutex)
+                return true;
+
+        wifi_networks_mutex = xSemaphoreCreateBinary();
+        if (!wifi_networks_mutex) {
+                ESP_LOGE("wifi_config", "Failed to create wifi_networks_mutex");
+                return false;
+        }
+
+        xSemaphoreGive(wifi_networks_mutex);
+        return true;
+}
+
+static void wifi_networks_mutex_delete(void)
+{
+        SemaphoreHandle_t mutex = wifi_networks_mutex;
+        if (mutex) {
+                wifi_networks_mutex = NULL;
+                vSemaphoreDelete(mutex);
+        }
+}
 
 
 static void wifi_scan_task(void *arg)
@@ -356,53 +394,65 @@ static void wifi_scan_task(void *arg)
                 esp_wifi_scan_get_ap_num(&ap_num);
                 ESP_LOGD("wifi_config", "Scan complete, found %u APs", ap_num);
                 wifi_ap_record_t *records = calloc(ap_num, sizeof(wifi_ap_record_t));
-                if (records && esp_wifi_scan_get_ap_records(&ap_num, records) == ESP_OK) {
-                        xSemaphoreTake(wifi_networks_mutex, portMAX_DELAY);
 
-                        wifi_network_info_t *wifi_network = wifi_networks;
-                        while (wifi_network) {
-                                wifi_network_info_t *next = wifi_network->next;
-                                free(wifi_network);
-                                wifi_network = next;
-                        }
-                        wifi_networks = NULL;
+                bool stop_scanning = false;
+                SemaphoreHandle_t mutex = wifi_networks_mutex;
+                if (!mutex) {
+                        ESP_LOGW("wifi_config", "wifi_networks_mutex not available, stopping scan task");
+                        stop_scanning = true;
+                } else if (records && esp_wifi_scan_get_ap_records(&ap_num, records) == ESP_OK) {
+                        if (xSemaphoreTake(mutex, portMAX_DELAY) != pdTRUE) {
+                                ESP_LOGW("wifi_config", "Failed to take wifi_networks_mutex, stopping scan task");
+                                stop_scanning = true;
+                        } else {
+                                wifi_networks_clear();
 
-                        for (int i = 0; i < ap_num; i++) {
-                                wifi_network_info_t *net = wifi_networks;
-                                while (net) {
-                                        if (!strncmp(net->ssid, (char *)records[i].ssid, sizeof(net->ssid)))
-                                                break;
-                                        net = net->next;
+                                for (int i = 0; i < ap_num; i++) {
+                                        wifi_network_info_t *net = wifi_networks;
+                                        while (net) {
+                                                if (!strncmp(net->ssid, (char *)records[i].ssid, sizeof(net->ssid)))
+                                                        break;
+                                                net = net->next;
+                                        }
+                                        if (!net) {
+                                                wifi_network_info_t *new_net = malloc(sizeof(wifi_network_info_t));
+                                                if (new_net) {
+                                                        memset(new_net, 0, sizeof(*new_net));
+                                                        strncpy(new_net->ssid, (char *)records[i].ssid, sizeof(new_net->ssid));
+                                                        new_net->secure = records[i].authmode != WIFI_AUTH_OPEN;
+                                                        new_net->next = wifi_networks;
+                                                        wifi_networks = new_net;
+                                                }
+                                        }
                                 }
-                                if (!net) {
-                                        wifi_network_info_t *net = malloc(sizeof(wifi_network_info_t));
-                                        memset(net, 0, sizeof(*net));
-                                        strncpy(net->ssid, (char *)records[i].ssid, sizeof(net->ssid));
-                                        net->secure = records[i].authmode != WIFI_AUTH_OPEN;
-                                        net->next = wifi_networks;
-                                        wifi_networks = net;
-                                }
-                        }
 
-                        xSemaphoreGive(wifi_networks_mutex);
+                                xSemaphoreGive(mutex);
+                        }
                 }
 
                 free(records);
+
+                if (stop_scanning)
+                        break;
+
                 ESP_LOGD("wifi_config", "WiFi scan cycle finished");
                 vTaskDelay(10000 / portTICK_PERIOD_MS);
         }
 
-        xSemaphoreTake(wifi_networks_mutex, portMAX_DELAY);
-
-        wifi_network_info_t *wifi_network = wifi_networks;
-        while (wifi_network) {
-                wifi_network_info_t *next = wifi_network->next;
-                free(wifi_network);
-                wifi_network = next;
+        SemaphoreHandle_t mutex = wifi_networks_mutex;
+        if (mutex) {
+                if (xSemaphoreTake(mutex, portMAX_DELAY) == pdTRUE) {
+                        wifi_networks_clear();
+                        xSemaphoreGive(mutex);
+                }
+        } else {
+                wifi_networks_clear();
         }
-        wifi_networks = NULL;
 
-        xSemaphoreGive(wifi_networks_mutex);
+        wifi_networks_mutex_delete();
+
+        if (context)
+                context->scan_task_handle = NULL;
 
         ESP_LOGD("wifi_config", "wifi_scan_task exiting");
         vTaskDelete(NULL);
@@ -432,7 +482,8 @@ static void wifi_config_server_on_settings(client_t *client) {
 
         client_send_chunk(client, html_settings_body);
 
-        if (xSemaphoreTake(wifi_networks_mutex, 5000 / portTICK_PERIOD_MS)) {
+        SemaphoreHandle_t mutex = wifi_networks_mutex;
+        if (mutex && xSemaphoreTake(mutex, 5000 / portTICK_PERIOD_MS)) {
                 char buffer[64];
                 wifi_network_info_t *net = wifi_networks;
                 while (net) {
@@ -446,7 +497,7 @@ static void wifi_config_server_on_settings(client_t *client) {
                         net = net->next;
                 }
 
-                xSemaphoreGive(wifi_networks_mutex);
+                xSemaphoreGive(mutex);
         }
 
         client_send_chunk(client, html_settings_footer);
@@ -887,11 +938,12 @@ static void wifi_config_softap_start() {
 
         sdk_wifi_softap_set_config(&ap_cfg);
 
-        wifi_networks_mutex = xSemaphoreCreateBinary();
-        xSemaphoreGive(wifi_networks_mutex);
-
-        if (xTaskCreate(wifi_scan_task, "wifi_config scan", 4096, NULL, 2, NULL) != pdPASS) {
+        if (!wifi_networks_mutex_create()) {
+                ESP_LOGE("wifi_config", "Failed to initialize wifi_networks_mutex");
+        } else if (xTaskCreate(wifi_scan_task, "wifi_config scan", 4096, NULL, 2,
+                               &context->scan_task_handle) != pdPASS) {
                 ESP_LOGE("wifi_config", "Failed to create wifi_scan_task");
+                context->scan_task_handle = NULL;
         } else {
                 ESP_LOGD("wifi_config", "wifi_scan_task started");
         }
@@ -908,6 +960,14 @@ static void wifi_config_softap_stop() {
         dns_stop();
         http_stop();
         sdk_wifi_set_opmode(STATION_MODE);
+
+        if (context && context->scan_task_handle) {
+                while (context->scan_task_handle)
+                        vTaskDelay(pdMS_TO_TICKS(10));
+        }
+
+        wifi_networks_mutex_delete();
+
         ESP_LOGD("wifi_config", "AP interface stopped");
 }
 
@@ -1126,6 +1186,13 @@ void wifi_config_init(const char *ssid_prefix, const char *password, void (*on_w
         }
         memset(context, 0, sizeof(*context));
 
+        if (!wifi_networks_mutex_create()) {
+                ERROR("Failed to initialize wifi_networks_mutex");
+                free(context);
+                context = NULL;
+                return;
+        }
+
         context->ssid_prefix = strndup(ssid_prefix, 33-7);
         INFO("Using SSID prefix %s", context->ssid_prefix);
         if (password) {
@@ -1155,6 +1222,13 @@ void wifi_config_init2(const char *ssid_prefix, const char *password,
                 return;
         }
         memset(context, 0, sizeof(*context));
+
+        if (!wifi_networks_mutex_create()) {
+                ERROR("Failed to initialize wifi_networks_mutex");
+                free(context);
+                context = NULL;
+                return;
+        }
 
         context->ssid_prefix = strndup(ssid_prefix, 33-7);
         INFO("Using SSID prefix %s", context->ssid_prefix);
