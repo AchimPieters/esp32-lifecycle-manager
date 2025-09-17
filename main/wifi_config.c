@@ -46,6 +46,7 @@
 #include "wifi_config.h"
 #include "form_urlencoded.h"
 #include "github_update.h"
+#include "nvs_utils.h"
 
 enum {
         STATION_MODE = 1,
@@ -114,24 +115,34 @@ static void sdk_wifi_station_set_auto_connect(bool en) {
         safe_set_auto_connect(en);
 }
 
-static void sysparam_init(void) {
+static bool sysparam_init(void) {
         static bool initialized = false;
-        if (!initialized) {
-                ESP_LOGD("wifi_config", "Initializing NVS for WiFi config");
-                esp_err_t err = nvs_flash_init();
-                if (err != ESP_OK) {
-                        ESP_LOGE("wifi_config", "nvs_flash_init failed: %s", esp_err_to_name(err));
-                }
-                err = nvs_open("wifi_cfg", NVS_READWRITE, &wifi_cfg_handle);
-                if (err != ESP_OK) {
-                        ESP_LOGE("wifi_config", "nvs_open failed: %s", esp_err_to_name(err));
-                }
-                initialized = true;
+        if (initialized) {
+                return true;
         }
+
+        ESP_LOGD("wifi_config", "Initializing NVS for WiFi config");
+        esp_err_t err = nvs_init_with_recovery();
+        if (err != ESP_OK) {
+                ESP_LOGE("wifi_config", "nvs_init_with_recovery failed: %s", esp_err_to_name(err));
+                return false;
+        }
+
+        err = nvs_open("wifi_cfg", NVS_READWRITE, &wifi_cfg_handle);
+        if (err != ESP_OK) {
+                ESP_LOGE("wifi_config", "nvs_open failed: %s", esp_err_to_name(err));
+                return false;
+        }
+
+        initialized = true;
+        return true;
 }
 
 static void sysparam_set_string(const char *key, const char *value) {
-        sysparam_init();
+        if (!sysparam_init()) {
+                ESP_LOGE("wifi_config", "Cannot set key %s because NVS is unavailable", key);
+                return;
+        }
         if (!value) value = "";
         ESP_LOGD("wifi_config", "Setting NVS key %s", key);
         esp_err_t err = nvs_set_str(wifi_cfg_handle, key, value);
@@ -145,7 +156,16 @@ static void sysparam_set_string(const char *key, const char *value) {
 }
 
 static void sysparam_get_string(const char *key, char **value) {
-        sysparam_init();
+        if (!value) {
+                return;
+        }
+        *value = NULL;
+
+        if (!sysparam_init()) {
+                ESP_LOGE("wifi_config", "Cannot read key %s because NVS is unavailable", key);
+                return;
+        }
+
         size_t required = 0;
         esp_err_t err = nvs_get_str(wifi_cfg_handle, key, NULL, &required);
         if (err == ESP_OK && required > 0) {
@@ -158,9 +178,10 @@ static void sysparam_get_string(const char *key, char **value) {
                 } else {
                         ESP_LOGD("wifi_config", "Loaded key %s", key);
                 }
+        } else if (err != ESP_OK && err != ESP_ERR_NVS_NOT_FOUND) {
+                ESP_LOGE("wifi_config", "Failed to query key %s: %s", key, esp_err_to_name(err));
         } else {
                 ESP_LOGD("wifi_config", "Key %s not found", key);
-                *value = NULL;
         }
 }
 

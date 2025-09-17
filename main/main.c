@@ -23,7 +23,8 @@
 
 #include <stdio.h>
 #include <esp_log.h>
-#include <nvs_flash.h>
+#include <esp_err.h>
+#include "nvs_utils.h"
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <driver/gpio.h>
@@ -123,9 +124,10 @@ void button_task(void *pvParameter) {
 
 void app_main(void) {
     ESP_LOGI(TAG, "Application start");
-    esp_err_t err = nvs_flash_init();
+    esp_err_t err = nvs_init_with_recovery();
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "NVS init failed: %s", esp_err_to_name(err));
+        ESP_LOGE(TAG, "NVS init failed even after recovery: %s. Manual reset required.", esp_err_to_name(err));
+        return;
     }
     gpio_init();
     if (xTaskCreate(button_task, "button_task", 2048, NULL, 10, NULL) != pdPASS) {
