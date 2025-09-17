@@ -699,6 +699,7 @@ static void http_task(void *arg) {
         fd_set fds;
         int max_fd = listenfd;
 
+        FD_ZERO(&fds);
         FD_SET(listenfd, &fds);
 
         char data[64];
@@ -714,6 +715,7 @@ static void http_task(void *arg) {
                 }
 
                 fd_set read_fds;
+                FD_ZERO(&read_fds);
                 memcpy(&read_fds, &fds, sizeof(read_fds));
 
                 struct timeval timeout = { 1, 0 }; // 1 second timeout
