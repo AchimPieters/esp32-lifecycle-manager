@@ -30,7 +30,6 @@
 #include <wifi_config.h>
 #include <esp_sntp.h>
 #include "github_update.h"
-#include <driver/ledc.h>
 
 // GPIO-definities
 #define BUTTON_GPIO CONFIG_ESP_BUTTON_GPIO
@@ -46,15 +45,10 @@ static int led_gpio = CONFIG_ESP_LED_GPIO;
 static bool led_enabled = true;
 static bool led_on = false;
 static TaskHandle_t led_task = NULL;
-static bool led_breathing = false;
+static bool led_blinking = false;
 
-#define LED_LEDC_SPEED_MODE LEDC_LOW_SPEED_MODE
-#define LED_LEDC_TIMER LEDC_TIMER_0
-#define LED_LEDC_CHANNEL LEDC_CHANNEL_0
-#define LED_LEDC_DUTY_RES LEDC_TIMER_8_BIT
-#define LED_LEDC_FREQ_HZ 5000
-#define LED_LEDC_MAX_DUTY 255
-#define LED_BREATH_DELAY_MS 30
+#define LED_BLINK_ON_MS 500
+#define LED_BLINK_OFF_MS 500
 
 void led_write(bool on) {
     if (led_gpio < 0) return;
@@ -63,87 +57,38 @@ void led_write(bool on) {
     gpio_set_level(led_gpio, on ? 1 : 0);
 }
 
-static void led_breath_task(void *pv) {
-    ESP_LOGD(TAG, "LED breathing task starting on GPIO %d", led_gpio);
+static void led_blink_task(void *pv) {
+    ESP_LOGD(TAG, "LED blinking task starting on GPIO %d", led_gpio);
 
-    ledc_timer_config_t tcfg = {
-        .speed_mode = LED_LEDC_SPEED_MODE,
-        .timer_num = LED_LEDC_TIMER,
-        .duty_resolution = LED_LEDC_DUTY_RES,
-        .freq_hz = LED_LEDC_FREQ_HZ,
-        .clk_cfg = LEDC_AUTO_CLK,
-    };
-    esp_err_t err = ledc_timer_config(&tcfg);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "ledc_timer_config failed: %s", esp_err_to_name(err));
-        led_breathing = false;
-        led_task = NULL;
+    led_write(false);
+    while (led_blinking) {
+        led_write(true);
+        vTaskDelay(pdMS_TO_TICKS(LED_BLINK_ON_MS));
+        if (!led_blinking) break;
         led_write(false);
-        vTaskDelete(NULL);
-        return;
+        vTaskDelay(pdMS_TO_TICKS(LED_BLINK_OFF_MS));
     }
 
-    ledc_channel_config_t cconf = {
-        .gpio_num = led_gpio,
-        .speed_mode = LED_LEDC_SPEED_MODE,
-        .channel = LED_LEDC_CHANNEL,
-        .intr_type = LEDC_INTR_DISABLE,
-        .timer_sel = LED_LEDC_TIMER,
-        .duty = 0,
-        .hpoint = 0,
-    };
-    err = ledc_channel_config(&cconf);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "ledc_channel_config failed: %s", esp_err_to_name(err));
-        led_breathing = false;
-        led_task = NULL;
-        led_write(false);
-        vTaskDelete(NULL);
-        return;
-    }
-
-    uint32_t duty = 0;
-    bool up = true;
-    while (led_breathing) {
-        ledc_set_duty(LED_LEDC_SPEED_MODE, LED_LEDC_CHANNEL, duty);
-        ledc_update_duty(LED_LEDC_SPEED_MODE, LED_LEDC_CHANNEL);
-        vTaskDelay(pdMS_TO_TICKS(LED_BREATH_DELAY_MS));
-        if (up) {
-            if (duty >= LED_LEDC_MAX_DUTY) {
-                up = false;
-            } else {
-                duty++;
-            }
-        } else {
-            if (duty == 0) {
-                up = true;
-            } else {
-                duty--;
-            }
-        }
-    }
-
-    ledc_stop(LED_LEDC_SPEED_MODE, LED_LEDC_CHANNEL, 0);
     led_write(false);
     led_task = NULL;
-    ESP_LOGD(TAG, "LED breathing task exiting");
+    ESP_LOGD(TAG, "LED blinking task exiting");
     vTaskDelete(NULL);
 }
 
-void led_breathing_start() {
-    if (led_gpio < 0 || !led_enabled || led_breathing) return;
-    led_breathing = true;
-    BaseType_t res = xTaskCreate(led_breath_task, "led_breath", 2048, NULL, 5, &led_task);
+void led_blinking_start() {
+    if (led_gpio < 0 || !led_enabled || led_blinking) return;
+    led_blinking = true;
+    BaseType_t res = xTaskCreate(led_blink_task, "led_blink", 2048, NULL, 5, &led_task);
     if (res != pdPASS) {
-        ESP_LOGE(TAG, "Failed to create LED breathing task");
+        ESP_LOGE(TAG, "Failed to create LED blinking task");
         led_task = NULL;
-        led_breathing = false;
+        led_blinking = false;
     }
 }
 
-void led_breathing_stop() {
-    if (!led_breathing) return;
-    led_breathing = false;
+void led_blinking_stop() {
+    if (!led_blinking) return;
+    led_blinking = false;
     if (led_task) {
         for (int i = 0; i < 10 && led_task; ++i) {
             vTaskDelay(pdMS_TO_TICKS(10));
@@ -238,7 +183,7 @@ void app_main(void) {
     }
     load_led_config(&led_enabled, &led_gpio);
     gpio_init();
-    led_breathing_start();
+    led_blinking_start();
     if (xTaskCreate(button_task, "button_task", 2048, NULL, 10, NULL) != pdPASS) {
         ESP_LOGE(TAG, "Failed to create button task");
     }
@@ -275,12 +220,12 @@ void wifi_ready(void)
     bool pre=false;
     if (!load_fw_config(repo, sizeof(repo), &pre)) {
         ESP_LOGW("app", "Geen firmware-config in NVS; configureer via web UI.");
-        led_breathing_stop();
+        led_blinking_stop();
         return;
     }
     ESP_LOGI("app", "Firmware config loaded: repo=%s pre=%d", repo, pre);
     ESP_LOGI("app", "Checking for firmware update");
     github_update_if_needed(repo, pre);
-    led_breathing_stop();
+    led_blinking_stop();
     ESP_LOGI("app", "Firmware update check complete");
 }
