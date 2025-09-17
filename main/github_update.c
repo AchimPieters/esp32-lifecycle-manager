@@ -1,6 +1,5 @@
 #include <string.h>
 #include <stdlib.h>
-#include <limits.h>
 #include "esp_log.h"
 #include "esp_https_ota.h"
 #include "esp_http_client.h"
@@ -37,118 +36,6 @@ static int cmp_version(int aMaj, int aMin, int aPat,
     if (aMaj != bMaj) return aMaj - bMaj;
     if (aMin != bMin) return aMin - bMin;
     return aPat - bPat;
-}
-
-static void rollback_to_running_partition(const esp_partition_t *running_partition) {
-    esp_err_t rollback_err = esp_ota_set_boot_partition(running_partition);
-    if (rollback_err == ESP_OK) {
-        ESP_LOGW(TAG, "Rollback succeeded, booting partition at 0x%lx",
-                 (unsigned long)running_partition->address);
-    } else {
-        ESP_LOGE(TAG, "Rollback failed for partition at 0x%lx: %s",
-                 (unsigned long)running_partition->address,
-                 esp_err_to_name(rollback_err));
-    }
-}
-
-static char *http_get_json(const esp_http_client_config_t *cfg, esp_err_t *out_err)
-{
-    const size_t max_json_size = 32 * 1024;
-    if (out_err)
-        *out_err = ESP_FAIL;
-
-    esp_http_client_handle_t client = esp_http_client_init(cfg);
-    if (!client) {
-        ESP_LOGE(TAG, "esp_http_client_init failed");
-        return NULL;
-    }
-
-    esp_err_t result = ESP_FAIL;
-    char *data = NULL;
-    bool opened = false;
-
-    esp_err_t err = esp_http_client_open(client, 0);
-    ESP_LOGD(TAG, "esp_http_client_open -> %s", esp_err_to_name(err));
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "esp_http_client_open failed: %s", esp_err_to_name(err));
-        result = err;
-        goto cleanup;
-    }
-    opened = true;
-
-    int64_t len = esp_http_client_fetch_headers(client);
-    ESP_LOGD(TAG, "Header length %lld", (long long)len);
-    if (len < 0) {
-        ESP_LOGE(TAG, "esp_http_client_fetch_headers failed: errno=%d", esp_http_client_get_errno(client));
-        goto cleanup;
-    }
-    if (len > 0 && (size_t)len > max_json_size) {
-        ESP_LOGE(TAG, "JSON payload too large (%lld bytes)", (long long)len);
-        goto cleanup;
-    }
-
-    size_t capacity = len > 0 ? (size_t)len + 1 : 256;
-    if (capacity > max_json_size + 1)
-        capacity = max_json_size + 1;
-
-    data = malloc(capacity);
-    if (!data) {
-        ESP_LOGE(TAG, "malloc failed");
-        result = ESP_ERR_NO_MEM;
-        goto cleanup;
-    }
-
-    size_t total = 0;
-    while (true) {
-        if (capacity - total <= 1) {
-            if (capacity >= max_json_size + 1) {
-                ESP_LOGE(TAG, "JSON response exceeds %u bytes", (unsigned)max_json_size);
-                goto cleanup;
-            }
-            size_t new_capacity = capacity * 2;
-            if (new_capacity > max_json_size + 1)
-                new_capacity = max_json_size + 1;
-            char *tmp = realloc(data, new_capacity);
-            if (!tmp) {
-                ESP_LOGE(TAG, "realloc failed");
-                result = ESP_ERR_NO_MEM;
-                goto cleanup;
-            }
-            data = tmp;
-            capacity = new_capacity;
-        }
-
-        int chunk = esp_http_client_read(client, data + total, capacity - total - 1);
-        if (chunk < 0) {
-            ESP_LOGE(TAG, "esp_http_client_read failed: errno=%d", esp_http_client_get_errno(client));
-            goto cleanup;
-        }
-        if (chunk == 0)
-            break;
-        total += (size_t)chunk;
-    }
-
-    data[total] = '\0';
-    int status = esp_http_client_get_status_code(client);
-    ESP_LOGD(TAG, "HTTP status %d, body %u bytes", status, (unsigned)total);
-    if (status < 200 || status >= 300) {
-        ESP_LOGE(TAG, "Unexpected HTTP status %d", status);
-        goto cleanup;
-    }
-
-    result = ESP_OK;
-
-cleanup:
-    if (opened)
-        esp_http_client_close(client);
-    esp_http_client_cleanup(client);
-    if (out_err)
-        *out_err = result;
-    if (result != ESP_OK) {
-        free(data);
-        data = NULL;
-    }
-    return data;
 }
 
 esp_err_t save_fw_config(const char *repo, bool pre) {
@@ -354,11 +241,6 @@ esp_err_t github_update_from_urls(const char *fw_url, const char *sig_url) {
         ESP_LOGE(TAG, "No OTA partition available");
         return ESP_FAIL;
     }
-    const esp_partition_t *running_partition = esp_ota_get_running_partition();
-    if (!running_partition) {
-        ESP_LOGE(TAG, "Failed to determine running partition");
-        return ESP_FAIL;
-    }
     ESP_LOGI(TAG, "Using OTA partition at 0x%lx (%lu bytes)",
              (unsigned long)update_part->address, (unsigned long)update_part->size);
     esp_http_client_config_t http_cfg = {
@@ -384,13 +266,11 @@ esp_err_t github_update_from_urls(const char *fw_url, const char *sig_url) {
     ESP_LOGI(TAG, "OTA download complete");
     esp_partition_pos_t pos = { .offset = update_part->address, .size = update_part->size };
     esp_image_metadata_t meta;
-    esp_err_t result = ESP_FAIL;
     esp_err_t meta_res = esp_image_get_metadata(&pos, &meta);
     ESP_LOGD(TAG, "esp_image_get_metadata -> %s", esp_err_to_name(meta_res));
     if (meta_res != ESP_OK) {
         ESP_LOGE(TAG, "Failed to get image metadata: %s", esp_err_to_name(meta_res));
-        result = meta_res;
-        goto rollback;
+        return meta_res;
     }
     uint8_t expected_hash[48];
     memcpy(expected_hash, sig, sizeof(expected_hash));
@@ -399,32 +279,21 @@ esp_err_t github_update_from_urls(const char *fw_url, const char *sig_url) {
     if (expected_len != meta.image_len) {
         ESP_LOGE(TAG, "Image length mismatch: expected %u got %u", (unsigned)expected_len,
                  (unsigned)meta.image_len);
-        result = ESP_FAIL;
-        goto rollback;
+        return ESP_FAIL;
     }
     ESP_LOGI(TAG, "Image length verified (%u bytes)", (unsigned)meta.image_len);
     uint8_t actual[48];
     esp_err_t hash_res = partition_sha384(update_part, meta.image_len, actual);
     ESP_LOGD(TAG, "partition_sha384 -> %s", esp_err_to_name(hash_res));
-    if (hash_res != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to compute image hash: %s", esp_err_to_name(hash_res));
-        result = hash_res;
-        goto rollback;
-    }
     ESP_LOGD(TAG, "Image SHA384:");
     ESP_LOG_BUFFER_HEX_LEVEL(TAG, actual, sizeof(actual), ESP_LOG_DEBUG);
     if (memcmp(actual, expected_hash, sizeof(actual)) != 0) {
         ESP_LOGE(TAG, "SHA384 mismatch");
-        result = ESP_FAIL;
-        goto rollback;
+        return ESP_FAIL;
     }
     ESP_LOGI(TAG, "Signature verified, rebooting");
     esp_restart();
     return ESP_OK;
-
-rollback:
-    rollback_to_running_partition(running_partition);
-    return result;
 }
 
 esp_err_t github_update_if_needed(const char *repo, bool prerelease) {
@@ -442,11 +311,38 @@ esp_err_t github_update_if_needed(const char *repo, bool prerelease) {
     if (!curValid) {
         ESP_LOGE(TAG, "Invalid current firmware version, assuming 0.0.0");
     }
-    esp_err_t http_err = ESP_OK;
-    char *data = http_get_json(&cfg, &http_err);
-    if (!data) {
-        return http_err;
+    esp_http_client_handle_t client = esp_http_client_init(&cfg);
+    if (!client) { ESP_LOGE(TAG, "esp_http_client_init failed"); return ESP_FAIL; }
+    esp_err_t err = esp_http_client_open(client, 0);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "esp_http_client_open failed: %s", esp_err_to_name(err));
+        esp_http_client_cleanup(client);
+        return err;
     }
+    ESP_LOGD(TAG, "esp_http_client_open -> %s", esp_err_to_name(err));
+    int len = esp_http_client_fetch_headers(client);
+    ESP_LOGD(TAG, "Header length %d", len);
+    if (len < 0) {
+        ESP_LOGE(TAG, "esp_http_client_fetch_headers failed: errno=%d", esp_http_client_get_errno(client));
+        esp_http_client_close(client);
+        esp_http_client_cleanup(client);
+        return ESP_FAIL;
+    }
+    char *data = malloc(len + 1);
+    if (!data) { ESP_LOGE(TAG, "malloc failed"); esp_http_client_close(client); esp_http_client_cleanup(client); return ESP_ERR_NO_MEM; }
+    int read = esp_http_client_read_response(client, data, len);
+    int status = esp_http_client_get_status_code(client);
+    ESP_LOGD(TAG, "Read %d bytes with HTTP status %d", read, status);
+    if (read <= 0) {
+        ESP_LOGE(TAG, "esp_http_client_read_response failed: errno=%d", esp_http_client_get_errno(client));
+        free(data);
+        esp_http_client_close(client);
+        esp_http_client_cleanup(client);
+        return ESP_FAIL;
+    }
+    data[read] = '\0';
+    esp_http_client_close(client);
+    esp_http_client_cleanup(client);
 
     cJSON *json = cJSON_Parse(data);
     free(data);
@@ -477,10 +373,38 @@ esp_err_t github_update_if_needed(const char *repo, bool prerelease) {
             cJSON_Delete(json);
             snprintf(api, sizeof(api), "https://api.github.com/repos/%s/releases?per_page=5", repo);
             cfg.url = api;
-            data = http_get_json(&cfg, &http_err);
-            if (!data) {
-                return http_err;
+            client = esp_http_client_init(&cfg);
+            if (!client) return ESP_FAIL;
+            err = esp_http_client_open(client, 0);
+            if (err != ESP_OK) {
+                ESP_LOGE(TAG, "esp_http_client_open failed: %s", esp_err_to_name(err));
+                esp_http_client_cleanup(client);
+                return err;
             }
+            ESP_LOGD(TAG, "esp_http_client_open -> %s", esp_err_to_name(err));
+            len = esp_http_client_fetch_headers(client);
+            ESP_LOGD(TAG, "Header length %d", len);
+            if (len < 0) {
+                ESP_LOGE(TAG, "esp_http_client_fetch_headers failed: errno=%d", esp_http_client_get_errno(client));
+                esp_http_client_close(client);
+                esp_http_client_cleanup(client);
+                return ESP_FAIL;
+            }
+            data = malloc(len + 1);
+            if (!data) { ESP_LOGE(TAG, "malloc failed"); esp_http_client_close(client); esp_http_client_cleanup(client); return ESP_ERR_NO_MEM; }
+            read = esp_http_client_read_response(client, data, len);
+            status = esp_http_client_get_status_code(client);
+            ESP_LOGD(TAG, "Read %d bytes with HTTP status %d", read, status);
+            if (read <= 0) {
+                ESP_LOGE(TAG, "esp_http_client_read_response failed: errno=%d", esp_http_client_get_errno(client));
+                free(data);
+                esp_http_client_close(client);
+                esp_http_client_cleanup(client);
+                return ESP_FAIL;
+            }
+            data[read] = '\0';
+            esp_http_client_close(client);
+            esp_http_client_cleanup(client);
             json = cJSON_Parse(data);
             free(data);
             if (!json || !cJSON_IsArray(json) || cJSON_GetArraySize(json)==0) { ESP_LOGE(TAG, "No releases in list"); cJSON_Delete(json); return ESP_FAIL; }

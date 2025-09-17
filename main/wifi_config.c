@@ -24,10 +24,6 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdint.h>
-#include <stdbool.h>
-#include <stdlib.h>
-#include <stdarg.h>
-#include <stddef.h>
 #include <lwip/sockets.h>
 #include <lwip/ip_addr.h>
 
@@ -50,8 +46,6 @@
 #include "wifi_config.h"
 #include "form_urlencoded.h"
 #include "github_update.h"
-#include "html_utils.h"
-#include "nvs_utils.h"
 
 enum {
         STATION_MODE = 1,
@@ -62,12 +56,6 @@ enum {
 #define STATION_GOT_IP 5
 #define SOFTAP_IF WIFI_IF_AP
 #define STATION_IF WIFI_IF_STA
-
-#define WIFI_CONFIG_MAX_NETWORKS 32
-#define WIFI_CONFIG_MAX_CLIENTS 4
-
-#define WIFI_CONFIG_MAX_SSID_LEN 32
-#define WIFI_CONFIG_ESCAPED_SSID_MAX (WIFI_CONFIG_MAX_SSID_LEN * 6 + 1)
 
 static nvs_handle_t wifi_cfg_handle;
 static volatile bool sta_got_ip = false;
@@ -126,34 +114,24 @@ static void sdk_wifi_station_set_auto_connect(bool en) {
         safe_set_auto_connect(en);
 }
 
-static bool sysparam_init(void) {
+static void sysparam_init(void) {
         static bool initialized = false;
-        if (initialized) {
-                return true;
+        if (!initialized) {
+                ESP_LOGD("wifi_config", "Initializing NVS for WiFi config");
+                esp_err_t err = nvs_flash_init();
+                if (err != ESP_OK) {
+                        ESP_LOGE("wifi_config", "nvs_flash_init failed: %s", esp_err_to_name(err));
+                }
+                err = nvs_open("wifi_cfg", NVS_READWRITE, &wifi_cfg_handle);
+                if (err != ESP_OK) {
+                        ESP_LOGE("wifi_config", "nvs_open failed: %s", esp_err_to_name(err));
+                }
+                initialized = true;
         }
-
-        ESP_LOGD("wifi_config", "Initializing NVS for WiFi config");
-        esp_err_t err = nvs_init_with_recovery();
-        if (err != ESP_OK) {
-                ESP_LOGE("wifi_config", "nvs_init_with_recovery failed: %s", esp_err_to_name(err));
-                return false;
-        }
-
-        err = nvs_open("wifi_cfg", NVS_READWRITE, &wifi_cfg_handle);
-        if (err != ESP_OK) {
-                ESP_LOGE("wifi_config", "nvs_open failed: %s", esp_err_to_name(err));
-                return false;
-        }
-
-        initialized = true;
-        return true;
 }
 
 static void sysparam_set_string(const char *key, const char *value) {
-        if (!sysparam_init()) {
-                ESP_LOGE("wifi_config", "Cannot set key %s because NVS is unavailable", key);
-                return;
-        }
+        sysparam_init();
         if (!value) value = "";
         ESP_LOGD("wifi_config", "Setting NVS key %s", key);
         esp_err_t err = nvs_set_str(wifi_cfg_handle, key, value);
@@ -167,16 +145,7 @@ static void sysparam_set_string(const char *key, const char *value) {
 }
 
 static void sysparam_get_string(const char *key, char **value) {
-        if (!value) {
-                return;
-        }
-        *value = NULL;
-
-        if (!sysparam_init()) {
-                ESP_LOGE("wifi_config", "Cannot read key %s because NVS is unavailable", key);
-                return;
-        }
-
+        sysparam_init();
         size_t required = 0;
         esp_err_t err = nvs_get_str(wifi_cfg_handle, key, NULL, &required);
         if (err == ESP_OK && required > 0) {
@@ -189,10 +158,9 @@ static void sysparam_get_string(const char *key, char **value) {
                 } else {
                         ESP_LOGD("wifi_config", "Loaded key %s", key);
                 }
-        } else if (err != ESP_OK && err != ESP_ERR_NVS_NOT_FOUND) {
-                ESP_LOGE("wifi_config", "Failed to query key %s: %s", key, esp_err_to_name(err));
         } else {
                 ESP_LOGD("wifi_config", "Key %s not found", key);
+                *value = NULL;
         }
 }
 
@@ -267,29 +235,25 @@ typedef enum {
 
 
 typedef struct {
-        char ssid_prefix[33];
-        char password[65];
-        bool has_password;
+        char *ssid_prefix;
+        char *password;
         char *custom_html;
         void (*on_wifi_ready)(); // deprecated
         void (*on_event)(wifi_config_event_t);
 
-        bool first_time;
+        int first_time;
         TimerHandle_t network_monitor_timer;
         TaskHandle_t monitor_task_handle;
         TaskHandle_t http_task_handle;
         TaskHandle_t dns_task_handle;
-        TaskHandle_t scan_task_handle;
 } wifi_config_context_t;
 
 
-static wifi_config_context_t context_storage;
 static wifi_config_context_t *context = NULL;
 
 typedef struct _client {
         int fd;
-        unsigned disconnected : 1;
-        unsigned in_use : 1;
+        bool disconnected;
 
         http_parser parser;
         endpoint_t endpoint;
@@ -300,53 +264,27 @@ typedef struct _client {
 } client_t;
 
 
-static client_t client_pool[WIFI_CONFIG_MAX_CLIENTS];
-
-
 static int wifi_config_has_configuration();
 static int wifi_config_station_connect();
 static void wifi_config_softap_start();
 static void wifi_config_softap_stop();
 
-static client_t *client_new(void) {
-        for (size_t i = 0; i < WIFI_CONFIG_MAX_CLIENTS; ++i) {
-                client_t *client = &client_pool[i];
-                if (client->in_use)
-                        continue;
+static client_t *client_new() {
+        client_t *client = malloc(sizeof(client_t));
+        memset(client, 0, sizeof(client_t));
 
-                client->in_use = 1;
-                client->disconnected = 0;
-                client->fd = -1;
-                client->endpoint = ENDPOINT_UNKNOWN;
-                client->body = NULL;
-                client->body_length = 0;
-                client->next = NULL;
+        http_parser_init(&client->parser, HTTP_REQUEST);
+        client->parser.data = client;
 
-                http_parser_init(&client->parser, HTTP_REQUEST);
-                client->parser.data = client;
-                return client;
-        }
-
-        return NULL;
+        return client;
 }
 
 
 static void client_free(client_t *client) {
-        if (!client)
-                return;
-
-        if (client->body) {
+        if (client->body)
                 free(client->body);
-                client->body = NULL;
-        }
 
-        client->body_length = 0;
-        client->fd = -1;
-        client->endpoint = ENDPOINT_UNKNOWN;
-        client->next = NULL;
-        client->disconnected = 0;
-        client->in_use = 0;
-        client->parser.data = NULL;
+        free(client);
 }
 
 
@@ -384,44 +322,6 @@ static void client_send_chunk(client_t *client, const char *payload) {
 }
 
 
-static bool client_send_chunk_printf(client_t *client, const char *fmt, ...)
-{
-        char stack_buf[128];
-        va_list args;
-        va_start(args, fmt);
-        int needed = vsnprintf(stack_buf, sizeof(stack_buf), fmt, args);
-        va_end(args);
-        if (needed < 0)
-                return false;
-        if ((size_t)needed < sizeof(stack_buf)) {
-                client_send_chunk(client, stack_buf);
-                return true;
-        }
-        char *heap_buf = malloc((size_t)needed + 1);
-        if (!heap_buf)
-                return false;
-        va_start(args, fmt);
-        vsnprintf(heap_buf, (size_t)needed + 1, fmt, args);
-        va_end(args);
-        client_send_chunk(client, heap_buf);
-        free(heap_buf);
-        return true;
-}
-
-static void copy_string(char *dst, size_t dst_size, const char *src)
-{
-        if (!dst || dst_size == 0)
-                return;
-        if (!src) {
-                dst[0] = '\0';
-                return;
-        }
-        size_t len = strnlen(src, dst_size - 1);
-        memcpy(dst, src, len);
-        dst[len] = '\0';
-}
-
-
 static void client_send_redirect(client_t *client, int code, const char *redirect_url) {
         DEBUG("Redirecting to %s", redirect_url);
         char buffer[128];
@@ -430,51 +330,16 @@ static void client_send_redirect(client_t *client, int code, const char *redirec
 }
 
 
-typedef struct {
+typedef struct _wifi_network_info {
         char ssid[33];
         bool secure;
+
+        struct _wifi_network_info *next;
 } wifi_network_info_t;
 
 
-static wifi_network_info_t wifi_networks[WIFI_CONFIG_MAX_NETWORKS];
-static size_t wifi_network_count;
-static StaticSemaphore_t wifi_networks_mutex_buffer;
-static SemaphoreHandle_t wifi_networks_mutex = NULL;
-
-static void wifi_networks_clear(void)
-{
-        wifi_network_count = 0;
-}
-
-static bool wifi_networks_mutex_create(void)
-{
-        if (wifi_networks_mutex)
-                return true;
-
-        wifi_networks_mutex = xSemaphoreCreateMutexStatic(&wifi_networks_mutex_buffer);
-        if (!wifi_networks_mutex) {
-                ESP_LOGE("wifi_config", "Failed to create wifi_networks_mutex");
-                return false;
-        }
-
-        return true;
-}
-
-static void wifi_networks_mutex_delete(void)
-{
-        (void)wifi_networks_mutex;
-}
-
-static bool wifi_networks_lock(TickType_t ticks_to_wait)
-{
-        return wifi_networks_mutex && xSemaphoreTake(wifi_networks_mutex, ticks_to_wait) == pdTRUE;
-}
-
-static void wifi_networks_unlock(void)
-{
-        if (wifi_networks_mutex)
-                xSemaphoreGive(wifi_networks_mutex);
-}
+wifi_network_info_t *wifi_networks = NULL;
+SemaphoreHandle_t wifi_networks_mutex;
 
 
 static void wifi_scan_task(void *arg)
@@ -490,76 +355,54 @@ static void wifi_scan_task(void *arg)
                 uint16_t ap_num = 0;
                 esp_wifi_scan_get_ap_num(&ap_num);
                 ESP_LOGD("wifi_config", "Scan complete, found %u APs", ap_num);
-                wifi_ap_record_t *records = ap_num ? calloc(ap_num, sizeof(wifi_ap_record_t)) : NULL;
+                wifi_ap_record_t *records = calloc(ap_num, sizeof(wifi_ap_record_t));
+                if (records && esp_wifi_scan_get_ap_records(&ap_num, records) == ESP_OK) {
+                        xSemaphoreTake(wifi_networks_mutex, portMAX_DELAY);
 
-                bool stop_scanning = false;
-                if (!wifi_networks_mutex) {
-                        ESP_LOGW("wifi_config", "wifi_networks_mutex not available, stopping scan task");
-                        stop_scanning = true;
-                } else if (!records && ap_num) {
-                        ESP_LOGE("wifi_config", "Failed to allocate AP records");
-                        stop_scanning = true;
-                } else if (esp_wifi_scan_get_ap_records(&ap_num, records) == ESP_OK) {
-                        if (!wifi_networks_lock(portMAX_DELAY)) {
-                                ESP_LOGW("wifi_config", "Failed to lock wifi_networks_mutex, stopping scan task");
-                                stop_scanning = true;
-                        } else {
-                                wifi_networks_clear();
-
-                                for (int i = 0; i < ap_num; ++i) {
-                                        size_t ssid_len = records[i].ssid_len;
-                                        if (ssid_len == 0 || ssid_len > sizeof(records[i].ssid))
-                                                ssid_len = strnlen((const char *)records[i].ssid, sizeof(records[i].ssid));
-
-                                        char sanitized[sizeof(wifi_networks[0].ssid)];
-                                        sanitize_ssid_bytes(records[i].ssid, ssid_len, sanitized, sizeof(sanitized));
-                                        if (sanitized[0] == '\0')
-                                                continue;
-
-                                        bool known = false;
-                                        for (size_t idx = 0; idx < wifi_network_count; ++idx) {
-                                                if (!strcmp(wifi_networks[idx].ssid, sanitized)) {
-                                                        known = true;
-                                                        break;
-                                                }
-                                        }
-                                        if (known)
-                                                continue;
-
-                                        if (wifi_network_count >= WIFI_CONFIG_MAX_NETWORKS) {
-                                                ESP_LOGW("wifi_config", "Network list full, dropping %s", sanitized);
-                                                continue;
-                                        }
-
-                                        wifi_network_info_t *entry = &wifi_networks[wifi_network_count++];
-                                        copy_string(entry->ssid, sizeof(entry->ssid), sanitized);
-                                        entry->secure = records[i].authmode != WIFI_AUTH_OPEN;
-                                }
-
-                                wifi_networks_unlock();
+                        wifi_network_info_t *wifi_network = wifi_networks;
+                        while (wifi_network) {
+                                wifi_network_info_t *next = wifi_network->next;
+                                free(wifi_network);
+                                wifi_network = next;
                         }
+                        wifi_networks = NULL;
+
+                        for (int i = 0; i < ap_num; i++) {
+                                wifi_network_info_t *net = wifi_networks;
+                                while (net) {
+                                        if (!strncmp(net->ssid, (char *)records[i].ssid, sizeof(net->ssid)))
+                                                break;
+                                        net = net->next;
+                                }
+                                if (!net) {
+                                        wifi_network_info_t *net = malloc(sizeof(wifi_network_info_t));
+                                        memset(net, 0, sizeof(*net));
+                                        strncpy(net->ssid, (char *)records[i].ssid, sizeof(net->ssid));
+                                        net->secure = records[i].authmode != WIFI_AUTH_OPEN;
+                                        net->next = wifi_networks;
+                                        wifi_networks = net;
+                                }
+                        }
+
+                        xSemaphoreGive(wifi_networks_mutex);
                 }
 
                 free(records);
-
-                if (stop_scanning)
-                        break;
-
                 ESP_LOGD("wifi_config", "WiFi scan cycle finished");
                 vTaskDelay(10000 / portTICK_PERIOD_MS);
         }
 
-        if (wifi_networks_lock(portMAX_DELAY)) {
-                wifi_networks_clear();
-                wifi_networks_unlock();
-        } else {
-                wifi_networks_clear();
+        xSemaphoreTake(wifi_networks_mutex, portMAX_DELAY);
+
+        wifi_network_info_t *wifi_network = wifi_networks;
+        while (wifi_network) {
+                wifi_network_info_t *next = wifi_network->next;
+                free(wifi_network);
+                wifi_network = next;
         }
+        wifi_networks = NULL;
 
-        wifi_networks_mutex_delete();
-
-        if (context)
-                context->scan_task_handle = NULL;
+        xSemaphoreGive(wifi_networks_mutex);
 
         ESP_LOGD("wifi_config", "wifi_scan_task exiting");
         vTaskDelete(NULL);
@@ -579,32 +422,31 @@ static void wifi_config_server_on_settings(client_t *client) {
         client_send(client, http_prologue, sizeof(http_prologue)-1);
         client_send_chunk(client, html_settings_header);
 
-        if (context->custom_html && context->custom_html[0] != '\0') {
-                if (!client_send_chunk_printf(client, html_settings_custom_html, context->custom_html)) {
-                        ESP_LOGE("wifi_config", "Failed to render custom HTML");
-                }
+        if (context->custom_html != NULL && context->custom_html[0] > 0) {
+                uint8_t buffer_size = strlen(html_settings_custom_html) + strlen(context->custom_html);
+                char* buffer = (char*) calloc(buffer_size, sizeof(char)); //fill up the buffer with zeros
+                snprintf(buffer, buffer_size, html_settings_custom_html, context->custom_html); //fill in template with the custom_html content
+                client_send_chunk(client, buffer);
+                free(buffer);
         }
 
         client_send_chunk(client, html_settings_body);
 
-        SemaphoreHandle_t mutex = wifi_networks_mutex;
-        if (mutex && xSemaphoreTake(mutex, 5000 / portTICK_PERIOD_MS)) {
-                for (size_t idx = 0; idx < wifi_network_count; ++idx) {
-                        const wifi_network_info_t *net = &wifi_networks[idx];
-                        char escaped_ssid[WIFI_CONFIG_ESCAPED_SSID_MAX];
-                        size_t needed = 0;
-                        if (!html_escape_into(net->ssid, escaped_ssid, sizeof(escaped_ssid), &needed)) {
-                                ESP_LOGE("wifi_config", "Failed to escape SSID %s (needed %u bytes)", net->ssid, (unsigned)needed);
-                                continue;
-                        }
-                        const char *class_name = net->secure ? "secure" : "unsecure";
+        if (xSemaphoreTake(wifi_networks_mutex, 5000 / portTICK_PERIOD_MS)) {
+                char buffer[64];
+                wifi_network_info_t *net = wifi_networks;
+                while (net) {
+                        snprintf(
+                                buffer, sizeof(buffer),
+                                html_network_item,
+                                net->secure ? "secure" : "unsecure", net->ssid
+                                );
+                        client_send_chunk(client, buffer);
 
-                        if (!client_send_chunk_printf(client, html_network_item, class_name, escaped_ssid)) {
-                                ESP_LOGE("wifi_config", "Failed to send network item for %s", escaped_ssid);
-                        }
+                        net = net->next;
                 }
 
-                xSemaphoreGive(mutex);
+                xSemaphoreGive(wifi_networks_mutex);
         }
 
         client_send_chunk(client, html_settings_footer);
@@ -613,21 +455,14 @@ static void wifi_config_server_on_settings(client_t *client) {
 
 
 static void wifi_config_server_on_settings_update(client_t *client) {
-        const char *body_log = client->body ? (const char *)client->body : "(null)";
-        DEBUG("Update settings, body length = %zu, body = %s", client->body_length, body_log);
+    DEBUG("Update settings, body = %s", client->body);
 
-        if (!client->body || client->body_length == 0) {
-                DEBUG("Empty HTTP body received, redirecting to /settings");
-                client_send_redirect(client, 302, "/settings");
-                return;
-        }
-
-        form_param_t *form = form_params_parse((char *)client->body);
-        if (!form) {
-                DEBUG("Couldn't parse form data, redirecting to /settings");
-                client_send_redirect(client, 302, "/settings");
-                return;
-        }
+    form_param_t *form = form_params_parse((char *)client->body);
+    if (!form) {
+        DEBUG("Couldn't parse form data, redirecting to /settings");
+        client_send_redirect(client, 302, "/settings");
+        return;
+    }
 
     form_param_t *ssid_param = form_params_find(form, "ssid");
     form_param_t *password_param = form_params_find(form, "password");
@@ -698,24 +533,7 @@ static int wifi_config_server_on_url(http_parser *parser, const char *data, size
 
 static int wifi_config_server_on_body(http_parser *parser, const char *data, size_t length) {
         client_t *client = parser->data;
-        if (client->disconnected)
-                return 0;
-
-        if (length > SIZE_MAX - client->body_length - 1) {
-                ESP_LOGE("wifi_config", "HTTP body too large");
-                client->disconnected = true;
-                return 0;
-        }
-        size_t new_size = client->body_length + length + 1;
-        uint8_t *new_body = realloc(client->body, new_size);
-
-        if (!new_body) {
-                ESP_LOGE("wifi_config", "Failed to allocate %zu bytes for HTTP body", new_size);
-                client->disconnected = true;
-                return 0;
-        }
-
-        client->body = new_body;
+        client->body = realloc(client->body, client->body_length + length + 1);
         memcpy(client->body + client->body_length, data, length);
         client->body_length += length;
         client->body[client->body_length] = 0;
@@ -772,7 +590,7 @@ static void http_task(void *arg) {
 
         struct sockaddr_in serv_addr;
         int listenfd = socket(AF_INET, SOCK_STREAM, 0);
-        memset(&serv_addr, 0, sizeof(serv_addr));
+        memset(&serv_addr, '0', sizeof(serv_addr));
         serv_addr.sin_family = AF_INET;
         serv_addr.sin_addr.s_addr = htonl(INADDR_ANY);
         serv_addr.sin_port = htons(WIFI_CONFIG_SERVER_PORT);
@@ -797,7 +615,6 @@ static void http_task(void *arg) {
         fd_set fds;
         int max_fd = listenfd;
 
-        FD_ZERO(&fds);
         FD_SET(listenfd, &fds);
 
         char data[64];
@@ -813,7 +630,6 @@ static void http_task(void *arg) {
                 }
 
                 fd_set read_fds;
-                FD_ZERO(&read_fds);
                 memcpy(&read_fds, &fds, sizeof(read_fds));
 
                 struct timeval timeout = { 1, 0 }; // 1 second timeout
@@ -841,19 +657,14 @@ static void http_task(void *arg) {
                                 setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT, &maxpkt, sizeof(maxpkt));
 
                                 client_t *client = client_new();
-                                if (!client) {
-                                        ERROR("No free HTTP client slots");
-                                        lwip_close(fd);
-                                } else {
-                                        client->fd = fd;
-                                        client->next = clients;
+                                client->fd = fd;
+                                client->next = clients;
 
-                                        clients = client;
+                                clients = client;
 
-                                        FD_SET(fd, &fds);
-                                        if (fd > max_fd)
-                                                max_fd = fd;
-                                }
+                                FD_SET(fd, &fds);
+                                if (fd > max_fd)
+                                        max_fd = fd;
                         }
 
                         triggered_nfds--;
@@ -954,7 +765,7 @@ static void dns_task(void *arg)
         struct sockaddr_in serv_addr;
         int fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
 
-        memset(&serv_addr, 0, sizeof(serv_addr));
+        memset(&serv_addr, '0', sizeof(serv_addr));
         serv_addr.sin_family = AF_INET;
         serv_addr.sin_addr.s_addr = htonl(INADDR_ANY);
         serv_addr.sin_port = htons(53);
@@ -1062,12 +873,12 @@ static void wifi_config_softap_start() {
                 "%s-%02X%02X%02X", context->ssid_prefix, macaddr[3], macaddr[4], macaddr[5]
                 );
         ap_cfg.ap.ssid_hidden = 0;
-        if (context->has_password) {
+        if (context->password) {
                 ap_cfg.ap.authmode = WIFI_AUTH_WPA_WPA2_PSK;
-                copy_string((char *)ap_cfg.ap.password, sizeof(ap_cfg.ap.password), context->password);
+                strncpy((char *)ap_cfg.ap.password,
+                        context->password, sizeof(ap_cfg.ap.password));
         } else {
                 ap_cfg.ap.authmode = WIFI_AUTH_OPEN;
-                ap_cfg.ap.password[0] = '\0';
         }
         ap_cfg.ap.max_connection = 2;
         ap_cfg.ap.beacon_interval = 100;
@@ -1076,12 +887,11 @@ static void wifi_config_softap_start() {
 
         sdk_wifi_softap_set_config(&ap_cfg);
 
-        if (!wifi_networks_mutex_create()) {
-                ESP_LOGE("wifi_config", "Failed to initialize wifi_networks_mutex");
-        } else if (xTaskCreate(wifi_scan_task, "wifi_config scan", 4096, NULL, 2,
-                               &context->scan_task_handle) != pdPASS) {
+        wifi_networks_mutex = xSemaphoreCreateBinary();
+        xSemaphoreGive(wifi_networks_mutex);
+
+        if (xTaskCreate(wifi_scan_task, "wifi_config scan", 4096, NULL, 2, NULL) != pdPASS) {
                 ESP_LOGE("wifi_config", "Failed to create wifi_scan_task");
-                context->scan_task_handle = NULL;
         } else {
                 ESP_LOGD("wifi_config", "wifi_scan_task started");
         }
@@ -1098,14 +908,6 @@ static void wifi_config_softap_stop() {
         dns_stop();
         http_stop();
         sdk_wifi_set_opmode(STATION_MODE);
-
-        if (context && context->scan_task_handle) {
-                while (context->scan_task_handle)
-                        vTaskDelay(pdMS_TO_TICKS(10));
-        }
-
-        wifi_networks_mutex_delete();
-
         ESP_LOGD("wifi_config", "AP interface stopped");
 }
 
@@ -1208,11 +1010,10 @@ static int wifi_config_station_connect() {
 
         wifi_config_t sta_config;
         memset(&sta_config, 0, sizeof(sta_config));
-        copy_string((char *)sta_config.sta.ssid, sizeof(sta_config.sta.ssid), wifi_ssid);
+        strncpy((char *)sta_config.sta.ssid, wifi_ssid, sizeof(sta_config.sta.ssid));
+        sta_config.sta.ssid[sizeof(sta_config.sta.ssid)-1] = 0;
         if (wifi_password)
-                copy_string((char *)sta_config.sta.password, sizeof(sta_config.sta.password), wifi_password);
-        else
-                sta_config.sta.password[0] = '\0';
+                strncpy((char *)sta_config.sta.password, wifi_password, sizeof(sta_config.sta.password));
 
         ESP_LOGD("wifi_config", "Applying station configuration");
         sdk_wifi_station_set_config(&sta_config);
@@ -1311,38 +1112,6 @@ void wifi_config_legacy_support_on_event(wifi_config_event_t event) {
 }
 
 
-static bool wifi_config_prepare_context(const char *ssid_prefix, const char *password)
-{
-        if (!ssid_prefix)
-                ssid_prefix = "";
-
-        if (!context) {
-                memset(&context_storage, 0, sizeof(context_storage));
-                context = &context_storage;
-        }
-
-        if (!wifi_networks_mutex_create()) {
-                return false;
-        }
-
-        size_t max_prefix = sizeof(context->ssid_prefix) > 7 ? sizeof(context->ssid_prefix) - 7 : sizeof(context->ssid_prefix) - 1;
-        size_t prefix_len = strnlen(ssid_prefix, max_prefix);
-        memcpy(context->ssid_prefix, ssid_prefix, prefix_len);
-        context->ssid_prefix[prefix_len] = '\0';
-        if (ssid_prefix[prefix_len] != '\0') {
-                ESP_LOGW("wifi_config", "SSID prefix truncated to %zu characters", prefix_len);
-        }
-        context->has_password = password && password[0];
-        if (context->has_password) {
-                copy_string(context->password, sizeof(context->password), password);
-        } else {
-                context->password[0] = '\0';
-        }
-
-        return true;
-}
-
-
 void wifi_config_init(const char *ssid_prefix, const char *password, void (*on_wifi_ready)()) {
         INFO("Initializing WiFi config");
         if (password && strlen(password) < 8) {
@@ -1350,14 +1119,18 @@ void wifi_config_init(const char *ssid_prefix, const char *password, void (*on_w
                 return;
         }
 
-        if (!wifi_config_prepare_context(ssid_prefix, password)) {
-                ERROR("Failed to prepare WiFi context");
+        context = malloc(sizeof(wifi_config_context_t));
+        if (!context) {
+                ERROR("Failed to allocate wifi_config_context_t");
                 return;
         }
+        memset(context, 0, sizeof(*context));
 
+        context->ssid_prefix = strndup(ssid_prefix, 33-7);
         INFO("Using SSID prefix %s", context->ssid_prefix);
-        if (context->has_password) {
-                INFO("Using WiFi password of length %d", (int)strlen(context->password));
+        if (password) {
+                context->password = strdup(password);
+                INFO("Using WiFi password of length %d", (int)strlen(password));
         }
 
         context->on_wifi_ready = on_wifi_ready;
@@ -1376,14 +1149,18 @@ void wifi_config_init2(const char *ssid_prefix, const char *password,
                 return;
         }
 
-        if (!wifi_config_prepare_context(ssid_prefix, password)) {
-                ERROR("Failed to prepare WiFi context");
+        context = malloc(sizeof(wifi_config_context_t));
+        if (!context) {
+                ERROR("Failed to allocate wifi_config_context_t");
                 return;
         }
+        memset(context, 0, sizeof(*context));
 
+        context->ssid_prefix = strndup(ssid_prefix, 33-7);
         INFO("Using SSID prefix %s", context->ssid_prefix);
-        if (context->has_password) {
-                INFO("Using WiFi password of length %d", (int)strlen(context->password));
+        if (password) {
+                context->password = strdup(password);
+                INFO("Using WiFi password of length %d", (int)strlen(password));
         }
 
         context->on_event = on_event;

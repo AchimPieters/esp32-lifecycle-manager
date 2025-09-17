@@ -1,12 +1,10 @@
 idf_component_register(
     SRCS
         "main.c"
-        "nvs_utils.c"
         "wifi_config.c"
         "wifi_config_util.c"
         "form_urlencoded.c"
         "github_update.c"
-        "html_utils.c"
     INCLUDE_DIRS
         "."
         "include"
