@@ -212,6 +212,27 @@
         </label>
 
       </section>
+      <section class="card">
+        <h3>LED identificatie</h3>
+
+        <label class="checkbox">
+          <input id="led_indicator" name="led_indicator" type="checkbox" checked />
+          Gebruik LED tijdens update
+        </label>
+
+        <label for="led_gpio">GPIO</label>
+        <select id="led_gpio" name="led_gpio">
+          <option value="n">no pin</option>
+          <option value="2">gpio-2</option><option value="4">gpio-4</option><option value="5">gpio-5</option>
+          <option value="12">gpio-12</option><option value="13">gpio-13</option><option value="14">gpio-14</option>
+          <option value="15">gpio-15</option><option value="16">gpio-16</option><option value="17">gpio-17</option>
+          <option value="18">gpio-18</option><option value="19">gpio-19</option><option value="20">gpio-20</option>
+          <option value="21">gpio-21</option><option value="22">gpio-22</option><option value="23">gpio-23</option>
+          <option value="24">gpio-24</option><option value="25">gpio-25</option><option value="26">gpio-26</option>
+          <option value="27">gpio-27</option><option value="28">gpio-28</option><option value="29">gpio-29</option>
+          <option value="30">gpio-30</option><option value="31">gpio-31</option><option value="32">gpio-32</option>
+        </select>
+      </section>
       <input type="submit" id="join" value="Join" disabled />
     </form>
     <p style="text-align:center"><sub><sup>Copyright © 2025 | StudioPieters® | All rights reserved.</sub></sup></p>
@@ -223,6 +244,30 @@
     const password_block = document.querySelector('.field.password');
     const password_field = document.getElementById('password');
     const join_button = document.getElementById('join');
+    const led_checkbox = document.getElementById('led_indicator');
+    const led_select = document.getElementById('led_gpio');
+
+    function updateLedControls() {
+      if (led_select) {
+        led_select.disabled = !led_checkbox.checked;
+      }
+    }
+
+    if (led_checkbox) {
+      led_checkbox.addEventListener('change', updateLedControls);
+    }
+    updateLedControls();
+
+    window.applyLedPreferences = (enabled, gpioValue) => {
+      if (!led_checkbox || !led_select) {
+        return;
+      }
+      led_checkbox.checked = !!enabled;
+      const normalizedValue = gpioValue === undefined || gpioValue === null ? '' : String(gpioValue);
+      const optionValues = Array.from(led_select.options).map(opt => opt.value);
+      led_select.value = optionValues.includes(normalizedValue) ? normalizedValue : 'n';
+      updateLedControls();
+    };
     function enable(el) {
       el.disabled = false;
     }
