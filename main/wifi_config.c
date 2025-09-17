@@ -48,6 +48,7 @@
 #include "wifi_config.h"
 #include "form_urlencoded.h"
 #include "github_update.h"
+#include "html_utils.h"
 #include "nvs_utils.h"
 
 enum {
@@ -439,7 +440,12 @@ static void wifi_scan_task(void *arg)
                                                 wifi_network_info_t *new_net = malloc(sizeof(wifi_network_info_t));
                                                 if (new_net) {
                                                         memset(new_net, 0, sizeof(*new_net));
-                                                        strncpy(new_net->ssid, (char *)records[i].ssid, sizeof(new_net->ssid));
+
+                                                        size_t ssid_len = records[i].ssid_len;
+                                                        if (ssid_len == 0 || ssid_len > sizeof(records[i].ssid))
+                                                                ssid_len = strnlen((const char *)records[i].ssid, sizeof(records[i].ssid));
+
+                                                        sanitize_ssid_bytes(records[i].ssid, ssid_len, new_net->ssid, sizeof(new_net->ssid));
                                                         new_net->secure = records[i].authmode != WIFI_AUTH_OPEN;
                                                         new_net->next = wifi_networks;
                                                         wifi_networks = new_net;
@@ -505,15 +511,24 @@ static void wifi_config_server_on_settings(client_t *client) {
 
         SemaphoreHandle_t mutex = wifi_networks_mutex;
         if (mutex && xSemaphoreTake(mutex, 5000 / portTICK_PERIOD_MS)) {
-                char buffer[64];
                 wifi_network_info_t *net = wifi_networks;
                 while (net) {
-                        snprintf(
-                                buffer, sizeof(buffer),
-                                html_network_item,
-                                net->secure ? "secure" : "unsecure", net->ssid
-                                );
-                        client_send_chunk(client, buffer);
+                        char *escaped_ssid = html_escape(net->ssid);
+                        const char *render_ssid = escaped_ssid ? escaped_ssid : "";
+                        const char *class_name = net->secure ? "secure" : "unsecure";
+
+                        int needed = snprintf(NULL, 0, html_network_item, class_name, render_ssid);
+                        if (needed > 0) {
+                                size_t buf_len = (size_t)needed + 1;
+                                char *buffer = malloc(buf_len);
+                                if (buffer) {
+                                        snprintf(buffer, buf_len, html_network_item, class_name, render_ssid);
+                                        client_send_chunk(client, buffer);
+                                        free(buffer);
+                                }
+                        }
+
+                        free(escaped_ssid);
 
                         net = net->next;
                 }
