@@ -30,6 +30,7 @@
 #include <wifi_config.h>
 #include <esp_sntp.h>
 #include "github_update.h"
+#include "led_indicator.h"
 
 // GPIO-definities
 #define BUTTON_GPIO CONFIG_ESP_BUTTON_GPIO
@@ -183,7 +184,6 @@ void app_main(void) {
     }
     load_led_config(&led_enabled, &led_gpio);
     gpio_init();
-    led_blinking_start();
     if (xTaskCreate(button_task, "button_task", 2048, NULL, 10, NULL) != pdPASS) {
         ESP_LOGE(TAG, "Failed to create button task");
     }

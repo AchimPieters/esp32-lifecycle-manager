@@ -12,6 +12,7 @@
 #include "nvs.h"
 #include "nvs_flash.h"
 #include "github_update.h"
+#include "led_indicator.h"
 
 static const char *TAG = "github_update";
 
@@ -322,11 +323,15 @@ esp_err_t github_update_from_urls(const char *fw_url, const char *sig_url) {
         .http_config = &http_cfg,
     };
     ESP_LOGI(TAG, "Starting OTA from %s", fw_url);
-    esp_err_t ret = esp_https_ota(&ota_cfg);
+    bool led_active = false;
+    esp_err_t ret = ESP_OK;
+    led_blinking_start();
+    led_active = true;
+    ret = esp_https_ota(&ota_cfg);
     ESP_LOGD(TAG, "esp_https_ota -> %s", esp_err_to_name(ret));
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "OTA failed: %s", esp_err_to_name(ret));
-        return ret;
+        goto cleanup;
     }
     ESP_LOGI(TAG, "OTA download complete");
     esp_partition_pos_t pos = { .offset = update_part->address, .size = update_part->size };
@@ -335,7 +340,8 @@ esp_err_t github_update_from_urls(const char *fw_url, const char *sig_url) {
     ESP_LOGD(TAG, "esp_image_get_metadata -> %s", esp_err_to_name(meta_res));
     if (meta_res != ESP_OK) {
         ESP_LOGE(TAG, "Failed to get image metadata: %s", esp_err_to_name(meta_res));
-        return meta_res;
+        ret = meta_res;
+        goto cleanup;
     }
     uint8_t expected_hash[48];
     memcpy(expected_hash, sig, sizeof(expected_hash));
@@ -344,21 +350,36 @@ esp_err_t github_update_from_urls(const char *fw_url, const char *sig_url) {
     if (expected_len != meta.image_len) {
         ESP_LOGE(TAG, "Image length mismatch: expected %u got %u", (unsigned)expected_len,
                  (unsigned)meta.image_len);
-        return ESP_FAIL;
+        ret = ESP_FAIL;
+        goto cleanup;
     }
     ESP_LOGI(TAG, "Image length verified (%u bytes)", (unsigned)meta.image_len);
     uint8_t actual[48];
     esp_err_t hash_res = partition_sha384(update_part, meta.image_len, actual);
     ESP_LOGD(TAG, "partition_sha384 -> %s", esp_err_to_name(hash_res));
+    if (hash_res != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to compute image hash: %s", esp_err_to_name(hash_res));
+        ret = hash_res;
+        goto cleanup;
+    }
     ESP_LOGD(TAG, "Image SHA384:");
     ESP_LOG_BUFFER_HEX_LEVEL(TAG, actual, sizeof(actual), ESP_LOG_DEBUG);
     if (memcmp(actual, expected_hash, sizeof(actual)) != 0) {
         ESP_LOGE(TAG, "SHA384 mismatch");
-        return ESP_FAIL;
+        ret = ESP_FAIL;
+        goto cleanup;
     }
+    led_blinking_stop();
+    led_active = false;
     ESP_LOGI(TAG, "Signature verified, rebooting");
     esp_restart();
     return ESP_OK;
+
+cleanup:
+    if (led_active) {
+        led_blinking_stop();
+    }
+    return ret;
 }
 
 esp_err_t github_update_if_needed(const char *repo, bool prerelease) {
