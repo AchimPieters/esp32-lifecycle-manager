@@ -584,7 +584,19 @@ static int wifi_config_server_on_url(http_parser *parser, const char *data, size
 
 static int wifi_config_server_on_body(http_parser *parser, const char *data, size_t length) {
         client_t *client = parser->data;
-        client->body = realloc(client->body, client->body_length + length + 1);
+        if (client->disconnected)
+                return 0;
+
+        size_t new_size = client->body_length + length + 1;
+        uint8_t *new_body = realloc(client->body, new_size);
+
+        if (!new_body) {
+                ESP_LOGE("wifi_config", "Failed to allocate %zu bytes for HTTP body", new_size);
+                client->disconnected = true;
+                return 0;
+        }
+
+        client->body = new_body;
         memcpy(client->body + client->body_length, data, length);
         client->body_length += length;
         client->body[client->body_length] = 0;
