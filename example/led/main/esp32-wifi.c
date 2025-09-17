@@ -183,3 +183,29 @@ esp_err_t wifi_stop(void) {
     if (r3 != ESP_OK) return r3;
     return ESP_OK;
 }
+
+esp_err_t wifi_reset_settings(void) {
+    ESP_LOGI(TAG, "WiFi-instellingen wissen uit NVS");
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open("wifi_cfg", NVS_READWRITE, &handle);
+    if (err == ESP_ERR_NVS_NOT_FOUND) {
+        ESP_LOGW(TAG, "Geen opgeslagen WiFi-configuratie gevonden");
+        return ESP_OK;
+    } else if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Kon NVS-namespace 'wifi_cfg' niet openen: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    err = nvs_erase_all(handle);
+    if (err == ESP_OK) {
+        err = nvs_commit(handle);
+    }
+    nvs_close(handle);
+
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG, "WiFi-configuratie succesvol verwijderd");
+    } else {
+        ESP_LOGE(TAG, "Kon WiFi-configuratie niet verwijderen: %s", esp_err_to_name(err));
+    }
+    return err;
+}

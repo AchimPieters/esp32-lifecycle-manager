@@ -24,6 +24,7 @@
 #include <stdio.h>
 #include <esp_log.h>
 #include <nvs_flash.h>
+#include <esp_system.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <driver/gpio.h>
@@ -51,8 +52,44 @@ void handle_error(esp_err_t err) {
 #define LED_GPIO CONFIG_ESP_LED_GPIO
 bool led_on = false;
 
+// Button (boot-knop op GPIO0)
+#define BUTTON_GPIO 0
+#define BUTTON_ACTIVE_LEVEL 0
+#define BUTTON_DEBOUNCE_MS 50
+#define BUTTON_DOUBLE_CLICK_MS 500
+#define BUTTON_POLL_INTERVAL_MS 10
+#define BUTTON_LONG_PRESS_MS 3000
+
+static const char *BUTTON_TAG = "BUTTON";
+
 void led_write(bool on) {
         gpio_set_level(LED_GPIO, on ? 1 : 0);
+}
+
+static void restart_device(void) {
+        ESP_LOGI("RESTART", "Systeem wordt opnieuw opgestart");
+        vTaskDelay(pdMS_TO_TICKS(200));
+        esp_restart();
+}
+
+static void handle_button_single_click(void) {
+        ESP_LOGI(BUTTON_TAG, "Single click gedetecteerd – geen actie nodig");
+}
+
+static void handle_button_double_click(void) {
+        ESP_LOGW(BUTTON_TAG, "Double click gedetecteerd – HomeKit-instellingen resetten");
+        homekit_server_reset();
+        restart_device();
+}
+
+static void handle_button_long_press(void) {
+        ESP_LOGW(BUTTON_TAG, "Long press gedetecteerd – Factory reset uitvoeren");
+        homekit_server_reset();
+        esp_err_t err = wifi_reset_settings();
+        if (err != ESP_OK) {
+                ESP_LOGE("RESET", "WiFi-configuratie kon niet worden gewist: %s", esp_err_to_name(err));
+        }
+        restart_device();
 }
 
 // All GPIO Settings
@@ -60,6 +97,16 @@ void gpio_init() {
         gpio_reset_pin(LED_GPIO); // Reset GPIO pin to avoid conflicts
         gpio_set_direction(LED_GPIO, GPIO_MODE_OUTPUT);
         led_write(led_on);
+
+        gpio_reset_pin(BUTTON_GPIO);
+        gpio_config_t button_config = {
+                .pin_bit_mask = 1ULL << BUTTON_GPIO,
+                .mode = GPIO_MODE_INPUT,
+                .pull_up_en = GPIO_PULLUP_ENABLE,
+                .pull_down_en = GPIO_PULLDOWN_DISABLE,
+                .intr_type = GPIO_INTR_DISABLE,
+        };
+        CHECK_ERROR(gpio_config(&button_config));
 }
 
 // Accessory identification
@@ -143,6 +190,70 @@ static void on_wifi_ready(void) {
         homekit_server_init(&config);
 }
 
+static void button_task(void *args) {
+        bool raw_state = gpio_get_level(BUTTON_GPIO);
+        bool stable_state = raw_state;
+        bool pressed = (stable_state == BUTTON_ACTIVE_LEVEL);
+        TickType_t last_change = xTaskGetTickCount();
+        TickType_t press_start = 0;
+        bool long_press_triggered = false;
+        uint8_t click_count = 0;
+        bool awaiting_second_click = false;
+        TickType_t last_release_time = 0;
+
+        while (true) {
+                TickType_t now = xTaskGetTickCount();
+                bool current_state = gpio_get_level(BUTTON_GPIO);
+
+                if (current_state != raw_state) {
+                        raw_state = current_state;
+                        last_change = now;
+                }
+
+                if ((now - last_change) >= pdMS_TO_TICKS(BUTTON_DEBOUNCE_MS) && current_state != stable_state) {
+                        stable_state = current_state;
+                        bool is_pressed = (stable_state == BUTTON_ACTIVE_LEVEL);
+
+                        if (is_pressed) {
+                                pressed = true;
+                                press_start = now;
+                                long_press_triggered = false;
+                        } else {
+                                pressed = false;
+                                if (long_press_triggered) {
+                                        long_press_triggered = false;
+                                } else {
+                                        click_count++;
+                                        awaiting_second_click = true;
+                                        last_release_time = now;
+                                        if (click_count >= 2) {
+                                                awaiting_second_click = false;
+                                                click_count = 0;
+                                                handle_button_double_click();
+                                        }
+                                }
+                        }
+                } else if (pressed && !long_press_triggered &&
+                           (now - press_start) >= pdMS_TO_TICKS(BUTTON_LONG_PRESS_MS)) {
+                        long_press_triggered = true;
+                        awaiting_second_click = false;
+                        click_count = 0;
+                        handle_button_long_press();
+                }
+
+                if (awaiting_second_click && !pressed &&
+                    (now - last_release_time) >= pdMS_TO_TICKS(BUTTON_DOUBLE_CLICK_MS)) {
+                        if (click_count == 1) {
+                                handle_button_single_click();
+                        }
+                        awaiting_second_click = false;
+                        click_count = 0;
+                }
+
+                vTaskDelay(pdMS_TO_TICKS(BUTTON_POLL_INTERVAL_MS));
+        }
+}
+
 void app_main(void) {
         // NVS init (vereist voor WiFi module om keys te lezen)
         esp_err_t ret = nvs_flash_init();
@@ -155,6 +266,10 @@ void app_main(void) {
 
         // Start GPIO / LED
         gpio_init();
+
+        if (xTaskCreate(button_task, "button_task", 4096, NULL, 5, NULL) != pdPASS) {
+                ESP_LOGE(BUTTON_TAG, "Kan button_task niet starten");
+        }
 
         // Start WiFi op basis van NVS en geef callback door
         CHECK_ERROR(wifi_start(on_wifi_ready));
