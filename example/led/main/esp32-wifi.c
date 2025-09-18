@@ -73,25 +73,12 @@ static void restart_on_fatal(esp_err_t err) {
 static void (*s_on_ready_cb)(void) = NULL;
 static bool s_started = false;
 
-#define BUTTON_GPIO GPIO_NUM_0
-#define BUTTON_DEBOUNCE_US 10000
-#define LONG_PRESS_US (2 * 1000 * 1000)
-#define DOUBLE_CLICK_TIMEOUT_MS 400
-
-typedef enum {
-    BUTTON_EVENT_PRESS,
-    BUTTON_EVENT_RELEASE,
-    BUTTON_EVENT_SINGLE_TIMEOUT,
-} button_event_type_t;
-
-typedef struct {
-    button_event_type_t type;
-    int64_t time_us;
-} button_event_t;
-
-static QueueHandle_t button_event_queue;
-static TimerHandle_t button_single_click_timer;
-static int button_click_count;
+static gpio_num_t s_button_gpio = GPIO_NUM_NC;
+static int64_t s_button_debounce_us = 0;
+static int64_t s_long_press_us = 0;
+static QueueHandle_t s_button_event_queue = NULL;
+static TimerHandle_t s_button_single_click_timer = NULL;
+static int *s_button_click_count = NULL;
 
 static esp_err_t nvs_load_wifi(char **out_ssid, char **out_pass) {
     nvs_handle_t h;
@@ -267,26 +254,35 @@ static void factory_reset_all_and_reboot(void) {
     esp_restart();
 }
 
-static void button_single_click_timeout_callback(TimerHandle_t timer) {
+void button_single_click_timeout_callback(TimerHandle_t timer) {
     button_event_t event = {
         .type = BUTTON_EVENT_SINGLE_TIMEOUT,
         .time_us = esp_timer_get_time(),
     };
 
-    if (xQueueSend(button_event_queue, &event, 0) != pdPASS) {
+    if (s_button_event_queue == NULL) {
+        ESP_LOGW(BUTTON_TAG, "Button queue not ready for timeout event");
+        return;
+    }
+
+    if (xQueueSend(s_button_event_queue, &event, 0) != pdPASS) {
         ESP_LOGW(BUTTON_TAG, "Single click timeout event queue full");
     }
 }
 
 static void IRAM_ATTR button_isr_handler(void *arg) {
-    const int level = gpio_get_level(BUTTON_GPIO);
+    if (s_button_event_queue == NULL || s_button_gpio == GPIO_NUM_NC) {
+        return;
+    }
+
+    const int level = gpio_get_level(s_button_gpio);
     button_event_t event = {
         .type = (level == 0) ? BUTTON_EVENT_PRESS : BUTTON_EVENT_RELEASE,
         .time_us = esp_timer_get_time(),
     };
 
     BaseType_t task_woken = pdFALSE;
-    if (xQueueSendFromISR(button_event_queue, &event, &task_woken) != pdPASS) {
+    if (xQueueSendFromISR(s_button_event_queue, &event, &task_woken) != pdPASS) {
         // Queue full, drop event silently
     }
 
@@ -301,9 +297,10 @@ static void button_event_task(void *args) {
     button_event_type_t last_event_type = BUTTON_EVENT_RELEASE;
     int64_t last_event_time_us = 0;
 
-    while (xQueueReceive(button_event_queue, &event, portMAX_DELAY) == pdTRUE) {
+    while (s_button_event_queue != NULL &&
+           xQueueReceive(s_button_event_queue, &event, portMAX_DELAY) == pdTRUE) {
         if ((event.type == last_event_type) &&
-            ((event.time_us - last_event_time_us) < BUTTON_DEBOUNCE_US)) {
+            ((event.time_us - last_event_time_us) < s_button_debounce_us)) {
             continue;
         }
 
@@ -324,37 +321,48 @@ static void button_event_task(void *args) {
             const int64_t press_duration = event.time_us - press_start_us;
             press_start_us = 0;
 
-            if (press_duration < BUTTON_DEBOUNCE_US) {
+            if (press_duration < s_button_debounce_us) {
                 break;
             }
 
-            if (press_duration >= LONG_PRESS_US) {
-                button_click_count = 0;
-                xTimerStop(button_single_click_timer, 0);
+            if (press_duration >= s_long_press_us) {
+                if (s_button_click_count) {
+                    *s_button_click_count = 0;
+                }
+                if (s_button_single_click_timer) {
+                    xTimerStop(s_button_single_click_timer, 0);
+                }
                 factory_reset_all_and_reboot();
                 break;
             }
 
-            button_click_count++;
-            if (button_click_count == 1) {
-                xTimerStop(button_single_click_timer, 0);
-                if (xTimerStart(button_single_click_timer, 0) != pdPASS) {
+            if (s_button_click_count == NULL || s_button_single_click_timer == NULL) {
+                ESP_LOGE(BUTTON_TAG, "Button state not initialised correctly");
+                restart_on_fatal(ESP_FAIL);
+            }
+
+            (*s_button_click_count)++;
+            if (*s_button_click_count == 1) {
+                xTimerStop(s_button_single_click_timer, 0);
+                if (xTimerStart(s_button_single_click_timer, 0) != pdPASS) {
                     ESP_LOGE(BUTTON_TAG, "Failed to start single click timer");
                     restart_on_fatal(ESP_FAIL);
                 }
-            } else if (button_click_count == 2) {
-                xTimerStop(button_single_click_timer, 0);
-                button_click_count = 0;
+            } else if (*s_button_click_count == 2) {
+                xTimerStop(s_button_single_click_timer, 0);
+                *s_button_click_count = 0;
                 homekit_reset_only_and_reboot();
             }
             break;
         }
         case BUTTON_EVENT_SINGLE_TIMEOUT:
-            if (button_click_count == 1) {
-                button_click_count = 0;
+            if (s_button_click_count && *s_button_click_count == 1) {
+                *s_button_click_count = 0;
                 request_lcm_update_and_reboot();
             } else {
-                button_click_count = 0;
+                if (s_button_click_count) {
+                    *s_button_click_count = 0;
+                }
             }
             break;
         }
@@ -363,34 +371,38 @@ static void button_event_task(void *args) {
     vTaskDelete(NULL);
 }
 
-void button_init(void) {
-    button_click_count = 0;
+void button_init(gpio_num_t button_gpio,
+                 int64_t debounce_us,
+                 int64_t long_press_us,
+                 QueueHandle_t event_queue,
+                 TimerHandle_t single_click_timer,
+                 int *click_count) {
+    s_button_gpio = button_gpio;
+    s_button_debounce_us = debounce_us;
+    s_long_press_us = long_press_us;
+    s_button_event_queue = event_queue;
+    s_button_single_click_timer = single_click_timer;
+    s_button_click_count = click_count;
 
-    button_event_queue = xQueueCreate(10, sizeof(button_event_t));
-    if (button_event_queue == NULL) {
-        ESP_LOGE(BUTTON_TAG, "Failed to create button event queue");
-        restart_on_fatal(ESP_ERR_NO_MEM);
+    if (s_button_event_queue == NULL || s_button_single_click_timer == NULL ||
+        s_button_click_count == NULL) {
+        ESP_LOGE(BUTTON_TAG, "Button resources not provided");
+        restart_on_fatal(ESP_ERR_INVALID_ARG);
     }
 
-    button_single_click_timer = xTimerCreate(
-            "btn_click", pdMS_TO_TICKS(DOUBLE_CLICK_TIMEOUT_MS), pdFALSE, NULL,
-            button_single_click_timeout_callback);
-    if (button_single_click_timer == NULL) {
-        ESP_LOGE(BUTTON_TAG, "Failed to create button timer");
-        restart_on_fatal(ESP_ERR_NO_MEM);
-    }
+    *s_button_click_count = 0;
 
-    gpio_reset_pin(BUTTON_GPIO);
+    gpio_reset_pin(s_button_gpio);
 
     gpio_config_t io_conf = {
-        .pin_bit_mask = 1ULL << BUTTON_GPIO,
+        .pin_bit_mask = 1ULL << s_button_gpio,
         .mode = GPIO_MODE_INPUT,
         .pull_up_en = GPIO_PULLUP_ENABLE,
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
         .intr_type = GPIO_INTR_ANYEDGE,
     };
     CHECK_FATAL(gpio_config(&io_conf));
-    CHECK_FATAL(gpio_set_intr_type(BUTTON_GPIO, GPIO_INTR_ANYEDGE));
+    CHECK_FATAL(gpio_set_intr_type(s_button_gpio, GPIO_INTR_ANYEDGE));
 
     esp_err_t err = gpio_install_isr_service(ESP_INTR_FLAG_IRAM);
     if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
@@ -398,8 +410,8 @@ void button_init(void) {
         restart_on_fatal(err);
     }
 
-    CHECK_FATAL(gpio_isr_handler_add(BUTTON_GPIO, button_isr_handler, NULL));
-    CHECK_FATAL(gpio_intr_enable(BUTTON_GPIO));
+    CHECK_FATAL(gpio_isr_handler_add(s_button_gpio, button_isr_handler, NULL));
+    CHECK_FATAL(gpio_intr_enable(s_button_gpio));
 
     if (xTaskCreate(button_event_task, "button_task", 4096, NULL, 10, NULL) != pdPASS) {
         ESP_LOGE(BUTTON_TAG, "Failed to create button task");

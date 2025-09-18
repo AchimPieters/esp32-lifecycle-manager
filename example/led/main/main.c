@@ -28,9 +28,34 @@
 #include <nvs_flash.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
+#include <freertos/queue.h>
+#include <freertos/timers.h>
 #include <driver/gpio.h>
 #include <homekit/homekit.h>
 #include <homekit/characteristics.h>
+
+#define BUTTON_GPIO GPIO_NUM_0
+#define BUTTON_DEBOUNCE_US 10000
+#define LONG_PRESS_US (2 * 1000 * 1000)
+#define DOUBLE_CLICK_TIMEOUT_MS 400
+
+#ifndef ESP32_WIFI_BUTTON_TYPES_DEFINED
+#define ESP32_WIFI_BUTTON_TYPES_DEFINED
+typedef enum {
+        BUTTON_EVENT_PRESS,
+        BUTTON_EVENT_RELEASE,
+        BUTTON_EVENT_SINGLE_TIMEOUT,
+} button_event_type_t;
+
+typedef struct {
+        button_event_type_t type;
+        int64_t time_us;
+} button_event_t;
+#endif
+
+static QueueHandle_t button_event_queue;
+static TimerHandle_t button_single_click_timer;
+static int button_click_count;
 
 #include "esp32-wifi.h"   // <— nieuwe wifi module
 
@@ -160,7 +185,23 @@ void app_main(void) {
         gpio_init();
 
         // Configure BOOT button handling (single/double/long press)
-        button_init();
+        button_event_queue = xQueueCreate(10, sizeof(button_event_t));
+        if (button_event_queue == NULL) {
+                ESP_LOGE("BUTTON", "Failed to create button event queue");
+                handle_error(ESP_ERR_NO_MEM);
+        }
+
+        button_single_click_timer = xTimerCreate(
+                "btn_click", pdMS_TO_TICKS(DOUBLE_CLICK_TIMEOUT_MS), pdFALSE, NULL,
+                button_single_click_timeout_callback);
+        if (button_single_click_timer == NULL) {
+                ESP_LOGE("BUTTON", "Failed to create button timer");
+                handle_error(ESP_ERR_NO_MEM);
+        }
+
+        button_click_count = 0;
+        button_init(BUTTON_GPIO, BUTTON_DEBOUNCE_US, LONG_PRESS_US,
+                    button_event_queue, button_single_click_timer, &button_click_count);
 
         // Start WiFi op basis van NVS en geef callback door
         CHECK_ERROR(wifi_start(on_wifi_ready));
