@@ -12,6 +12,9 @@ esp_err_t wifi_start(void (*on_ready)(void));
 // Optioneel: stop WiFi netjes
 esp_err_t wifi_stop(void);
 
+// Configureer BOOT-knop (GPIO0) voor single/double/long press acties.
+void button_init(void);
+
 #ifdef __cplusplus
 }
 #endif
