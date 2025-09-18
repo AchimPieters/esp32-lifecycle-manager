@@ -23,15 +23,31 @@
  
 #include <string.h>
 #include <stdlib.h>
+#include <stdbool.h>
+#include <stdint.h>
 
 #include <esp_wifi.h>
 #include <esp_event.h>
 #include <esp_log.h>
 #include <esp_netif.h>
+#include <esp_system.h>
+#include <esp_timer.h>
+#include <esp_ota_ops.h>
+#include <esp_partition.h>
 #include <nvs.h>
 #include <nvs_flash.h>
 
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+#include <freertos/queue.h>
+#include <freertos/timers.h>
+
+#include <driver/gpio.h>
+
+#include <homekit/homekit.h>
+
 static const char *TAG = "WIFI";
+static const char *BUTTON_TAG = "BUTTON";
 
 #define CHECK_ERROR(x) do {                      \
     esp_err_t __err_rc = (x);                    \
@@ -41,8 +57,28 @@ static const char *TAG = "WIFI";
     }                                            \
 } while(0)
 
+static void restart_on_fatal(esp_err_t err) {
+    ESP_LOGE(BUTTON_TAG, "Critical error, restarting device... (%s)", esp_err_to_name(err));
+    esp_restart();
+}
+
+#define CHECK_FATAL(x) do {                                      \
+    esp_err_t __err_rc = (x);                                    \
+    if (__err_rc != ESP_OK) {                                    \
+        ESP_LOGE(BUTTON_TAG, "Error: %s", esp_err_to_name(__err_rc)); \
+        restart_on_fatal(__err_rc);                              \
+    }                                                            \
+} while(0)
+
 static void (*s_on_ready_cb)(void) = NULL;
 static bool s_started = false;
+
+static gpio_num_t s_button_gpio = GPIO_NUM_NC;
+static int64_t s_button_debounce_us = 0;
+static int64_t s_long_press_us = 0;
+static QueueHandle_t s_button_event_queue = NULL;
+static TimerHandle_t s_button_single_click_timer = NULL;
+static int *s_button_click_count = NULL;
 
 static esp_err_t nvs_load_wifi(char **out_ssid, char **out_pass) {
     nvs_handle_t h;
@@ -182,4 +218,203 @@ esp_err_t wifi_stop(void) {
     if (r2 != ESP_OK) return r2;
     if (r3 != ESP_OK) return r3;
     return ESP_OK;
+}
+
+static void request_lcm_update_and_reboot(void) {
+    ESP_LOGI(BUTTON_TAG, "Single click detected: hand-off to factory updater");
+
+    nvs_handle_t handle;
+    CHECK_FATAL(nvs_open("lcm", NVS_READWRITE, &handle));
+    CHECK_FATAL(nvs_set_u8(handle, "do_update", 1));
+    CHECK_FATAL(nvs_commit(handle));
+    nvs_close(handle);
+
+    const esp_partition_t *factory = esp_partition_find_first(
+            ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_FACTORY, NULL);
+    if (factory == NULL) {
+        ESP_LOGE(BUTTON_TAG, "Factory partition not found");
+        restart_on_fatal(ESP_FAIL);
+    }
+
+    CHECK_FATAL(esp_ota_set_boot_partition(factory));
+    ESP_LOGI(BUTTON_TAG, "Rebooting into factory partition for update");
+    esp_restart();
+}
+
+static void homekit_reset_only_and_reboot(void) {
+    ESP_LOGI(BUTTON_TAG, "Double click detected: resetting HomeKit and rebooting");
+    homekit_server_reset();
+    esp_restart();
+}
+
+static void factory_reset_all_and_reboot(void) {
+    ESP_LOGI(BUTTON_TAG, "Long press detected: factory reset initiated");
+    homekit_server_reset();
+    CHECK_FATAL(esp_wifi_restore());
+    esp_restart();
+}
+
+void button_single_click_timeout_callback(TimerHandle_t timer) {
+    button_event_t event = {
+        .type = BUTTON_EVENT_SINGLE_TIMEOUT,
+        .time_us = esp_timer_get_time(),
+    };
+
+    if (s_button_event_queue == NULL) {
+        ESP_LOGW(BUTTON_TAG, "Button queue not ready for timeout event");
+        return;
+    }
+
+    if (xQueueSend(s_button_event_queue, &event, 0) != pdPASS) {
+        ESP_LOGW(BUTTON_TAG, "Single click timeout event queue full");
+    }
+}
+
+static void IRAM_ATTR button_isr_handler(void *arg) {
+    if (s_button_event_queue == NULL || s_button_gpio == GPIO_NUM_NC) {
+        return;
+    }
+
+    const int level = gpio_get_level(s_button_gpio);
+    button_event_t event = {
+        .type = (level == 0) ? BUTTON_EVENT_PRESS : BUTTON_EVENT_RELEASE,
+        .time_us = esp_timer_get_time(),
+    };
+
+    BaseType_t task_woken = pdFALSE;
+    if (xQueueSendFromISR(s_button_event_queue, &event, &task_woken) != pdPASS) {
+        // Queue full, drop event silently
+    }
+
+    if (task_woken == pdTRUE) {
+        portYIELD_FROM_ISR();
+    }
+}
+
+static void button_event_task(void *args) {
+    button_event_t event;
+    int64_t press_start_us = 0;
+    button_event_type_t last_event_type = BUTTON_EVENT_RELEASE;
+    int64_t last_event_time_us = 0;
+
+    while (s_button_event_queue != NULL &&
+           xQueueReceive(s_button_event_queue, &event, portMAX_DELAY) == pdTRUE) {
+        if ((event.type == last_event_type) &&
+            ((event.time_us - last_event_time_us) < s_button_debounce_us)) {
+            continue;
+        }
+
+        if (event.type == BUTTON_EVENT_PRESS || event.type == BUTTON_EVENT_RELEASE) {
+            last_event_type = event.type;
+            last_event_time_us = event.time_us;
+        }
+
+        switch (event.type) {
+        case BUTTON_EVENT_PRESS:
+            press_start_us = event.time_us;
+            break;
+        case BUTTON_EVENT_RELEASE: {
+            if (press_start_us == 0) {
+                break;
+            }
+
+            const int64_t press_duration = event.time_us - press_start_us;
+            press_start_us = 0;
+
+            if (press_duration < s_button_debounce_us) {
+                break;
+            }
+
+            if (press_duration >= s_long_press_us) {
+                if (s_button_click_count) {
+                    *s_button_click_count = 0;
+                }
+                if (s_button_single_click_timer) {
+                    xTimerStop(s_button_single_click_timer, 0);
+                }
+                factory_reset_all_and_reboot();
+                break;
+            }
+
+            if (s_button_click_count == NULL || s_button_single_click_timer == NULL) {
+                ESP_LOGE(BUTTON_TAG, "Button state not initialised correctly");
+                restart_on_fatal(ESP_FAIL);
+            }
+
+            (*s_button_click_count)++;
+            if (*s_button_click_count == 1) {
+                xTimerStop(s_button_single_click_timer, 0);
+                if (xTimerStart(s_button_single_click_timer, 0) != pdPASS) {
+                    ESP_LOGE(BUTTON_TAG, "Failed to start single click timer");
+                    restart_on_fatal(ESP_FAIL);
+                }
+            } else if (*s_button_click_count == 2) {
+                xTimerStop(s_button_single_click_timer, 0);
+                *s_button_click_count = 0;
+                homekit_reset_only_and_reboot();
+            }
+            break;
+        }
+        case BUTTON_EVENT_SINGLE_TIMEOUT:
+            if (s_button_click_count && *s_button_click_count == 1) {
+                *s_button_click_count = 0;
+                request_lcm_update_and_reboot();
+            } else {
+                if (s_button_click_count) {
+                    *s_button_click_count = 0;
+                }
+            }
+            break;
+        }
+    }
+
+    vTaskDelete(NULL);
+}
+
+void button_init(gpio_num_t button_gpio,
+                 int64_t debounce_us,
+                 int64_t long_press_us,
+                 QueueHandle_t event_queue,
+                 TimerHandle_t single_click_timer,
+                 int *click_count) {
+    s_button_gpio = button_gpio;
+    s_button_debounce_us = debounce_us;
+    s_long_press_us = long_press_us;
+    s_button_event_queue = event_queue;
+    s_button_single_click_timer = single_click_timer;
+    s_button_click_count = click_count;
+
+    if (s_button_event_queue == NULL || s_button_single_click_timer == NULL ||
+        s_button_click_count == NULL) {
+        ESP_LOGE(BUTTON_TAG, "Button resources not provided");
+        restart_on_fatal(ESP_ERR_INVALID_ARG);
+    }
+
+    *s_button_click_count = 0;
+
+    gpio_reset_pin(s_button_gpio);
+
+    gpio_config_t io_conf = {
+        .pin_bit_mask = 1ULL << s_button_gpio,
+        .mode = GPIO_MODE_INPUT,
+        .pull_up_en = GPIO_PULLUP_ENABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_ANYEDGE,
+    };
+    CHECK_FATAL(gpio_config(&io_conf));
+    CHECK_FATAL(gpio_set_intr_type(s_button_gpio, GPIO_INTR_ANYEDGE));
+
+    esp_err_t err = gpio_install_isr_service(ESP_INTR_FLAG_IRAM);
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+        ESP_LOGE(BUTTON_TAG, "Failed to install GPIO ISR service: %s", esp_err_to_name(err));
+        restart_on_fatal(err);
+    }
+
+    CHECK_FATAL(gpio_isr_handler_add(s_button_gpio, button_isr_handler, NULL));
+    CHECK_FATAL(gpio_intr_enable(s_button_gpio));
+
+    if (xTaskCreate(button_event_task, "button_task", 4096, NULL, 10, NULL) != pdPASS) {
+        ESP_LOGE(BUTTON_TAG, "Failed to create button task");
+        restart_on_fatal(ESP_ERR_NO_MEM);
+    }
 }
