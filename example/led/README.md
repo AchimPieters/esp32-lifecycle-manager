@@ -34,3 +34,13 @@ Connect `LED` pin to the following pin:
 - Choose your GPIO number under `StudioPieters` in `menuconfig`. The default is `2` (On an ESP32 WROOM 32D).
 - Set your `WiFi SSID` and `WiFi Password` under `StudioPieters` in `menuconfig`.
 - **Optional:** You can change `HomeKit Setup Code` and `HomeKit Setup ID` under `StudioPieters` in `menuconfig`. _(Note: you need to make a new QR-CODE to make it work.)_
+
+## BOOT button actions
+
+The BOOT button (GPIO0, active low) controls the device lifecycle without reflashing:
+
+- **Single press (<0.4 s):** Flag the Lifecycle Manager (LCM) update in NVS, boot the factory partition and let the LCM perform the OTA update before rebooting into the new firmware.
+- **Double press (two clicks within 400 ms):** Reset HomeKit pairing information via `homekit_server_reset()` and reboot so the accessory can be paired again.
+- **Long press (≥2 s):** Perform a factory reset by clearing HomeKit state, removing Wi-Fi credentials stored in the `wifi_cfg` namespace, calling `esp_wifi_restore()`, and rebooting into provisioning/AP mode.
+
+The firmware logs each action ("Button task started", "Single click", etc.) so behaviour can be verified over the serial console.

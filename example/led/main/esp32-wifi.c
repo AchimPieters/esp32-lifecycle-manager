@@ -46,6 +46,8 @@
 
 #include <homekit/homekit.h>
 
+#include "esp32-wifi.h"
+
 static const char *TAG = "WIFI";
 static const char *BUTTON_TAG = "BUTTON";
 
@@ -79,6 +81,7 @@ static int64_t s_long_press_us = 0;
 static QueueHandle_t s_button_event_queue = NULL;
 static TimerHandle_t s_button_single_click_timer = NULL;
 static int *s_button_click_count = NULL;
+static volatile int64_t s_last_isr_time_us = 0;
 
 static esp_err_t nvs_load_wifi(char **out_ssid, char **out_pass) {
     nvs_handle_t h;
@@ -224,34 +227,87 @@ static void request_lcm_update_and_reboot(void) {
     ESP_LOGI(BUTTON_TAG, "Single click detected: hand-off to factory updater");
 
     nvs_handle_t handle;
-    CHECK_FATAL(nvs_open("lcm", NVS_READWRITE, &handle));
-    CHECK_FATAL(nvs_set_u8(handle, "do_update", 1));
-    CHECK_FATAL(nvs_commit(handle));
-    nvs_close(handle);
+    esp_err_t err = nvs_open("lcm", NVS_READWRITE, &handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(BUTTON_TAG, "Failed to open NVS namespace 'lcm': %s", esp_err_to_name(err));
+    } else {
+        err = nvs_set_u8(handle, "do_update", 1);
+        if (err != ESP_OK) {
+            ESP_LOGE(BUTTON_TAG, "Failed to set do_update flag: %s", esp_err_to_name(err));
+        } else {
+            err = nvs_commit(handle);
+            if (err != ESP_OK) {
+                ESP_LOGE(BUTTON_TAG, "Failed to commit update flag: %s", esp_err_to_name(err));
+            }
+        }
+        nvs_close(handle);
+    }
 
     const esp_partition_t *factory = esp_partition_find_first(
             ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_FACTORY, NULL);
     if (factory == NULL) {
-        ESP_LOGE(BUTTON_TAG, "Factory partition not found");
-        restart_on_fatal(ESP_FAIL);
+        ESP_LOGE(BUTTON_TAG, "Factory partition not found, rebooting to current app");
+        esp_restart();
+        return;
     }
 
-    CHECK_FATAL(esp_ota_set_boot_partition(factory));
+    err = esp_ota_set_boot_partition(factory);
+    if (err != ESP_OK) {
+        ESP_LOGE(BUTTON_TAG, "Failed to set factory partition for boot: %s", esp_err_to_name(err));
+        esp_restart();
+        return;
+    }
+
     ESP_LOGI(BUTTON_TAG, "Rebooting into factory partition for update");
     esp_restart();
+    return;
 }
 
 static void homekit_reset_only_and_reboot(void) {
     ESP_LOGI(BUTTON_TAG, "Double click detected: resetting HomeKit and rebooting");
     homekit_server_reset();
     esp_restart();
+    return;
+}
+
+static void erase_wifi_credentials(void) {
+    ESP_LOGI(BUTTON_TAG, "Clearing Wi-Fi credentials from NVS namespace 'wifi_cfg'");
+
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open("wifi_cfg", NVS_READWRITE, &handle);
+    if (err != ESP_OK) {
+        ESP_LOGW(BUTTON_TAG, "Failed to open wifi_cfg namespace: %s", esp_err_to_name(err));
+        return;
+    }
+
+    esp_err_t erase_err = nvs_erase_key(handle, "wifi_ssid");
+    if (erase_err != ESP_OK && erase_err != ESP_ERR_NVS_NOT_FOUND) {
+        ESP_LOGW(BUTTON_TAG, "Failed to erase wifi_ssid: %s", esp_err_to_name(erase_err));
+    }
+
+    erase_err = nvs_erase_key(handle, "wifi_password");
+    if (erase_err != ESP_OK && erase_err != ESP_ERR_NVS_NOT_FOUND) {
+        ESP_LOGW(BUTTON_TAG, "Failed to erase wifi_password: %s", esp_err_to_name(erase_err));
+    }
+
+    err = nvs_commit(handle);
+    if (err != ESP_OK) {
+        ESP_LOGW(BUTTON_TAG, "Failed to commit Wi-Fi credential erase: %s", esp_err_to_name(err));
+    }
+
+    nvs_close(handle);
 }
 
 static void factory_reset_all_and_reboot(void) {
     ESP_LOGI(BUTTON_TAG, "Long press detected: factory reset initiated");
     homekit_server_reset();
-    CHECK_FATAL(esp_wifi_restore());
+    erase_wifi_credentials();
+    esp_err_t err = esp_wifi_restore();
+    if (err != ESP_OK) {
+        ESP_LOGW(BUTTON_TAG, "esp_wifi_restore failed: %s", esp_err_to_name(err));
+    }
     esp_restart();
+    return;
 }
 
 void button_single_click_timeout_callback(TimerHandle_t timer) {
@@ -275,10 +331,20 @@ static void IRAM_ATTR button_isr_handler(void *arg) {
         return;
     }
 
+    const int64_t now = esp_timer_get_time();
+    if (s_button_debounce_us > 0) {
+        const int64_t elapsed = now - s_last_isr_time_us;
+        if (elapsed >= 0 && elapsed < s_button_debounce_us) {
+            return;
+        }
+    }
+
+    s_last_isr_time_us = now;
+
     const int level = gpio_get_level(s_button_gpio);
     button_event_t event = {
         .type = (level == 0) ? BUTTON_EVENT_PRESS : BUTTON_EVENT_RELEASE,
-        .time_us = esp_timer_get_time(),
+        .time_us = now,
     };
 
     BaseType_t task_woken = pdFALSE;
@@ -296,6 +362,8 @@ static void button_event_task(void *args) {
     int64_t press_start_us = 0;
     button_event_type_t last_event_type = BUTTON_EVENT_RELEASE;
     int64_t last_event_time_us = 0;
+
+    ESP_LOGI(BUTTON_TAG, "Button task started");
 
     while (s_button_event_queue != NULL &&
            xQueueReceive(s_button_event_queue, &event, portMAX_DELAY) == pdTRUE) {
@@ -383,6 +451,7 @@ void button_init(gpio_num_t button_gpio,
     s_button_event_queue = event_queue;
     s_button_single_click_timer = single_click_timer;
     s_button_click_count = click_count;
+    s_last_isr_time_us = 0;
 
     if (s_button_event_queue == NULL || s_button_single_click_timer == NULL ||
         s_button_click_count == NULL) {
@@ -403,12 +472,6 @@ void button_init(gpio_num_t button_gpio,
     };
     CHECK_FATAL(gpio_config(&io_conf));
     CHECK_FATAL(gpio_set_intr_type(s_button_gpio, GPIO_INTR_ANYEDGE));
-
-    esp_err_t err = gpio_install_isr_service(ESP_INTR_FLAG_IRAM);
-    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
-        ESP_LOGE(BUTTON_TAG, "Failed to install GPIO ISR service: %s", esp_err_to_name(err));
-        restart_on_fatal(err);
-    }
 
     CHECK_FATAL(gpio_isr_handler_add(s_button_gpio, button_isr_handler, NULL));
     CHECK_FATAL(gpio_intr_enable(s_button_gpio));

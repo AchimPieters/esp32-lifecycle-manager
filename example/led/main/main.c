@@ -23,6 +23,7 @@
  
 #include <stdio.h>
 #include <stdint.h>
+#include <esp_err.h>
 #include <esp_log.h>
 #include <esp_system.h>
 #include <nvs_flash.h>
@@ -35,9 +36,9 @@
 #include <homekit/characteristics.h>
 
 #define BUTTON_GPIO GPIO_NUM_0
-#define BUTTON_DEBOUNCE_US 10000
-#define LONG_PRESS_US (2 * 1000 * 1000)
-#define DOUBLE_CLICK_TIMEOUT_MS 400
+#define DEBOUNCE_US 2000
+#define DOUBLE_CLICK_US 400000
+#define LONG_PRESS_US 2000000
 
 #ifndef ESP32_WIFI_BUTTON_TYPES_DEFINED
 #define ESP32_WIFI_BUTTON_TYPES_DEFINED
@@ -192,15 +193,24 @@ void app_main(void) {
         }
 
         button_single_click_timer = xTimerCreate(
-                "btn_click", pdMS_TO_TICKS(DOUBLE_CLICK_TIMEOUT_MS), pdFALSE, NULL,
+                "btn_click",
+                pdMS_TO_TICKS(DOUBLE_CLICK_US / 1000),
+                pdFALSE,
+                NULL,
                 button_single_click_timeout_callback);
         if (button_single_click_timer == NULL) {
                 ESP_LOGE("BUTTON", "Failed to create button timer");
                 handle_error(ESP_ERR_NO_MEM);
         }
 
+        esp_err_t isr_err = gpio_install_isr_service(ESP_INTR_FLAG_IRAM);
+        if (isr_err != ESP_OK && isr_err != ESP_ERR_INVALID_STATE) {
+                ESP_LOGE("BUTTON", "Failed to install GPIO ISR service: %s", esp_err_to_name(isr_err));
+                handle_error(isr_err);
+        }
+
         button_click_count = 0;
-        button_init(BUTTON_GPIO, BUTTON_DEBOUNCE_US, LONG_PRESS_US,
+        button_init(BUTTON_GPIO, DEBOUNCE_US, LONG_PRESS_US,
                     button_event_queue, button_single_click_timer, &button_click_count);
 
         // Start WiFi op basis van NVS en geef callback door
