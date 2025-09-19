@@ -418,12 +418,31 @@ esp_err_t github_update_from_urls(const char *fw_url, const char *sig_url,
     }
     led_blinking_stop();
     led_active = false;
-    if (release_version && release_version[0] != '\0') {
-        esp_err_t store_err = store_installed_version_if_needed(release_version);
+    const char *version_to_store = release_version;
+    if (!version_to_store || version_to_store[0] == '\0') {
+        esp_app_desc_t new_desc;
+        esp_err_t desc_err = esp_ota_get_partition_description(update_part, &new_desc);
+        if (desc_err == ESP_OK) {
+            if (new_desc.version[0] != '\0') {
+                version_to_store = new_desc.version;
+                ESP_LOGD(TAG, "Persisting firmware version from image descriptor: %s",
+                         version_to_store);
+            } else {
+                ESP_LOGW(TAG, "Image descriptor version string is empty; nothing to persist");
+            }
+        } else {
+            ESP_LOGW(TAG, "Failed to read image descriptor for version persistence: %s",
+                     esp_err_to_name(desc_err));
+        }
+    }
+    if (version_to_store && version_to_store[0] != '\0') {
+        esp_err_t store_err = store_installed_version_if_needed(version_to_store);
         if (store_err != ESP_OK) {
             ESP_LOGW(TAG, "Failed to persist installed version %s: %s",
-                     release_version, esp_err_to_name(store_err));
+                     version_to_store, esp_err_to_name(store_err));
         }
+    } else {
+        ESP_LOGW(TAG, "Skipping persistence of installed version because no value is available");
     }
 
     ESP_LOGI(TAG, "Signature verified, rebooting");
@@ -562,6 +581,7 @@ esp_err_t github_update_if_needed(const char *repo, bool prerelease) {
     if (!cJSON_IsArray(assets)) { cJSON_Delete(json); return ESP_FAIL; }
     const char *fw=NULL,*sig=NULL;
     cJSON *tag = cJSON_GetObjectItem(release, "tag_name");
+    const char *raw_tag = cJSON_IsString(tag) ? tag->valuestring : NULL;
     int relMaj, relMin, relPat;
     bool relValid = parse_version(cJSON_IsString(tag)?tag->valuestring:NULL, &relMaj, &relMin, &relPat);
     char sanitized_version[INSTALLED_VER_MAX_LEN] = {0};
@@ -575,8 +595,9 @@ esp_err_t github_update_if_needed(const char *repo, bool prerelease) {
     }
     if (relValid && curValid && cmp_version(relMaj, relMin, relPat, curMaj, curMin, curPat) <= 0) {
         ESP_LOGI(TAG, "Firmware already up to date");
-        if (sanitized_version[0] != '\0') {
-            esp_err_t store_err = store_installed_version_if_needed(sanitized_version);
+        const char *version_to_store = sanitized_version[0] ? sanitized_version : raw_tag;
+        if (version_to_store && version_to_store[0] != '\0') {
+            esp_err_t store_err = store_installed_version_if_needed(version_to_store);
             if (store_err != ESP_OK) {
                 ESP_LOGW(TAG, "Unable to refresh stored firmware version: %s",
                          esp_err_to_name(store_err));
@@ -599,8 +620,9 @@ esp_err_t github_update_if_needed(const char *repo, bool prerelease) {
     ESP_LOGD(TAG, "Firmware URL: %s", fw);
     ESP_LOGD(TAG, "Signature URL: %s", sig);
     ESP_LOGI(TAG, "Release %s selected", cJSON_IsString(tag)?tag->valuestring:"?");
+    const char *version_argument = sanitized_version[0] ? sanitized_version : raw_tag;
     esp_err_t res = github_update_from_urls(fw, sig,
-                                            sanitized_version[0] ? sanitized_version : NULL);
+                                            version_argument && version_argument[0] ? version_argument : NULL);
     ESP_LOGD(TAG, "github_update_from_urls -> %s", esp_err_to_name(res));
     cJSON_Delete(json);
     return res;
