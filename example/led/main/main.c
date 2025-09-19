@@ -38,7 +38,7 @@
 #include <homekit/homekit.h>
 #include <homekit/characteristics.h>
 
-#include "homekit_custom_characteristics.h"
+#include "esp32-lcm.h"
 
 #define BUTTON_GPIO GPIO_NUM_0
 #define DEBOUNCE_US 2000
@@ -55,8 +55,6 @@ static bool waiting_for_second_press = false;
 static bool double_press_detected = false;
 static int64_t press_start_time_ms = 0;
 static int64_t last_release_time_ms = 0;
-
-#include "esp32-wifi.h"   // <— nieuwe wifi module
 
 static void ota_trigger_setter(homekit_value_t value);
 static void button_task(void *pvParameter);

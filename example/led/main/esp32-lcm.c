@@ -38,7 +38,7 @@
 
 #include <homekit/homekit.h>
 
-#include "esp32-wifi.h"
+#include "esp32-lcm.h"
 
 static const char *TAG = "WIFI";
 
