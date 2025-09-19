@@ -52,6 +52,10 @@ void lifecycle_factory_reset_and_reboot(void);
 esp_err_t lifecycle_init_firmware_revision(homekit_characteristic_t *revision,
                                            const char *fallback_version);
 
+// Retrieve the cached firmware revision string. Returns NULL if no revision
+// has been initialised yet.
+const char *lifecycle_get_firmware_revision_string(void);
+
 // Verwerk de custom HomeKit OTA trigger. Gebruik dit als setter van de characteristic.
 void lifecycle_handle_ota_trigger(homekit_characteristic_t *characteristic,
                                   homekit_value_t value);
