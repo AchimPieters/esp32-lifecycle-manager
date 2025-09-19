@@ -15,7 +15,7 @@
 #define HOMEKIT_CHARACTERISTIC_CUSTOM_OTA_TRIGGER HOMEKIT_CUSTOM_UUID("F0000001")
 #define HOMEKIT_DECLARE_CHARACTERISTIC_CUSTOM_OTA_TRIGGER(_value, ...) \
     .type = HOMEKIT_CHARACTERISTIC_CUSTOM_OTA_TRIGGER, \
-    .description = "}FirmwareUpdate", \
+    .description = "FirmwareUpdate", \
     .format = homekit_format_bool, \
     .permissions = homekit_permissions_paired_read \
         | homekit_permissions_paired_write \
@@ -24,6 +24,8 @@
     ##__VA_ARGS__
 
 #define API_OTA_TRIGGER HOMEKIT_CHARACTERISTIC_(CUSTOM_OTA_TRIGGER, false)
+
+#define LIFECYCLE_FW_REVISION_MAX_LEN 32
 
 #endif /* __HOMEKIT_CUSTOM_CHARACTERISTICS__ */
 

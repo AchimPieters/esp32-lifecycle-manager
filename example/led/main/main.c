@@ -41,7 +41,11 @@
 #define DEVICE_MANUFACTURER "StudioPieters®"
 #define DEVICE_SERIAL "NLDA4SQN1466"
 #define DEVICE_MODEL "SD466NL/A"
-#define FW_VERSION "0.0.1"
+
+#ifndef CONFIG_APP_PROJECT_VER
+#define CONFIG_APP_PROJECT_VER "0.0.1"
+#endif
+#define FW_VERSION CONFIG_APP_PROJECT_VER
 
 static const char *HOMEKIT_TAG = "HOMEKIT";
 
@@ -139,8 +143,8 @@ homekit_server_config_t config = {
     .setupId = CONFIG_ESP_SETUP_ID,
 };
 
-static void ota_trigger_setter(homekit_value_t value) {
-    lifecycle_handle_ota_trigger(&ota_trigger, value);
+static void ota_trigger_setter(homekit_characteristic_t *ch, homekit_value_t value) {
+    lifecycle_handle_ota_trigger(ch, value);
 }
 
 static void on_wifi_ready(void) {
@@ -156,7 +160,8 @@ void app_main(void) {
         ESP_LOGW(HOMEKIT_TAG, "Firmware revision init failed: %s", esp_err_to_name(rev_err));
     }
 
-    ota_trigger.setter = ota_trigger_setter;
+    ota_trigger.setter = NULL;
+    ota_trigger.setter_ex = ota_trigger_setter;
     ota_trigger.value.bool_value = false;
 
     gpio_reset_pin(LED_GPIO);

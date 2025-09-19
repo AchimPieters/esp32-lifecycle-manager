@@ -16,6 +16,8 @@
 
 static const char *TAG = "github_update";
 
+#define INSTALLED_VER_MAX_LEN 32
+
 static bool parse_version(const char *str, int *maj, int *min, int *pat) {
     *maj = *min = *pat = 0;
     if (!str) {
@@ -37,6 +39,50 @@ static int cmp_version(int aMaj, int aMin, int aPat,
     if (aMaj != bMaj) return aMaj - bMaj;
     if (aMin != bMin) return aMin - bMin;
     return aPat - bPat;
+}
+
+static esp_err_t store_installed_version_if_needed(const char *version) {
+    if (version == NULL || version[0] == '\0') {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    char truncated[INSTALLED_VER_MAX_LEN];
+    strlcpy(truncated, version, sizeof(truncated));
+
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open("fwcfg", NVS_READWRITE, &handle);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "nvs_open(fwcfg) failed when storing version: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    char existing[INSTALLED_VER_MAX_LEN];
+    size_t existing_len = sizeof(existing);
+    esp_err_t get_err = nvs_get_str(handle, "installed_ver", existing, &existing_len);
+    if (get_err == ESP_OK && strcmp(existing, truncated) == 0) {
+        nvs_close(handle);
+        return ESP_OK;
+    } else if (get_err != ESP_OK && get_err != ESP_ERR_NVS_NOT_FOUND) {
+        ESP_LOGW(TAG, "nvs_get_str(installed_ver) failed: %s", esp_err_to_name(get_err));
+    }
+
+    err = nvs_set_str(handle, "installed_ver", truncated);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "nvs_set_str(installed_ver) failed: %s", esp_err_to_name(err));
+        nvs_close(handle);
+        return err;
+    }
+
+    err = nvs_commit(handle);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "nvs_commit(installed_ver) failed: %s", esp_err_to_name(err));
+        nvs_close(handle);
+        return err;
+    }
+
+    nvs_close(handle);
+    ESP_LOGI(TAG, "Stored installed firmware version %s", truncated);
+    return ESP_OK;
 }
 
 esp_err_t save_fw_config(const char *repo, bool pre) {
@@ -287,7 +333,8 @@ static esp_err_t partition_sha384(const esp_partition_t *part, uint32_t len, uin
     return ESP_OK;
 }
 
-esp_err_t github_update_from_urls(const char *fw_url, const char *sig_url) {
+esp_err_t github_update_from_urls(const char *fw_url, const char *sig_url,
+                                  const char *release_version) {
     ESP_LOGI(TAG, "Downloading signature from %s", sig_url);
     uint8_t sig[52];
     size_t sig_len = 0;
@@ -371,6 +418,14 @@ esp_err_t github_update_from_urls(const char *fw_url, const char *sig_url) {
     }
     led_blinking_stop();
     led_active = false;
+    if (release_version && release_version[0] != '\0') {
+        esp_err_t store_err = store_installed_version_if_needed(release_version);
+        if (store_err != ESP_OK) {
+            ESP_LOGW(TAG, "Failed to persist installed version %s: %s",
+                     release_version, esp_err_to_name(store_err));
+        }
+    }
+
     ESP_LOGI(TAG, "Signature verified, rebooting");
     esp_restart();
     return ESP_OK;
@@ -509,12 +564,24 @@ esp_err_t github_update_if_needed(const char *repo, bool prerelease) {
     cJSON *tag = cJSON_GetObjectItem(release, "tag_name");
     int relMaj, relMin, relPat;
     bool relValid = parse_version(cJSON_IsString(tag)?tag->valuestring:NULL, &relMaj, &relMin, &relPat);
+    char sanitized_version[INSTALLED_VER_MAX_LEN] = {0};
+    if (relValid) {
+        snprintf(sanitized_version, sizeof(sanitized_version), "%d.%d.%d",
+                 relMaj, relMin, relPat);
+    }
     ESP_LOGI(TAG, "Latest release version %d.%d.%d", relMaj, relMin, relPat);
     if (!relValid) {
         ESP_LOGE(TAG, "Invalid release version, assuming 0.0.0");
     }
     if (relValid && curValid && cmp_version(relMaj, relMin, relPat, curMaj, curMin, curPat) <= 0) {
         ESP_LOGI(TAG, "Firmware already up to date");
+        if (sanitized_version[0] != '\0') {
+            esp_err_t store_err = store_installed_version_if_needed(sanitized_version);
+            if (store_err != ESP_OK) {
+                ESP_LOGW(TAG, "Unable to refresh stored firmware version: %s",
+                         esp_err_to_name(store_err));
+            }
+        }
         cJSON_Delete(json);
         return ESP_OK;
     }
@@ -532,7 +599,8 @@ esp_err_t github_update_if_needed(const char *repo, bool prerelease) {
     ESP_LOGD(TAG, "Firmware URL: %s", fw);
     ESP_LOGD(TAG, "Signature URL: %s", sig);
     ESP_LOGI(TAG, "Release %s selected", cJSON_IsString(tag)?tag->valuestring:"?");
-    esp_err_t res = github_update_from_urls(fw, sig);
+    esp_err_t res = github_update_from_urls(fw, sig,
+                                            sanitized_version[0] ? sanitized_version : NULL);
     ESP_LOGD(TAG, "github_update_from_urls -> %s", esp_err_to_name(res));
     cJSON_Delete(json);
     return res;

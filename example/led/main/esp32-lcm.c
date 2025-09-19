@@ -34,6 +34,7 @@
 #include <esp_ota_ops.h>
 #include <esp_partition.h>
 #include <esp_timer.h>
+#include <esp_rom_gpio.h>
 #include <nvs.h>
 #include <nvs_flash.h>
 
@@ -64,7 +65,6 @@ static bool s_started = false;
 
 static const char *LIFECYCLE_TAG = "LIFECYCLE";
 
-#define LIFECYCLE_FW_REVISION_MAX_LEN 32
 #define BUTTON_QUEUE_LENGTH 10
 #define DEFAULT_DEBOUNCE_US 2000
 #define DEFAULT_DOUBLE_CLICK_US 400000
@@ -109,17 +109,27 @@ esp_err_t lifecycle_init_firmware_revision(homekit_characteristic_t *revision,
     }
 
     const esp_app_desc_t *desc = esp_app_get_description();
-    const char *current_version = (desc && strlen(desc->version) > 0) ?
-                                  desc->version : fallback_version;
+    const char *current_version = fallback_version;
+    if (desc && strlen(desc->version) > 0) {
+        current_version = desc->version;
+    }
+    if (current_version == NULL || current_version[0] == '\0') {
+        current_version = "0.0.0";
+    }
+
     strlcpy(s_fw_revision, current_version, sizeof(s_fw_revision));
 
     esp_err_t status = ESP_OK;
+    bool used_stored_value = false;
+
     nvs_handle_t handle;
     esp_err_t err = nvs_open("fwcfg", NVS_READWRITE, &handle);
     if (err == ESP_OK) {
         size_t required = sizeof(s_fw_revision);
         err = nvs_get_str(handle, "installed_ver", s_fw_revision, &required);
-        if (err == ESP_ERR_NVS_NOT_FOUND || s_fw_revision[0] == '\0') {
+        if (err == ESP_OK && s_fw_revision[0] != '\0') {
+            used_stored_value = true;
+        } else if (err == ESP_ERR_NVS_NOT_FOUND || s_fw_revision[0] == '\0') {
             strlcpy(s_fw_revision, current_version, sizeof(s_fw_revision));
             esp_err_t set_err = nvs_set_str(handle, "installed_ver", s_fw_revision);
             if (set_err != ESP_OK) {
@@ -134,26 +144,10 @@ esp_err_t lifecycle_init_firmware_revision(homekit_characteristic_t *revision,
                     status = commit_err;
                 }
             }
-        } else if (err == ESP_OK) {
-            if (strncmp(s_fw_revision, current_version, sizeof(s_fw_revision)) != 0) {
-                strlcpy(s_fw_revision, current_version, sizeof(s_fw_revision));
-                esp_err_t set_err = nvs_set_str(handle, "installed_ver", s_fw_revision);
-                if (set_err != ESP_OK) {
-                    ESP_LOGW(LIFECYCLE_TAG, "Failed to update stored firmware revision: %s",
-                             esp_err_to_name(set_err));
-                    status = set_err;
-                } else {
-                    esp_err_t commit_err = nvs_commit(handle);
-                    if (commit_err != ESP_OK) {
-                        ESP_LOGW(LIFECYCLE_TAG, "Commit of firmware revision failed: %s",
-                                 esp_err_to_name(commit_err));
-                        status = commit_err;
-                    }
-                }
-            }
         } else {
             ESP_LOGW(LIFECYCLE_TAG, "Reading stored firmware revision failed: %s",
                      esp_err_to_name(err));
+            strlcpy(s_fw_revision, current_version, sizeof(s_fw_revision));
         }
         nvs_close(handle);
     } else {
@@ -163,6 +157,9 @@ esp_err_t lifecycle_init_firmware_revision(homekit_characteristic_t *revision,
 
     revision->value.string_value = s_fw_revision;
     revision->value.is_static = true;
+
+    ESP_LOGI(LIFECYCLE_TAG, "Firmware revision set to %s (%s)",
+             s_fw_revision, used_stored_value ? "stored" : "runtime");
 
     return status;
 }
@@ -341,6 +338,9 @@ esp_err_t lifecycle_button_init(const lifecycle_button_config_t *config) {
     if (s_button_evt_queue == NULL) {
         return ESP_ERR_NO_MEM;
     }
+
+    gpio_reset_pin(s_button_cfg.gpio);
+    esp_rom_gpio_pad_select_gpio(s_button_cfg.gpio);
 
     gpio_config_t button_conf = {
         .pin_bit_mask = 1ULL << s_button_cfg.gpio,

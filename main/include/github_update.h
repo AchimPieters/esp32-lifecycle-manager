@@ -8,4 +8,5 @@ esp_err_t save_led_config(bool enabled, int gpio);
 bool load_led_config(bool *enabled, int *gpio);
 
 esp_err_t github_update_if_needed(const char *repo, bool prerelease);
-esp_err_t github_update_from_urls(const char *fw_url, const char *sig_url);
+esp_err_t github_update_from_urls(const char *fw_url, const char *sig_url,
+                                  const char *release_version);
