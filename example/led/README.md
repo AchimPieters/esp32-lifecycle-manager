@@ -44,3 +44,8 @@ The BOOT button (GPIO0, active low) controls the device lifecycle without reflas
 - **Long press (≥2 s):** Perform a factory reset by clearing HomeKit state, removing Wi-Fi credentials stored in the `wifi_cfg` namespace, calling `esp_wifi_restore()`, and rebooting into provisioning/AP mode.
 
 The firmware logs each action ("Button task started", "Single click", etc.) so behaviour can be verified over the serial console.
+
+## HomeKit extensions
+
+- A custom `Lifecycle` service exposes the `FirmwareUpdate` characteristic. Setting it to `true` from the Home app triggers the same Lifecycle Manager update path as a single BOOT-button press.
+- The standard `Firmware Revision` characteristic now reflects the version stored in NVS (`fwcfg/installed_ver`), falling back to the running firmware description if no value is present.
