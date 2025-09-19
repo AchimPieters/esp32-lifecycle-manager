@@ -26,6 +26,7 @@
 
 #include <esp_err.h>
 #include <esp_log.h>
+#include <string.h>
 #include <driver/gpio.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
@@ -45,7 +46,10 @@
 #ifndef CONFIG_APP_PROJECT_VER
 #define CONFIG_APP_PROJECT_VER "0.0.1"
 #endif
-#define FW_VERSION CONFIG_APP_PROJECT_VER
+
+static char fw_version_buffer[LIFECYCLE_FW_REVISION_MAX_LEN] = CONFIG_APP_PROJECT_VER;
+
+#define FW_VERSION fw_version_buffer
 
 static const char *HOMEKIT_TAG = "HOMEKIT";
 
@@ -156,6 +160,10 @@ void app_main(void) {
     ESP_ERROR_CHECK(lifecycle_nvs_init());
 
     esp_err_t rev_err = lifecycle_init_firmware_revision(&revision, FW_VERSION);
+    const char *resolved_version = lifecycle_get_firmware_revision_string();
+    if (resolved_version && resolved_version[0] != '\0') {
+        strlcpy(fw_version_buffer, resolved_version, sizeof(fw_version_buffer));
+    }
     if (rev_err != ESP_OK) {
         ESP_LOGW(HOMEKIT_TAG, "Firmware revision init failed: %s", esp_err_to_name(rev_err));
     }

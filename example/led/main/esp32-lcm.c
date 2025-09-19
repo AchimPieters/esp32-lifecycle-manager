@@ -32,6 +32,7 @@
 #include <esp_netif.h>
 #include <esp_system.h>
 #include <esp_ota_ops.h>
+#include <esp_app_desc.h>
 #include <esp_partition.h>
 #include <esp_timer.h>
 #include <esp_rom_gpio.h>
@@ -71,6 +72,7 @@ static const char *LIFECYCLE_TAG = "LIFECYCLE";
 #define DEFAULT_LONG_PRESS_US 2000000
 
 static char s_fw_revision[LIFECYCLE_FW_REVISION_MAX_LEN];
+static bool s_fw_revision_initialized = false;
 
 static lifecycle_button_config_t s_button_cfg = {0};
 static bool s_button_initialized = false;
@@ -118,6 +120,7 @@ esp_err_t lifecycle_init_firmware_revision(homekit_characteristic_t *revision,
     }
 
     strlcpy(s_fw_revision, current_version, sizeof(s_fw_revision));
+    s_fw_revision_initialized = true;
 
     esp_err_t status = ESP_OK;
     bool used_stored_value = false;
@@ -162,6 +165,19 @@ esp_err_t lifecycle_init_firmware_revision(homekit_characteristic_t *revision,
              s_fw_revision, used_stored_value ? "stored" : "runtime");
 
     return status;
+}
+
+const char *lifecycle_get_firmware_revision_string(void) {
+    if (s_fw_revision_initialized && s_fw_revision[0] != '\0') {
+        return s_fw_revision;
+    }
+
+    const esp_app_desc_t *desc = esp_app_get_description();
+    if (desc && desc->version[0] != '\0') {
+        return desc->version;
+    }
+
+    return NULL;
 }
 
 void lifecycle_handle_ota_trigger(homekit_characteristic_t *characteristic,
