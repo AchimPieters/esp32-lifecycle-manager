@@ -33,14 +33,23 @@
 #include <esp_system.h>
 #include <esp_ota_ops.h>
 #include <esp_partition.h>
+#include <esp_timer.h>
 #include <nvs.h>
 #include <nvs_flash.h>
 
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+#include <freertos/queue.h>
+#include <freertos/portmacro.h>
+#include <driver/gpio.h>
+
 #include <homekit/homekit.h>
+#include <homekit/characteristics.h>
 
 #include "esp32-lcm.h"
 
 static const char *TAG = "WIFI";
+static const char *BUTTON_TAG = "BUTTON";
 
 #define CHECK_ERROR(x) do {                      \
     esp_err_t __err_rc = (x);                    \
@@ -54,6 +63,353 @@ static void (*s_on_ready_cb)(void) = NULL;
 static bool s_started = false;
 
 static const char *LIFECYCLE_TAG = "LIFECYCLE";
+
+#define LIFECYCLE_FW_REVISION_MAX_LEN 32
+#define BUTTON_QUEUE_LENGTH 10
+#define DEFAULT_DEBOUNCE_US 2000
+#define DEFAULT_DOUBLE_CLICK_US 400000
+#define DEFAULT_LONG_PRESS_US 2000000
+
+static char s_fw_revision[LIFECYCLE_FW_REVISION_MAX_LEN];
+
+static lifecycle_button_config_t s_button_cfg = {0};
+static bool s_button_initialized = false;
+static QueueHandle_t s_button_evt_queue = NULL;
+static volatile int64_t s_last_isr_time_us = 0;
+static int64_t s_press_start_time_us = -1;
+static int64_t s_last_release_time_us = 0;
+static int s_press_count = 0;
+static bool s_waiting_for_second_press = false;
+static bool s_double_press_detected = false;
+
+esp_err_t lifecycle_nvs_init(void) {
+    esp_err_t ret = nvs_flash_init();
+    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_LOGW(LIFECYCLE_TAG, "NVS init issue (%s), erasing...", esp_err_to_name(ret));
+        esp_err_t erase_err = nvs_flash_erase();
+        if (erase_err != ESP_OK) {
+            ESP_LOGE(LIFECYCLE_TAG, "Failed to erase NVS: %s", esp_err_to_name(erase_err));
+            return erase_err;
+        }
+        ret = nvs_flash_init();
+    }
+
+    if (ret != ESP_OK) {
+        ESP_LOGE(LIFECYCLE_TAG, "NVS init failed: %s", esp_err_to_name(ret));
+        return ret;
+    }
+
+    return ESP_OK;
+}
+
+esp_err_t lifecycle_init_firmware_revision(homekit_characteristic_t *revision,
+                                           const char *fallback_version) {
+    if (revision == NULL || fallback_version == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    const esp_app_desc_t *desc = esp_app_get_description();
+    const char *current_version = (desc && strlen(desc->version) > 0) ?
+                                  desc->version : fallback_version;
+    strlcpy(s_fw_revision, current_version, sizeof(s_fw_revision));
+
+    esp_err_t status = ESP_OK;
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open("fwcfg", NVS_READWRITE, &handle);
+    if (err == ESP_OK) {
+        size_t required = sizeof(s_fw_revision);
+        err = nvs_get_str(handle, "installed_ver", s_fw_revision, &required);
+        if (err == ESP_ERR_NVS_NOT_FOUND || s_fw_revision[0] == '\0') {
+            strlcpy(s_fw_revision, current_version, sizeof(s_fw_revision));
+            esp_err_t set_err = nvs_set_str(handle, "installed_ver", s_fw_revision);
+            if (set_err != ESP_OK) {
+                ESP_LOGW(LIFECYCLE_TAG, "Failed to store firmware revision: %s",
+                         esp_err_to_name(set_err));
+                status = set_err;
+            } else {
+                esp_err_t commit_err = nvs_commit(handle);
+                if (commit_err != ESP_OK) {
+                    ESP_LOGW(LIFECYCLE_TAG, "Commit of firmware revision failed: %s",
+                             esp_err_to_name(commit_err));
+                    status = commit_err;
+                }
+            }
+        } else if (err == ESP_OK) {
+            if (strncmp(s_fw_revision, current_version, sizeof(s_fw_revision)) != 0) {
+                strlcpy(s_fw_revision, current_version, sizeof(s_fw_revision));
+                esp_err_t set_err = nvs_set_str(handle, "installed_ver", s_fw_revision);
+                if (set_err != ESP_OK) {
+                    ESP_LOGW(LIFECYCLE_TAG, "Failed to update stored firmware revision: %s",
+                             esp_err_to_name(set_err));
+                    status = set_err;
+                } else {
+                    esp_err_t commit_err = nvs_commit(handle);
+                    if (commit_err != ESP_OK) {
+                        ESP_LOGW(LIFECYCLE_TAG, "Commit of firmware revision failed: %s",
+                                 esp_err_to_name(commit_err));
+                        status = commit_err;
+                    }
+                }
+            }
+        } else {
+            ESP_LOGW(LIFECYCLE_TAG, "Reading stored firmware revision failed: %s",
+                     esp_err_to_name(err));
+        }
+        nvs_close(handle);
+    } else {
+        ESP_LOGW(LIFECYCLE_TAG, "Unable to open fwcfg namespace: %s", esp_err_to_name(err));
+        status = err;
+    }
+
+    revision->value.string_value = s_fw_revision;
+    revision->value.is_static = true;
+
+    return status;
+}
+
+void lifecycle_handle_ota_trigger(homekit_characteristic_t *characteristic,
+                                  homekit_value_t value) {
+    if (characteristic == NULL) {
+        return;
+    }
+    if (value.format != homekit_format_bool) {
+        ESP_LOGW(LIFECYCLE_TAG, "Invalid OTA trigger format: %d", value.format);
+        return;
+    }
+
+    bool requested = value.bool_value;
+    characteristic->value.bool_value = false;
+    homekit_characteristic_notify(characteristic, HOMEKIT_BOOL(characteristic->value.bool_value));
+
+    if (requested) {
+        ESP_LOGI(LIFECYCLE_TAG, "HomeKit requested firmware update");
+        lifecycle_request_update_and_reboot();
+    }
+}
+
+static void dispatch_button_event(lifecycle_button_event_t event) {
+    if (!s_button_initialized) {
+        return;
+    }
+
+    if (s_button_cfg.event_callback) {
+        s_button_cfg.event_callback(event, s_button_cfg.event_context);
+    }
+
+    lifecycle_button_action_t action = LIFECYCLE_BUTTON_ACTION_NONE;
+    switch (event) {
+        case LIFECYCLE_BUTTON_EVENT_SINGLE:
+            action = s_button_cfg.single_action;
+            break;
+        case LIFECYCLE_BUTTON_EVENT_DOUBLE:
+            action = s_button_cfg.double_action;
+            break;
+        case LIFECYCLE_BUTTON_EVENT_LONG:
+            action = s_button_cfg.long_action;
+            break;
+        default:
+            break;
+    }
+
+    switch (action) {
+        case LIFECYCLE_BUTTON_ACTION_NONE:
+            break;
+        case LIFECYCLE_BUTTON_ACTION_REQUEST_UPDATE:
+            lifecycle_request_update_and_reboot();
+            break;
+        case LIFECYCLE_BUTTON_ACTION_RESET_HOMEKIT:
+            lifecycle_reset_homekit_and_reboot();
+            break;
+        case LIFECYCLE_BUTTON_ACTION_FACTORY_RESET:
+            lifecycle_factory_reset_and_reboot();
+            break;
+        default:
+            break;
+    }
+}
+
+static void IRAM_ATTR button_isr_handler(void *arg) {
+    if (s_button_evt_queue == NULL) {
+        return;
+    }
+
+    int64_t now_us = esp_timer_get_time();
+    if ((now_us - s_last_isr_time_us) < s_button_cfg.debounce_us) {
+        return;
+    }
+    s_last_isr_time_us = now_us;
+
+    uint32_t gpio_num = (uint32_t)arg;
+    BaseType_t higher_wakeup = pdFALSE;
+    xQueueSendFromISR(s_button_evt_queue, &gpio_num, &higher_wakeup);
+    if (higher_wakeup == pdTRUE) {
+        portYIELD_FROM_ISR();
+    }
+}
+
+static void button_task(void *pvParameter) {
+    const int64_t double_window_us = s_button_cfg.double_click_us;
+    const int64_t long_press_threshold_us = s_button_cfg.long_press_us;
+
+    uint32_t io_num;
+    ESP_LOGI(BUTTON_TAG, "Button task started on GPIO %d", s_button_cfg.gpio);
+    while (true) {
+        if (xQueueReceive(s_button_evt_queue, &io_num, pdMS_TO_TICKS(10)) == pdTRUE) {
+            int64_t now_us = esp_timer_get_time();
+            bool pressed = gpio_get_level(io_num) == 0;
+
+            if (pressed) {
+                s_press_start_time_us = now_us;
+                s_press_count++;
+                s_double_press_detected = false;
+                s_waiting_for_second_press = false;
+            } else {
+                if (s_press_start_time_us < 0) {
+                    continue;
+                }
+
+                int64_t press_duration_us = now_us - s_press_start_time_us;
+                s_press_start_time_us = -1;
+
+                if (press_duration_us >= long_press_threshold_us) {
+                    s_waiting_for_second_press = false;
+                    s_press_count = 0;
+                    ESP_LOGI(BUTTON_TAG, "Long press detected");
+                    dispatch_button_event(LIFECYCLE_BUTTON_EVENT_LONG);
+                } else {
+                    if (s_press_count == 1) {
+                        s_waiting_for_second_press = true;
+                        s_last_release_time_us = now_us;
+                    } else if (s_press_count == 2) {
+                        int64_t diff_us = now_us - s_last_release_time_us;
+                        if (diff_us <= double_window_us) {
+                            s_double_press_detected = true;
+                            ESP_LOGI(BUTTON_TAG, "Double press detected");
+                            dispatch_button_event(LIFECYCLE_BUTTON_EVENT_DOUBLE);
+                        }
+                        s_waiting_for_second_press = false;
+                        s_press_count = 0;
+                    } else if (s_press_count > 2) {
+                        s_waiting_for_second_press = false;
+                        s_press_count = 0;
+                    }
+                }
+            }
+        }
+
+        if (s_waiting_for_second_press) {
+            int64_t now_us = esp_timer_get_time();
+            if ((now_us - s_last_release_time_us) > s_button_cfg.double_click_us) {
+                s_waiting_for_second_press = false;
+                if (!s_double_press_detected && s_press_count == 1) {
+                    s_press_count = 0;
+                    ESP_LOGI(BUTTON_TAG, "Single press detected");
+                    dispatch_button_event(LIFECYCLE_BUTTON_EVENT_SINGLE);
+                } else {
+                    s_press_count = 0;
+                }
+            }
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+}
+
+esp_err_t lifecycle_button_init(const lifecycle_button_config_t *config) {
+    if (config == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (config->gpio == GPIO_NUM_NC) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (s_button_initialized) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    s_button_cfg = *config;
+    if (s_button_cfg.debounce_us == 0) {
+        s_button_cfg.debounce_us = DEFAULT_DEBOUNCE_US;
+    }
+    if (s_button_cfg.double_click_us == 0) {
+        s_button_cfg.double_click_us = DEFAULT_DOUBLE_CLICK_US;
+    }
+    if (s_button_cfg.long_press_us == 0) {
+        s_button_cfg.long_press_us = DEFAULT_LONG_PRESS_US;
+    }
+
+    s_button_evt_queue = xQueueCreate(BUTTON_QUEUE_LENGTH, sizeof(uint32_t));
+    if (s_button_evt_queue == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+
+    gpio_config_t button_conf = {
+        .pin_bit_mask = 1ULL << s_button_cfg.gpio,
+        .mode = GPIO_MODE_INPUT,
+        .pull_up_en = GPIO_PULLUP_ENABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_ANYEDGE,
+    };
+    esp_err_t err = gpio_config(&button_conf);
+    if (err != ESP_OK) {
+        vQueueDelete(s_button_evt_queue);
+        s_button_evt_queue = NULL;
+        return err;
+    }
+
+    err = gpio_set_intr_type(s_button_cfg.gpio, GPIO_INTR_ANYEDGE);
+    if (err != ESP_OK) {
+        vQueueDelete(s_button_evt_queue);
+        s_button_evt_queue = NULL;
+        return err;
+    }
+
+    err = gpio_install_isr_service(ESP_INTR_FLAG_IRAM);
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+        vQueueDelete(s_button_evt_queue);
+        s_button_evt_queue = NULL;
+        return err;
+    }
+
+    bool handler_added = false;
+    err = gpio_isr_handler_add(s_button_cfg.gpio, button_isr_handler, (void *)s_button_cfg.gpio);
+    if (err == ESP_OK) {
+        handler_added = true;
+    } else {
+        vQueueDelete(s_button_evt_queue);
+        s_button_evt_queue = NULL;
+        return err;
+    }
+
+    err = gpio_intr_enable(s_button_cfg.gpio);
+    if (err != ESP_OK) {
+        if (handler_added) {
+            gpio_isr_handler_remove(s_button_cfg.gpio);
+        }
+        vQueueDelete(s_button_evt_queue);
+        s_button_evt_queue = NULL;
+        return err;
+    }
+
+    s_last_isr_time_us = 0;
+    s_press_start_time_us = -1;
+    s_press_count = 0;
+    s_waiting_for_second_press = false;
+    s_double_press_detected = false;
+
+    if (xTaskCreate(button_task, "lifecycle_button", 4096, NULL, 10, NULL) != pdPASS) {
+        gpio_intr_disable(s_button_cfg.gpio);
+        if (handler_added) {
+            gpio_isr_handler_remove(s_button_cfg.gpio);
+        }
+        vQueueDelete(s_button_evt_queue);
+        s_button_evt_queue = NULL;
+        return ESP_ERR_NO_MEM;
+    }
+
+    s_button_initialized = true;
+    ESP_LOGI(BUTTON_TAG, "Lifecycle button initialised on GPIO %d", s_button_cfg.gpio);
+    return ESP_OK;
+}
 
 static esp_err_t nvs_load_wifi(char **out_ssid, char **out_pass) {
     nvs_handle_t h;
