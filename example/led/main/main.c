@@ -34,7 +34,6 @@
 #include <homekit/characteristics.h>
 
 #include "esp32-lcm.h"
-#include "esp32-wifi.h"
 
 #define BUTTON_GPIO GPIO_NUM_0
 #define LED_GPIO CONFIG_ESP_LED_GPIO

@@ -5,8 +5,6 @@
 #include <homekit/homekit.h>
 #include <homekit/characteristics.h>
 
-#include "esp32-wifi.h"
-
 #ifndef __HOMEKIT_CUSTOM_CHARACTERISTICS__
 #define __HOMEKIT_CUSTOM_CHARACTERISTICS__
 
@@ -84,6 +82,13 @@ typedef struct {
 
 // Initialiseer de BOOT-knop state machine met de opgegeven acties en optionele callback.
 esp_err_t lifecycle_button_init(const lifecycle_button_config_t *config);
+
+// Start WiFi STA op basis van NVS keys (namespace: wifi_cfg, keys: wifi_ssid, wifi_password).
+// Roep 'on_ready' aan zodra IP is verkregen.
+esp_err_t wifi_start(void (*on_ready)(void));
+
+// Optioneel: stop WiFi netjes.
+esp_err_t wifi_stop(void);
 
 #ifdef __cplusplus
 }

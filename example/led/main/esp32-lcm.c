@@ -24,7 +24,10 @@
 #include <string.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdlib.h>
 
+#include <esp_event.h>
+#include <esp_netif.h>
 #include <esp_wifi.h>
 #include <esp_log.h>
 #include <esp_system.h>
@@ -47,9 +50,20 @@
 
 #include "esp32-lcm.h"
 
+static const char *WIFI_TAG = "WIFI";
 static const char *BUTTON_TAG = "BUTTON";
-
 static const char *LIFECYCLE_TAG = "LIFECYCLE";
+
+#define WIFI_CHECK(call) do { \
+    esp_err_t __wifi_err = (call); \
+    if (__wifi_err != ESP_OK) { \
+        ESP_LOGE(WIFI_TAG, "Error: %s", esp_err_to_name(__wifi_err)); \
+        return __wifi_err; \
+    } \
+} while (0)
+
+static void (*s_wifi_on_ready_cb)(void) = NULL;
+static bool s_wifi_started = false;
 
 #define BUTTON_QUEUE_LENGTH 10
 #define DEFAULT_DEBOUNCE_US 2000
@@ -68,6 +82,177 @@ static int64_t s_last_release_time_us = 0;
 static int s_press_count = 0;
 static bool s_waiting_for_second_press = false;
 static bool s_double_press_detected = false;
+
+static esp_err_t nvs_load_wifi(char **out_ssid, char **out_pass) {
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open("wifi_cfg", NVS_READONLY, &handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(WIFI_TAG, "NVS open failed for namespace 'wifi_cfg': %s", esp_err_to_name(err));
+        return err;
+    }
+
+    size_t len_ssid = 0;
+    size_t len_pass = 0;
+    err = nvs_get_str(handle, "wifi_ssid", NULL, &len_ssid);
+    if (err != ESP_OK) {
+        ESP_LOGE(WIFI_TAG, "NVS key 'wifi_ssid' not found: %s", esp_err_to_name(err));
+        nvs_close(handle);
+        return err;
+    }
+
+    err = nvs_get_str(handle, "wifi_password", NULL, &len_pass);
+    if (err == ESP_ERR_NVS_NOT_FOUND) {
+        len_pass = 1;
+    } else if (err != ESP_OK) {
+        ESP_LOGE(WIFI_TAG, "NVS key 'wifi_password' read error: %s", esp_err_to_name(err));
+        nvs_close(handle);
+        return err;
+    }
+
+    char *ssid = (char *)malloc(len_ssid);
+    char *pass = (char *)malloc(len_pass);
+    if (ssid == NULL || pass == NULL) {
+        free(ssid);
+        free(pass);
+        nvs_close(handle);
+        return ESP_ERR_NO_MEM;
+    }
+
+    err = nvs_get_str(handle, "wifi_ssid", ssid, &len_ssid);
+    if (err != ESP_OK) {
+        ESP_LOGE(WIFI_TAG, "Failed to read wifi_ssid: %s", esp_err_to_name(err));
+        free(ssid);
+        free(pass);
+        nvs_close(handle);
+        return err;
+    }
+
+    if (len_pass == 1) {
+        pass[0] = '\0';
+    } else {
+        err = nvs_get_str(handle, "wifi_password", pass, &len_pass);
+        if (err != ESP_OK) {
+            ESP_LOGE(WIFI_TAG, "Failed to read wifi_password: %s", esp_err_to_name(err));
+            free(ssid);
+            free(pass);
+            nvs_close(handle);
+            return err;
+        }
+    }
+
+    nvs_close(handle);
+    *out_ssid = ssid;
+    *out_pass = pass;
+    return ESP_OK;
+}
+
+static void wifi_event_handler(void *arg, esp_event_base_t base, int32_t id, void *data) {
+    if (base == WIFI_EVENT) {
+        switch (id) {
+            case WIFI_EVENT_STA_START:
+                ESP_LOGI(WIFI_TAG, "STA start -> connect");
+                esp_wifi_connect();
+                break;
+            case WIFI_EVENT_STA_DISCONNECTED: {
+                wifi_event_sta_disconnected_t *disc = (wifi_event_sta_disconnected_t *)data;
+                ESP_LOGW(WIFI_TAG, "Disconnected (reason=%d). Reconnecting...", disc ? disc->reason : -1);
+                esp_wifi_connect();
+                break;
+            }
+            default:
+                break;
+        }
+    } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
+        ip_event_got_ip_t *event = (ip_event_got_ip_t *)data;
+        ESP_LOGI(WIFI_TAG, "Got IP: " IPSTR, IP2STR(&event->ip_info.ip));
+        if (s_wifi_on_ready_cb != NULL) {
+            s_wifi_on_ready_cb();
+        }
+    }
+}
+
+esp_err_t wifi_start(void (*on_ready)(void)) {
+    if (s_wifi_started) {
+        s_wifi_on_ready_cb = on_ready;
+        ESP_LOGI(WIFI_TAG, "WiFi already started");
+        return ESP_OK;
+    }
+
+    char *ssid = NULL;
+    char *pass = NULL;
+    esp_err_t err = nvs_load_wifi(&ssid, &pass);
+    if (err != ESP_OK) {
+        ESP_LOGE(WIFI_TAG, "Kon WiFi config niet laden uit NVS");
+        return err;
+    }
+
+    bool pass_empty = (pass[0] == '\0');
+    wifi_config_t wc = (wifi_config_t){ 0 };
+    strncpy((char *)wc.sta.ssid, ssid, sizeof(wc.sta.ssid) - 1);
+    strncpy((char *)wc.sta.password, pass, sizeof(wc.sta.password) - 1);
+    free(ssid);
+    free(pass);
+
+    if (pass_empty) {
+        wc.sta.threshold.authmode = WIFI_AUTH_OPEN;
+    } else {
+        wc.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
+    }
+
+    err = esp_netif_init();
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+        ESP_LOGE(WIFI_TAG, "Failed to init netif: %s", esp_err_to_name(err));
+        return err;
+    }
+    err = esp_event_loop_create_default();
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+        ESP_LOGE(WIFI_TAG, "Failed to create default event loop: %s", esp_err_to_name(err));
+        return err;
+    }
+    esp_netif_create_default_wifi_sta();
+
+    WIFI_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL));
+    WIFI_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &wifi_event_handler, NULL));
+
+    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+    WIFI_CHECK(esp_wifi_init(&cfg));
+    WIFI_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));
+    WIFI_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+
+    WIFI_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wc));
+    WIFI_CHECK(esp_wifi_start());
+
+    s_wifi_on_ready_cb = on_ready;
+    s_wifi_started = true;
+
+    ESP_LOGI(WIFI_TAG, "WiFi start klaar (STA). Verbinden...");
+    return ESP_OK;
+}
+
+esp_err_t wifi_stop(void) {
+    if (!s_wifi_started) {
+        return ESP_OK;
+    }
+
+    ESP_LOGI(WIFI_TAG, "WiFi stoppen...");
+    esp_err_t stop_err = esp_wifi_stop();
+    esp_err_t unregister_wifi = esp_event_handler_unregister(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler);
+    esp_err_t unregister_ip = esp_event_handler_unregister(IP_EVENT, IP_EVENT_STA_GOT_IP, &wifi_event_handler);
+    s_wifi_started = false;
+    s_wifi_on_ready_cb = NULL;
+
+    if (stop_err != ESP_OK) {
+        return stop_err;
+    }
+    if (unregister_wifi != ESP_OK) {
+        return unregister_wifi;
+    }
+    if (unregister_ip != ESP_OK) {
+        return unregister_ip;
+    }
+
+    return ESP_OK;
+}
 
 esp_err_t lifecycle_nvs_init(void) {
     esp_err_t ret = nvs_flash_init();
