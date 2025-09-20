@@ -4,6 +4,7 @@
 #include "esp_https_ota.h"
 #include "esp_http_client.h"
 #include "esp_ota_ops.h"
+#include "esp_partition.h"
 #include "esp_app_desc.h"
 #include "esp_crt_bundle.h"
 #include "mbedtls/sha512.h"
@@ -17,6 +18,8 @@
 static const char *TAG = "github_update";
 
 #define INSTALLED_VER_MAX_LEN 32
+#define INSTALLED_PART_KEY "installed_part"
+#define INSTALLED_LABEL_MAX_LEN (ESP_PARTITION_LABEL_MAX_LEN + 1)
 
 static bool parse_version(const char *str, int *maj, int *min, int *pat) {
     *maj = *min = *pat = 0;
@@ -41,7 +44,8 @@ static int cmp_version(int aMaj, int aMin, int aPat,
     return aPat - bPat;
 }
 
-static esp_err_t store_installed_version_if_needed(const char *version) {
+static esp_err_t store_installed_version_if_needed(const char *version,
+                                                   const char *partition_label) {
     if (version == NULL || version[0] == '\0') {
         return ESP_ERR_INVALID_ARG;
     }
@@ -56,33 +60,256 @@ static esp_err_t store_installed_version_if_needed(const char *version) {
         return err;
     }
 
+    bool version_changed = false;
+    bool label_changed = false;
+
     char existing[INSTALLED_VER_MAX_LEN];
     size_t existing_len = sizeof(existing);
     esp_err_t get_err = nvs_get_str(handle, "installed_ver", existing, &existing_len);
-    if (get_err == ESP_OK && strcmp(existing, truncated) == 0) {
-        nvs_close(handle);
-        return ESP_OK;
-    } else if (get_err != ESP_OK && get_err != ESP_ERR_NVS_NOT_FOUND) {
-        ESP_LOGW(TAG, "nvs_get_str(installed_ver) failed: %s", esp_err_to_name(get_err));
+    if (get_err == ESP_OK) {
+        if (strcmp(existing, truncated) != 0) {
+            err = nvs_set_str(handle, "installed_ver", truncated);
+            if (err != ESP_OK) {
+                ESP_LOGW(TAG, "nvs_set_str(installed_ver) failed: %s", esp_err_to_name(err));
+                nvs_close(handle);
+                return err;
+            }
+            version_changed = true;
+        }
+    } else {
+        if (get_err != ESP_ERR_NVS_NOT_FOUND) {
+            ESP_LOGW(TAG, "nvs_get_str(installed_ver) failed: %s", esp_err_to_name(get_err));
+        }
+        err = nvs_set_str(handle, "installed_ver", truncated);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "nvs_set_str(installed_ver) failed: %s", esp_err_to_name(err));
+            nvs_close(handle);
+            return err;
+        }
+        version_changed = true;
     }
 
-    err = nvs_set_str(handle, "installed_ver", truncated);
+    if (partition_label && partition_label[0] != '\0') {
+        char existing_label[INSTALLED_LABEL_MAX_LEN];
+        size_t label_len = sizeof(existing_label);
+        esp_err_t label_err = nvs_get_str(handle, INSTALLED_PART_KEY, existing_label, &label_len);
+        if (label_err == ESP_OK) {
+            if (strcmp(existing_label, partition_label) != 0) {
+                err = nvs_set_str(handle, INSTALLED_PART_KEY, partition_label);
+                if (err != ESP_OK) {
+                    ESP_LOGW(TAG, "nvs_set_str(%s) failed: %s", INSTALLED_PART_KEY, esp_err_to_name(err));
+                    nvs_close(handle);
+                    return err;
+                }
+                label_changed = true;
+            }
+        } else {
+            if (label_err != ESP_ERR_NVS_NOT_FOUND) {
+                ESP_LOGW(TAG, "nvs_get_str(%s) failed: %s", INSTALLED_PART_KEY, esp_err_to_name(label_err));
+            }
+            err = nvs_set_str(handle, INSTALLED_PART_KEY, partition_label);
+            if (err != ESP_OK) {
+                ESP_LOGW(TAG, "nvs_set_str(%s) failed: %s", INSTALLED_PART_KEY, esp_err_to_name(err));
+                nvs_close(handle);
+                return err;
+            }
+            label_changed = true;
+        }
+    }
+
+    if (version_changed || label_changed) {
+        err = nvs_commit(handle);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "nvs_commit(installed metadata) failed: %s", esp_err_to_name(err));
+            nvs_close(handle);
+            return err;
+        }
+        if (label_changed && partition_label && partition_label[0] != '\0') {
+            ESP_LOGI(TAG, "Stored installed firmware version %s on partition %s",
+                     truncated, partition_label);
+        } else {
+            ESP_LOGI(TAG, "Stored installed firmware version %s", truncated);
+        }
+    } else {
+        ESP_LOGD(TAG, "Installed firmware metadata unchanged");
+    }
+
+    nvs_close(handle);
+    return ESP_OK;
+}
+
+static bool load_installed_version(char *version, size_t version_len) {
+    if (version == NULL || version_len == 0) {
+        return false;
+    }
+
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open("fwcfg", NVS_READONLY, &handle);
     if (err != ESP_OK) {
-        ESP_LOGW(TAG, "nvs_set_str(installed_ver) failed: %s", esp_err_to_name(err));
+        ESP_LOGD(TAG, "Unable to open fwcfg namespace for installed version: %s",
+                 esp_err_to_name(err));
+        return false;
+    }
+
+    size_t required = version_len;
+    err = nvs_get_str(handle, "installed_ver", version, &required);
+    nvs_close(handle);
+    if (err == ESP_OK) {
+        return true;
+    }
+
+    if (err != ESP_ERR_NVS_NOT_FOUND) {
+        ESP_LOGW(TAG, "nvs_get_str(installed_ver) failed: %s", esp_err_to_name(err));
+    } else {
+        ESP_LOGD(TAG, "Installed firmware version not stored in NVS");
+    }
+    return false;
+}
+
+static bool load_installed_partition_label(char *label, size_t label_len) {
+    if (label == NULL || label_len == 0) {
+        return false;
+    }
+
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open("fwcfg", NVS_READONLY, &handle);
+    if (err != ESP_OK) {
+        ESP_LOGD(TAG, "Unable to open fwcfg namespace for partition label: %s",
+                 esp_err_to_name(err));
+        return false;
+    }
+
+    size_t required = label_len;
+    err = nvs_get_str(handle, INSTALLED_PART_KEY, label, &required);
+    nvs_close(handle);
+    if (err == ESP_OK) {
+        return true;
+    }
+
+    if (err != ESP_ERR_NVS_NOT_FOUND) {
+        ESP_LOGW(TAG, "nvs_get_str(%s) failed: %s", INSTALLED_PART_KEY, esp_err_to_name(err));
+    } else {
+        ESP_LOGD(TAG, "Installed partition label not stored in NVS");
+    }
+    return false;
+}
+
+static bool read_update_request_flag(void) {
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open("lcm", NVS_READONLY, &handle);
+    if (err != ESP_OK) {
+        ESP_LOGD(TAG, "No update request flag present: %s", esp_err_to_name(err));
+        return false;
+    }
+
+    uint8_t flag = 0;
+    err = nvs_get_u8(handle, "do_update", &flag);
+    nvs_close(handle);
+    if (err == ESP_OK) {
+        return flag != 0;
+    }
+
+    if (err != ESP_ERR_NVS_NOT_FOUND) {
+        ESP_LOGW(TAG, "nvs_get_u8(do_update) failed: %s", esp_err_to_name(err));
+    }
+    return false;
+}
+
+static esp_err_t write_update_request_flag(bool value) {
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open("lcm", NVS_READWRITE, &handle);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "nvs_open(lcm) failed when updating flag: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    uint8_t current = 0;
+    esp_err_t get_err = nvs_get_u8(handle, "do_update", &current);
+    if (get_err == ESP_OK && current == (value ? 1 : 0)) {
+        nvs_close(handle);
+        return ESP_OK;
+    }
+
+    err = nvs_set_u8(handle, "do_update", value ? 1 : 0);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "nvs_set_u8(do_update) failed: %s", esp_err_to_name(err));
         nvs_close(handle);
         return err;
     }
 
     err = nvs_commit(handle);
     if (err != ESP_OK) {
-        ESP_LOGW(TAG, "nvs_commit(installed_ver) failed: %s", esp_err_to_name(err));
+        ESP_LOGW(TAG, "nvs_commit(do_update) failed: %s", esp_err_to_name(err));
         nvs_close(handle);
         return err;
     }
 
     nvs_close(handle);
-    ESP_LOGI(TAG, "Stored installed firmware version %s", truncated);
+    ESP_LOGD(TAG, "Update request flag set to %d", value ? 1 : 0);
     return ESP_OK;
+}
+
+static const esp_partition_t *find_partition_for_version(int maj, int min, int pat) {
+    for (esp_partition_subtype_t subtype = ESP_PARTITION_SUBTYPE_APP_OTA_MIN;
+         subtype <= ESP_PARTITION_SUBTYPE_APP_OTA_MAX; ++subtype) {
+        const esp_partition_t *part = esp_partition_find_first(ESP_PARTITION_TYPE_APP, subtype, NULL);
+        if (!part) {
+            continue;
+        }
+
+        esp_app_desc_t desc;
+        esp_err_t desc_err = esp_ota_get_partition_description(part, &desc);
+        if (desc_err != ESP_OK) {
+            ESP_LOGD(TAG, "Failed to read descriptor for partition %s: %s",
+                     part->label, esp_err_to_name(desc_err));
+            continue;
+        }
+
+        int pMaj, pMin, pPat;
+        if (!parse_version(desc.version, &pMaj, &pMin, &pPat)) {
+            ESP_LOGD(TAG, "Partition %s has invalid version string '%s'",
+                     part->label, desc.version);
+            continue;
+        }
+
+        if (pMaj == maj && pMin == min && pPat == pat) {
+            return part;
+        }
+    }
+
+    return NULL;
+}
+
+static esp_err_t set_boot_partition_for_installed_firmware(int maj, int min, int pat,
+                                                           const char *version_str) {
+    const esp_partition_t *target = NULL;
+    char label[INSTALLED_LABEL_MAX_LEN];
+
+    if (load_installed_partition_label(label, sizeof(label))) {
+        target = esp_partition_find_first(ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_ANY, label);
+        if (!target) {
+            ESP_LOGW(TAG, "Stored partition label %s not found", label);
+        } else if (target->type != ESP_PARTITION_TYPE_APP ||
+                   target->subtype < ESP_PARTITION_SUBTYPE_APP_OTA_MIN ||
+                   target->subtype > ESP_PARTITION_SUBTYPE_APP_OTA_MAX) {
+            ESP_LOGW(TAG, "Stored partition label %s is not an OTA partition", label);
+            target = NULL;
+        }
+    }
+
+    if (!target) {
+        target = find_partition_for_version(maj, min, pat);
+    }
+
+    if (!target) {
+        ESP_LOGE(TAG, "Unable to locate partition for installed firmware version %s",
+                 version_str ? version_str : "(unknown)");
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    ESP_LOGI(TAG, "Restoring boot partition to %s at offset 0x%lx", target->label,
+             (unsigned long)target->address);
+    return esp_ota_set_boot_partition(target);
 }
 
 esp_err_t save_fw_config(const char *repo, bool pre) {
@@ -436,7 +663,8 @@ esp_err_t github_update_from_urls(const char *fw_url, const char *sig_url,
         }
     }
     if (version_to_store && version_to_store[0] != '\0') {
-        esp_err_t store_err = store_installed_version_if_needed(version_to_store);
+        esp_err_t store_err = store_installed_version_if_needed(version_to_store,
+                                                                update_part->label);
         if (store_err != ESP_OK) {
             ESP_LOGW(TAG, "Failed to persist installed version %s: %s",
                      version_to_store, esp_err_to_name(store_err));
@@ -446,6 +674,10 @@ esp_err_t github_update_from_urls(const char *fw_url, const char *sig_url,
     }
 
     ESP_LOGI(TAG, "Signature verified, rebooting");
+    esp_err_t flag_err = write_update_request_flag(false);
+    if (flag_err != ESP_OK) {
+        ESP_LOGW(TAG, "Failed to clear update request flag: %s", esp_err_to_name(flag_err));
+    }
     esp_restart();
     return ESP_OK;
 
@@ -464,13 +696,41 @@ esp_err_t github_update_if_needed(const char *repo, bool prerelease) {
         .user_agent = "esp32-ota" };
     ESP_LOGI(TAG, "Checking updates for repo %s (pre=%d)", repo, prerelease);
     ESP_LOGD(TAG, "Release API URL: %s", api);
-    const esp_app_desc_t *cur = esp_app_get_description();
-    int curMaj, curMin, curPat;
-    bool curValid = parse_version(cur ? cur->version : NULL, &curMaj, &curMin, &curPat);
-    ESP_LOGI(TAG, "Current firmware version %d.%d.%d", curMaj, curMin, curPat);
-    if (!curValid) {
-        ESP_LOGE(TAG, "Invalid current firmware version, assuming 0.0.0");
+    bool update_requested = read_update_request_flag();
+    if (update_requested) {
+        ESP_LOGI(TAG, "Update request flag detected");
     }
+
+    char installed_version[INSTALLED_VER_MAX_LEN] = {0};
+    bool using_stored_version = load_installed_version(installed_version, sizeof(installed_version));
+    int curMaj = 0, curMin = 0, curPat = 0;
+    bool curValid = false;
+    if (using_stored_version) {
+        curValid = parse_version(installed_version, &curMaj, &curMin, &curPat);
+        if (!curValid) {
+            ESP_LOGW(TAG, "Stored installed version '%s' is invalid; ignoring",
+                     installed_version);
+            installed_version[0] = '\0';
+            using_stored_version = false;
+        }
+    }
+
+    const esp_app_desc_t *running_desc = esp_app_get_description();
+    if (!curValid) {
+        curValid = parse_version(running_desc ? running_desc->version : NULL,
+                                 &curMaj, &curMin, &curPat);
+        if (!curValid) {
+            ESP_LOGE(TAG, "Invalid current firmware version, assuming 0.0.0");
+        }
+    }
+
+    if (curValid) {
+        snprintf(installed_version, sizeof(installed_version), "%d.%d.%d",
+                 curMaj, curMin, curPat);
+    }
+
+    ESP_LOGI(TAG, "Current firmware version %d.%d.%d (%s)", curMaj, curMin, curPat,
+             using_stored_version ? "installed" : "factory");
     esp_http_client_handle_t client = esp_http_client_init(&cfg);
     if (!client) { ESP_LOGE(TAG, "esp_http_client_init failed"); return ESP_FAIL; }
     esp_err_t err = esp_http_client_open(client, 0);
@@ -597,10 +857,34 @@ esp_err_t github_update_if_needed(const char *repo, bool prerelease) {
         ESP_LOGI(TAG, "Firmware already up to date");
         const char *version_to_store = sanitized_version[0] ? sanitized_version : raw_tag;
         if (version_to_store && version_to_store[0] != '\0') {
-            esp_err_t store_err = store_installed_version_if_needed(version_to_store);
+            esp_err_t store_err = store_installed_version_if_needed(version_to_store, NULL);
             if (store_err != ESP_OK) {
                 ESP_LOGW(TAG, "Unable to refresh stored firmware version: %s",
                          esp_err_to_name(store_err));
+            }
+        }
+        if (update_requested) {
+            if (curValid) {
+                ESP_LOGI(TAG, "Update was requested but version %d.%d.%d is already installed",
+                         curMaj, curMin, curPat);
+                esp_err_t boot_err = set_boot_partition_for_installed_firmware(
+                        curMaj, curMin, curPat,
+                        installed_version[0] != '\0' ? installed_version : version_to_store);
+                if (boot_err == ESP_OK) {
+                    esp_err_t clear_err = write_update_request_flag(false);
+                    if (clear_err != ESP_OK) {
+                        ESP_LOGW(TAG, "Failed to clear update request flag: %s",
+                                 esp_err_to_name(clear_err));
+                    }
+                    cJSON_Delete(json);
+                    ESP_LOGI(TAG, "Rebooting into previously installed firmware");
+                    esp_restart();
+                    return ESP_OK;
+                }
+                ESP_LOGE(TAG, "Failed to select installed firmware partition: %s",
+                         esp_err_to_name(boot_err));
+            } else {
+                ESP_LOGW(TAG, "Update was requested but installed version could not be determined");
             }
         }
         cJSON_Delete(json);
