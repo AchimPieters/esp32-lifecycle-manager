@@ -56,6 +56,7 @@ void lifecycle_handle_ota_trigger(homekit_characteristic_t *characteristic,
 typedef enum {
     LIFECYCLE_BUTTON_EVENT_SINGLE = 0,
     LIFECYCLE_BUTTON_EVENT_DOUBLE,
+    LIFECYCLE_BUTTON_EVENT_TRIPLE,
     LIFECYCLE_BUTTON_EVENT_LONG,
 } lifecycle_button_event_t;
 
@@ -71,10 +72,11 @@ typedef void (*lifecycle_button_event_cb_t)(lifecycle_button_event_t event, void
 typedef struct {
     gpio_num_t gpio;
     uint32_t debounce_us;
-    uint32_t double_click_us;
+    uint32_t double_click_us; // Multi-press window (double/triple) in microseconds.
     uint32_t long_press_us;
     lifecycle_button_action_t single_action;
     lifecycle_button_action_t double_action;
+    lifecycle_button_action_t triple_action;
     lifecycle_button_action_t long_action;
     lifecycle_button_event_cb_t event_callback;
     void *event_context;

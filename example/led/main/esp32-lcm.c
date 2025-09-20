@@ -79,9 +79,8 @@ static QueueHandle_t s_button_evt_queue = NULL;
 static volatile int64_t s_last_isr_time_us = 0;
 static int64_t s_press_start_time_us = -1;
 static int64_t s_last_release_time_us = 0;
-static int s_press_count = 0;
-static bool s_waiting_for_second_press = false;
-static bool s_double_press_detected = false;
+static int s_short_press_count = 0;
+static bool s_waiting_for_more_presses = false;
 
 static esp_err_t nvs_load_wifi(char **out_ssid, char **out_pass) {
     nvs_handle_t handle;
@@ -387,6 +386,9 @@ static void dispatch_button_event(lifecycle_button_event_t event) {
         case LIFECYCLE_BUTTON_EVENT_DOUBLE:
             action = s_button_cfg.double_action;
             break;
+        case LIFECYCLE_BUTTON_EVENT_TRIPLE:
+            action = s_button_cfg.triple_action;
+            break;
         case LIFECYCLE_BUTTON_EVENT_LONG:
             action = s_button_cfg.long_action;
             break;
@@ -431,7 +433,7 @@ static void IRAM_ATTR button_isr_handler(void *arg) {
 }
 
 static void button_task(void *pvParameter) {
-    const int64_t double_window_us = s_button_cfg.double_click_us;
+    const int64_t multi_press_window_us = s_button_cfg.double_click_us;
     const int64_t long_press_threshold_us = s_button_cfg.long_press_us;
 
     uint32_t io_num;
@@ -443,9 +445,6 @@ static void button_task(void *pvParameter) {
 
             if (pressed) {
                 s_press_start_time_us = now_us;
-                s_press_count++;
-                s_double_press_detected = false;
-                s_waiting_for_second_press = false;
             } else {
                 if (s_press_start_time_us < 0) {
                     continue;
@@ -455,42 +454,41 @@ static void button_task(void *pvParameter) {
                 s_press_start_time_us = -1;
 
                 if (press_duration_us >= long_press_threshold_us) {
-                    s_waiting_for_second_press = false;
-                    s_press_count = 0;
+                    s_waiting_for_more_presses = false;
+                    s_short_press_count = 0;
                     ESP_LOGI(BUTTON_TAG, "Long press detected");
                     dispatch_button_event(LIFECYCLE_BUTTON_EVENT_LONG);
                 } else {
-                    if (s_press_count == 1) {
-                        s_waiting_for_second_press = true;
-                        s_last_release_time_us = now_us;
-                    } else if (s_press_count == 2) {
-                        int64_t diff_us = now_us - s_last_release_time_us;
-                        if (diff_us <= double_window_us) {
-                            s_double_press_detected = true;
-                            ESP_LOGI(BUTTON_TAG, "Double press detected");
-                            dispatch_button_event(LIFECYCLE_BUTTON_EVENT_DOUBLE);
-                        }
-                        s_waiting_for_second_press = false;
-                        s_press_count = 0;
-                    } else if (s_press_count > 2) {
-                        s_waiting_for_second_press = false;
-                        s_press_count = 0;
+                    s_short_press_count++;
+                    s_last_release_time_us = now_us;
+
+                    if (s_short_press_count >= 3) {
+                        ESP_LOGI(BUTTON_TAG, "Triple press detected");
+                        s_waiting_for_more_presses = false;
+                        s_short_press_count = 0;
+                        dispatch_button_event(LIFECYCLE_BUTTON_EVENT_TRIPLE);
+                    } else {
+                        s_waiting_for_more_presses = true;
                     }
                 }
             }
         }
 
-        if (s_waiting_for_second_press) {
+        if (s_waiting_for_more_presses) {
             int64_t now_us = esp_timer_get_time();
-            if ((now_us - s_last_release_time_us) > s_button_cfg.double_click_us) {
-                s_waiting_for_second_press = false;
-                if (!s_double_press_detected && s_press_count == 1) {
-                    s_press_count = 0;
+            if ((now_us - s_last_release_time_us) > multi_press_window_us) {
+                if (s_short_press_count == 1) {
                     ESP_LOGI(BUTTON_TAG, "Single press detected");
                     dispatch_button_event(LIFECYCLE_BUTTON_EVENT_SINGLE);
-                } else {
-                    s_press_count = 0;
+                } else if (s_short_press_count == 2) {
+                    ESP_LOGI(BUTTON_TAG, "Double press detected");
+                    dispatch_button_event(LIFECYCLE_BUTTON_EVENT_DOUBLE);
+                } else if (s_short_press_count > 2) {
+                    ESP_LOGI(BUTTON_TAG, "Multi press detected (%d)", s_short_press_count);
+                    dispatch_button_event(LIFECYCLE_BUTTON_EVENT_TRIPLE);
                 }
+                s_short_press_count = 0;
+                s_waiting_for_more_presses = false;
             }
         }
 
@@ -578,9 +576,9 @@ esp_err_t lifecycle_button_init(const lifecycle_button_config_t *config) {
 
     s_last_isr_time_us = 0;
     s_press_start_time_us = -1;
-    s_press_count = 0;
-    s_waiting_for_second_press = false;
-    s_double_press_detected = false;
+    s_last_release_time_us = 0;
+    s_short_press_count = 0;
+    s_waiting_for_more_presses = false;
 
     if (xTaskCreate(button_task, "lifecycle_button", 4096, NULL, 10, NULL) != pdPASS) {
         gpio_intr_disable(s_button_cfg.gpio);
