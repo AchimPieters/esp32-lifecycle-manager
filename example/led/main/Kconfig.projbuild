@@ -6,6 +6,12 @@ menu "StudioPieters"
               help
                   The GPIO number the LED is connected to.
 
+      config ESP_BUTTON_GPIO
+              int "Set the GPIO for the lifecycle button"
+              default 33
+              help
+                  The GPIO number for the lifecycle button connected to ground.
+
       config ESP_SETUP_CODE
               string "HomeKit Setup Code"
               default "338-77-883"

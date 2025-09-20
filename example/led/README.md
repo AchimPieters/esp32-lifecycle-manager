@@ -17,6 +17,7 @@ Connect `LED` pin to the following pin:
 | Name | Description | Defaults |
 |------|-------------|----------|
 | `CONFIG_ESP_LED_GPIO` | GPIO number for `LED` pin | "2" Default |
+| `CONFIG_ESP_BUTTON_GPIO` | GPIO for lifecycle button (active low to GND) | "33" Default |
 
 ## Scheme
 
@@ -37,7 +38,7 @@ Connect `LED` pin to the following pin:
 
 ## BOOT button actions
 
-The BOOT button (GPIO0, active low) controls the device lifecycle without reflashing:
+The BOOT button (`CONFIG_ESP_BUTTON_GPIO`, default GPIO33 and active low to GND) controls the device lifecycle without reflashing:
 
 - **Single press (<0.4 s):** Flag the Lifecycle Manager (LCM) update in NVS, boot the factory partition and let the LCM perform the OTA update before rebooting into the new firmware.
 - **Double press (two clicks within 400 ms):** Reset HomeKit pairing information via `homekit_server_reset()` and reboot so the accessory can be paired again.

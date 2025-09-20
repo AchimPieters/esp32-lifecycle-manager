@@ -35,7 +35,9 @@
 
 #include "esp32-lcm.h"
 
-#define BUTTON_GPIO GPIO_NUM_0
+// Boot/lifecycle button wired to ground, so keep the internal pull-up enabled
+// and treat a LOW level as a pressed state.
+#define BUTTON_GPIO CONFIG_ESP_BUTTON_GPIO
 #define LED_GPIO CONFIG_ESP_LED_GPIO
 
 #define DEVICE_NAME "HomeKit LED"
@@ -187,7 +189,15 @@ void app_main(void) {
         .triple_action = LIFECYCLE_BUTTON_ACTION_RESET_HOMEKIT,
         .long_action = LIFECYCLE_BUTTON_ACTION_FACTORY_RESET,
     };
+    ESP_LOGI(HOMEKIT_TAG,
+             "Configuring lifecycle button on GPIO %d (active low to GND)",
+             button_cfg.gpio);
     ESP_ERROR_CHECK(lifecycle_button_init(&button_cfg));
+
+    int button_level = gpio_get_level(BUTTON_GPIO);
+    ESP_LOGI(HOMEKIT_TAG,
+             "Lifecycle button initial level: %s (0=pressed, 1=released)",
+             button_level == 0 ? "pressed" : "released");
 
     ESP_ERROR_CHECK(wifi_start(on_wifi_ready));
 }
