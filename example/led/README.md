@@ -17,6 +17,7 @@ Connect `LED` pin to the following pin:
 | Name | Description | Defaults |
 |------|-------------|----------|
 | `CONFIG_ESP_LED_GPIO` | GPIO number for `LED` pin | "2" Default |
+| `CONFIG_ESP_BUTTON_GPIO` | GPIO for lifecycle button (active low to GND) | "33" Default |
 
 ## Scheme
 
