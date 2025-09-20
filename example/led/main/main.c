@@ -220,6 +220,8 @@ void app_main(void) {
     ESP_LOGI(HOMEKIT_TAG,
              "Configuring lifecycle button on GPIO %d (active low to GND)",
              button_cfg.gpio);
+    ESP_LOGI(HOMEKIT_TAG,
+             "Lifecycle button mapping: single=idle, double=LCM update, triple=HomeKit reset, long=factory reset");
     ESP_ERROR_CHECK(lifecycle_button_init(&button_cfg));
 
     int button_level = gpio_get_level(BUTTON_GPIO);
