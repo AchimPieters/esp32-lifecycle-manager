@@ -147,10 +147,6 @@ homekit_server_config_t config = {
     .setupId = CONFIG_ESP_SETUP_ID,
 };
 
-static void ota_trigger_setter(homekit_characteristic_t *ch, homekit_value_t value) {
-    lifecycle_handle_ota_trigger(ch, value);
-}
-
 static void on_wifi_ready(void) {
     ESP_LOGI(HOMEKIT_TAG, "Starting HomeKit server...");
     homekit_server_init(&config);
@@ -177,7 +173,7 @@ void app_main(void) {
     }
 
     ota_trigger.setter = NULL;
-    ota_trigger.setter_ex = ota_trigger_setter;
+    ota_trigger.setter_ex = lifecycle_handle_ota_trigger;
     ota_trigger.value.bool_value = false;
 
     gpio_reset_pin(LED_GPIO);
@@ -186,8 +182,9 @@ void app_main(void) {
 
     const lifecycle_button_config_t button_cfg = {
         .gpio = BUTTON_GPIO,
-        .single_action = LIFECYCLE_BUTTON_ACTION_REQUEST_UPDATE,
-        .double_action = LIFECYCLE_BUTTON_ACTION_RESET_HOMEKIT,
+        .single_action = LIFECYCLE_BUTTON_ACTION_NONE,
+        .double_action = LIFECYCLE_BUTTON_ACTION_REQUEST_UPDATE,
+        .triple_action = LIFECYCLE_BUTTON_ACTION_RESET_HOMEKIT,
         .long_action = LIFECYCLE_BUTTON_ACTION_FACTORY_RESET,
     };
     ESP_ERROR_CHECK(lifecycle_button_init(&button_cfg));
