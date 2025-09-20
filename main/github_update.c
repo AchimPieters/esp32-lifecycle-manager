@@ -85,6 +85,46 @@ static esp_err_t store_installed_version_if_needed(const char *version) {
     return ESP_OK;
 }
 
+static bool load_installed_version(char *out, size_t out_len) {
+    if (out == NULL || out_len == 0) {
+        return false;
+    }
+
+    out[0] = '\0';
+
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open("fwcfg", NVS_READONLY, &handle);
+    if (err != ESP_OK) {
+        if (err == ESP_ERR_NVS_NOT_FOUND) {
+            ESP_LOGD(TAG, "fwcfg namespace not found when loading installed version");
+        } else {
+            ESP_LOGW(TAG, "nvs_open(fwcfg) failed when loading installed version: %s",
+                     esp_err_to_name(err));
+        }
+        return false;
+    }
+
+    size_t required = out_len;
+    err = nvs_get_str(handle, "installed_ver", out, &required);
+    nvs_close(handle);
+    if (err != ESP_OK) {
+        if (err == ESP_ERR_NVS_NOT_FOUND) {
+            ESP_LOGD(TAG, "Installed firmware version not present in NVS");
+        } else {
+            ESP_LOGW(TAG, "nvs_get_str(installed_ver) failed when loading version: %s",
+                     esp_err_to_name(err));
+        }
+        out[0] = '\0';
+        return false;
+    }
+
+    if (out[0] == '\0') {
+        return false;
+    }
+
+    return true;
+}
+
 esp_err_t save_fw_config(const char *repo, bool pre) {
     ESP_LOGD(TAG, "Saving firmware config repo=%s pre=%d", repo ? repo : "(null)", pre);
     nvs_handle_t h;
@@ -464,10 +504,35 @@ esp_err_t github_update_if_needed(const char *repo, bool prerelease) {
         .user_agent = "esp32-ota" };
     ESP_LOGI(TAG, "Checking updates for repo %s (pre=%d)", repo, prerelease);
     ESP_LOGD(TAG, "Release API URL: %s", api);
-    const esp_app_desc_t *cur = esp_app_get_description();
-    int curMaj, curMin, curPat;
-    bool curValid = parse_version(cur ? cur->version : NULL, &curMaj, &curMin, &curPat);
-    ESP_LOGI(TAG, "Current firmware version %d.%d.%d", curMaj, curMin, curPat);
+    char current_version[INSTALLED_VER_MAX_LEN] = {0};
+    bool using_stored_version = load_installed_version(current_version, sizeof(current_version));
+    int curMaj = 0, curMin = 0, curPat = 0;
+    bool curValid = false;
+    if (using_stored_version) {
+        curValid = parse_version(current_version, &curMaj, &curMin, &curPat);
+        if (!curValid) {
+            ESP_LOGW(TAG, "Stored firmware version is invalid: %s", current_version);
+            current_version[0] = '\0';
+            using_stored_version = false;
+        }
+    }
+    if (!using_stored_version) {
+        const esp_app_desc_t *desc = esp_app_get_description();
+        if (desc && desc->version[0] != '\0') {
+            strlcpy(current_version, desc->version, sizeof(current_version));
+            curValid = parse_version(current_version, &curMaj, &curMin, &curPat);
+        } else {
+            current_version[0] = '\0';
+            curValid = false;
+        }
+    }
+    if (current_version[0] != '\0') {
+        ESP_LOGI(TAG, "Current firmware version %d.%d.%d (%s)", curMaj, curMin, curPat,
+                 using_stored_version ? "stored" : "runtime");
+    } else {
+        ESP_LOGW(TAG, "Current firmware version unavailable (%s)",
+                 using_stored_version ? "stored" : "runtime");
+    }
     if (!curValid) {
         ESP_LOGE(TAG, "Invalid current firmware version, assuming 0.0.0");
     }
