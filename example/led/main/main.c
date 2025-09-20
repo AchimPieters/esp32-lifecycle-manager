@@ -35,7 +35,9 @@
 
 #include "esp32-lcm.h"
 
-#define BUTTON_GPIO GPIO_NUM_0
+// Boot/lifecycle button wired to ground, so keep the internal pull-up enabled
+// and treat a LOW level as a pressed state.
+#define BUTTON_GPIO GPIO_NUM_33
 #define LED_GPIO CONFIG_ESP_LED_GPIO
 
 #define DEVICE_NAME "HomeKit LED"
