@@ -25,6 +25,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <inttypes.h>
+#include <stdio.h>
 
 #include <esp_event.h>
 #include <esp_netif.h>
@@ -36,6 +38,7 @@
 #include <esp_partition.h>
 #include <esp_timer.h>
 #include <esp_rom_gpio.h>
+#include <esp_rom_sys.h>
 #include <nvs.h>
 #include <nvs_flash.h>
 
@@ -81,6 +84,93 @@ static int64_t s_press_start_time_us = -1;
 static int64_t s_last_release_time_us = 0;
 static int s_short_press_count = 0;
 static bool s_waiting_for_more_presses = false;
+static volatile uint32_t s_isr_debounce_filtered_count = 0;
+static volatile uint32_t s_isr_queue_drop_count = 0;
+static TaskHandle_t s_button_monitor_task_handle = NULL;
+
+typedef struct {
+    uint32_t gpio_num;
+    int level;
+    int64_t timestamp_us;
+} lifecycle_button_isr_event_t;
+
+static void format_relative_us(int64_t now_us, int64_t event_us, char *out, size_t out_size) {
+    if (out == NULL || out_size == 0) {
+        return;
+    }
+    if (event_us <= 0) {
+        snprintf(out, out_size, "never");
+        return;
+    }
+
+    int64_t delta_us = now_us - event_us;
+    if (delta_us < 0) {
+        delta_us = 0;
+    }
+
+    int64_t seconds = delta_us / 1000000;
+    int64_t milliseconds = (delta_us / 1000) % 1000;
+    if (seconds > 0) {
+        snprintf(out, out_size, "%lld.%03llds ago", (long long)seconds, (long long)milliseconds);
+    } else {
+        snprintf(out, out_size, "%lldms ago", (long long)milliseconds);
+    }
+}
+
+static void format_press_state(int64_t now_us, int64_t press_start_us, char *out, size_t out_size) {
+    if (out == NULL || out_size == 0) {
+        return;
+    }
+    if (press_start_us < 0) {
+        snprintf(out, out_size, "idle");
+        return;
+    }
+
+    int64_t held_us = now_us - press_start_us;
+    if (held_us < 0) {
+        held_us = 0;
+    }
+
+    int64_t seconds = held_us / 1000000;
+    int64_t milliseconds = (held_us / 1000) % 1000;
+    if (seconds > 0) {
+        snprintf(out, out_size, "held %lld.%03llds", (long long)seconds, (long long)milliseconds);
+    } else {
+        snprintf(out, out_size, "held %lldms", (long long)milliseconds);
+    }
+}
+
+static void button_monitor_task(void *pvParameter);
+
+static const char *button_event_to_string(lifecycle_button_event_t event) {
+    switch (event) {
+        case LIFECYCLE_BUTTON_EVENT_SINGLE:
+            return "single";
+        case LIFECYCLE_BUTTON_EVENT_DOUBLE:
+            return "double";
+        case LIFECYCLE_BUTTON_EVENT_TRIPLE:
+            return "triple";
+        case LIFECYCLE_BUTTON_EVENT_LONG:
+            return "long";
+        default:
+            return "unknown";
+    }
+}
+
+static const char *button_action_to_string(lifecycle_button_action_t action) {
+    switch (action) {
+        case LIFECYCLE_BUTTON_ACTION_NONE:
+            return "none";
+        case LIFECYCLE_BUTTON_ACTION_REQUEST_UPDATE:
+            return "request_update";
+        case LIFECYCLE_BUTTON_ACTION_RESET_HOMEKIT:
+            return "reset_homekit";
+        case LIFECYCLE_BUTTON_ACTION_FACTORY_RESET:
+            return "factory_reset";
+        default:
+            return "unknown";
+    }
+}
 
 static esp_err_t nvs_load_wifi(char **out_ssid, char **out_pass) {
     nvs_handle_t handle;
@@ -374,10 +464,6 @@ static void dispatch_button_event(lifecycle_button_event_t event) {
         return;
     }
 
-    if (s_button_cfg.event_callback) {
-        s_button_cfg.event_callback(event, s_button_cfg.event_context);
-    }
-
     lifecycle_button_action_t action = LIFECYCLE_BUTTON_ACTION_NONE;
     switch (event) {
         case LIFECYCLE_BUTTON_EVENT_SINGLE:
@@ -396,6 +482,18 @@ static void dispatch_button_event(lifecycle_button_event_t event) {
             break;
     }
 
+    ESP_LOGI(BUTTON_TAG,
+             "Dispatch event %s (%d) -> action %s (%d)",
+             button_event_to_string(event),
+             event,
+             button_action_to_string(action),
+             action);
+
+    if (s_button_cfg.event_callback) {
+        ESP_LOGI(BUTTON_TAG, "Invoking event callback for %s press", button_event_to_string(event));
+        s_button_cfg.event_callback(event, s_button_cfg.event_context);
+    }
+
     switch (action) {
         case LIFECYCLE_BUTTON_ACTION_NONE:
             break;
@@ -411,6 +509,15 @@ static void dispatch_button_event(lifecycle_button_event_t event) {
         default:
             break;
     }
+
+    if (s_button_monitor_task_handle != NULL) {
+        ESP_LOGI(BUTTON_TAG,
+                 "Diagnostics monitor stopped after dispatching %s press",
+                 button_event_to_string(event));
+        TaskHandle_t handle = s_button_monitor_task_handle;
+        s_button_monitor_task_handle = NULL;
+        vTaskDelete(handle);
+    }
 }
 
 static void IRAM_ATTR button_isr_handler(void *arg) {
@@ -419,14 +526,23 @@ static void IRAM_ATTR button_isr_handler(void *arg) {
     }
 
     int64_t now_us = esp_timer_get_time();
-    if ((now_us - s_last_isr_time_us) < s_button_cfg.debounce_us) {
+    int64_t delta_us = now_us - s_last_isr_time_us;
+    if (delta_us < s_button_cfg.debounce_us) {
+        s_isr_debounce_filtered_count++;
         return;
     }
     s_last_isr_time_us = now_us;
 
     uint32_t gpio_num = (uint32_t)arg;
+    lifecycle_button_isr_event_t evt = {
+        .gpio_num = gpio_num,
+        .level = gpio_get_level(gpio_num),
+        .timestamp_us = now_us,
+    };
     BaseType_t higher_wakeup = pdFALSE;
-    xQueueSendFromISR(s_button_evt_queue, &gpio_num, &higher_wakeup);
+    if (xQueueSendFromISR(s_button_evt_queue, &evt, &higher_wakeup) != pdTRUE) {
+        s_isr_queue_drop_count++;
+    }
     if (higher_wakeup == pdTRUE) {
         portYIELD_FROM_ISR();
     }
@@ -436,47 +552,115 @@ static void button_task(void *pvParameter) {
     const int64_t multi_press_window_us = s_button_cfg.double_click_us;
     const int64_t long_press_threshold_us = s_button_cfg.long_press_us;
 
-    uint32_t io_num;
+    lifecycle_button_isr_event_t evt;
+    int64_t last_event_timestamp_us = 0;
+    uint32_t last_debounce_filtered_count = 0;
+    uint32_t last_queue_drop_count = 0;
     ESP_LOGI(BUTTON_TAG, "Button task started on GPIO %d", s_button_cfg.gpio);
     while (true) {
-        if (xQueueReceive(s_button_evt_queue, &io_num, pdMS_TO_TICKS(10)) == pdTRUE) {
-            int64_t now_us = esp_timer_get_time();
-            bool pressed = gpio_get_level(io_num) == 0;
+        if (xQueueReceive(s_button_evt_queue, &evt, pdMS_TO_TICKS(10)) == pdTRUE) {
+            int64_t task_now_us = esp_timer_get_time();
+            int64_t processing_delay_us = task_now_us - evt.timestamp_us;
+            int64_t delta_from_last_us =
+                (last_event_timestamp_us == 0) ? 0 : (evt.timestamp_us - last_event_timestamp_us);
+            last_event_timestamp_us = evt.timestamp_us;
+
+            int current_level = gpio_get_level(evt.gpio_num);
+            if (current_level != evt.level) {
+                ESP_LOGW(BUTTON_TAG,
+                         "GPIO %" PRIu32 " level changed between ISR (%d) and task (%d)",
+                         evt.gpio_num,
+                         evt.level,
+                         current_level);
+            }
+
+            ESP_LOGI(BUTTON_TAG,
+                     "Queue event: gpio=%" PRIu32 " level=%d timestamp=%lldus (delay=%lldus, delta=%lldus)",
+                     evt.gpio_num,
+                     evt.level,
+                     (long long)evt.timestamp_us,
+                     (long long)processing_delay_us,
+                     (long long)delta_from_last_us);
+
+            bool pressed = evt.level == 0;
 
             if (pressed) {
-                s_press_start_time_us = now_us;
+                s_press_start_time_us = evt.timestamp_us;
+                ESP_LOGI(BUTTON_TAG,
+                         "Press start detected (level low) at %lldus",
+                         (long long)s_press_start_time_us);
             } else {
                 if (s_press_start_time_us < 0) {
+                    ESP_LOGW(BUTTON_TAG, "Release detected without tracked press start (ignored)");
                     continue;
                 }
 
-                int64_t press_duration_us = now_us - s_press_start_time_us;
+                int64_t press_duration_us = evt.timestamp_us - s_press_start_time_us;
+                ESP_LOGI(BUTTON_TAG,
+                         "Release detected after %lldus (threshold=%lldus)",
+                         (long long)press_duration_us,
+                         (long long)long_press_threshold_us);
                 s_press_start_time_us = -1;
 
                 if (press_duration_us >= long_press_threshold_us) {
                     s_waiting_for_more_presses = false;
                     s_short_press_count = 0;
-                    ESP_LOGI(BUTTON_TAG, "Long press detected");
+                    ESP_LOGI(BUTTON_TAG, "Long press detected (duration=%lldus)",
+                             (long long)press_duration_us);
                     dispatch_button_event(LIFECYCLE_BUTTON_EVENT_LONG);
                 } else {
                     s_short_press_count++;
-                    s_last_release_time_us = now_us;
+                    s_last_release_time_us = evt.timestamp_us;
+                    ESP_LOGI(BUTTON_TAG,
+                             "Short press #%d registered (window=%lldus)",
+                             s_short_press_count,
+                             (long long)multi_press_window_us);
 
                     if (s_short_press_count >= 3) {
-                        ESP_LOGI(BUTTON_TAG, "Triple press detected");
+                        ESP_LOGI(BUTTON_TAG,
+                                 "Immediate triple press detected via counter=%d",
+                                 s_short_press_count);
                         s_waiting_for_more_presses = false;
                         s_short_press_count = 0;
                         dispatch_button_event(LIFECYCLE_BUTTON_EVENT_TRIPLE);
                     } else {
                         s_waiting_for_more_presses = true;
+                        ESP_LOGI(BUTTON_TAG,
+                                 "Waiting for more presses (count=%d)",
+                                 s_short_press_count);
                     }
                 }
             }
         }
 
+        uint32_t debounce_filtered_count = s_isr_debounce_filtered_count;
+        if (debounce_filtered_count != last_debounce_filtered_count) {
+            uint32_t delta = debounce_filtered_count - last_debounce_filtered_count;
+            ESP_LOGW(BUTTON_TAG,
+                     "ISR debounce filtered events total=%" PRIu32 " (+%" PRIu32 ")",
+                     debounce_filtered_count,
+                     delta);
+            last_debounce_filtered_count = debounce_filtered_count;
+        }
+
+        uint32_t queue_drop_count = s_isr_queue_drop_count;
+        if (queue_drop_count != last_queue_drop_count) {
+            uint32_t delta = queue_drop_count - last_queue_drop_count;
+            ESP_LOGW(BUTTON_TAG,
+                     "ISR queue drops total=%" PRIu32 " (+%" PRIu32 ")",
+                     queue_drop_count,
+                     delta);
+            last_queue_drop_count = queue_drop_count;
+        }
+
         if (s_waiting_for_more_presses) {
             int64_t now_us = esp_timer_get_time();
-            if ((now_us - s_last_release_time_us) > multi_press_window_us) {
+            int64_t elapsed_since_release = now_us - s_last_release_time_us;
+            if (elapsed_since_release > multi_press_window_us) {
+                ESP_LOGI(BUTTON_TAG,
+                         "Multi-press window expired after %lldus with count=%d",
+                         (long long)elapsed_since_release,
+                         s_short_press_count);
                 if (s_short_press_count == 1) {
                     ESP_LOGI(BUTTON_TAG, "Single press detected");
                     dispatch_button_event(LIFECYCLE_BUTTON_EVENT_SINGLE);
@@ -484,7 +668,9 @@ static void button_task(void *pvParameter) {
                     ESP_LOGI(BUTTON_TAG, "Double press detected");
                     dispatch_button_event(LIFECYCLE_BUTTON_EVENT_DOUBLE);
                 } else if (s_short_press_count > 2) {
-                    ESP_LOGI(BUTTON_TAG, "Multi press detected (%d)", s_short_press_count);
+                    ESP_LOGI(BUTTON_TAG,
+                             "Multi press detected (%d) beyond triple threshold",
+                             s_short_press_count);
                     dispatch_button_event(LIFECYCLE_BUTTON_EVENT_TRIPLE);
                 }
                 s_short_press_count = 0;
@@ -494,6 +680,88 @@ static void button_task(void *pvParameter) {
 
         vTaskDelay(pdMS_TO_TICKS(10));
     }
+}
+
+static void button_monitor_task(void *pvParameter) {
+    const int max_summary_logs = 20;
+    int summary_count = 0;
+    int poll_counter = 0;
+    int last_level = -1;
+
+    ESP_LOGW(BUTTON_TAG,
+             "Button diagnostics monitor started for GPIO %d (polling raw level and queue state)",
+             s_button_cfg.gpio);
+
+    while (summary_count < max_summary_logs) {
+        int level = gpio_get_level(s_button_cfg.gpio);
+        if (level != last_level) {
+            ESP_LOGW(BUTTON_TAG,
+                     "[diag] GPIO %d instantaneous level -> %d (0=pressed, 1=released)",
+                     s_button_cfg.gpio,
+                     level);
+            last_level = level;
+        }
+
+        poll_counter++;
+        bool emit_summary = false;
+        if (poll_counter >= 10) {
+            poll_counter = 0;
+            emit_summary = true;
+        }
+
+        if (emit_summary) {
+            int64_t now_us = esp_timer_get_time();
+            char last_isr_buf[32];
+            char last_release_buf[32];
+            char press_state_buf[32];
+            format_relative_us(now_us, s_last_isr_time_us, last_isr_buf, sizeof(last_isr_buf));
+            format_relative_us(now_us, s_last_release_time_us, last_release_buf, sizeof(last_release_buf));
+            format_press_state(now_us, s_press_start_time_us, press_state_buf, sizeof(press_state_buf));
+
+            UBaseType_t pending = 0;
+            if (s_button_evt_queue != NULL) {
+                pending = uxQueueMessagesWaiting(s_button_evt_queue);
+            }
+
+            summary_count++;
+            ESP_LOGW(BUTTON_TAG,
+                     "[diag summary %02d/%02d] level=%d waiting_more=%s short_presses=%d pending_events=%lu "
+                     "last_isr=%s last_release=%s press_state=%s debounce_filtered=%" PRIu32 " queue_drops=%" PRIu32,
+                     summary_count,
+                     max_summary_logs,
+                     level,
+                     s_waiting_for_more_presses ? "yes" : "no",
+                     s_short_press_count,
+                     (unsigned long)pending,
+                     last_isr_buf,
+                     last_release_buf,
+                     press_state_buf,
+                     s_isr_debounce_filtered_count,
+                     s_isr_queue_drop_count);
+
+            if (s_last_isr_time_us != 0) {
+                int64_t since_last_isr = now_us - s_last_isr_time_us;
+                if (since_last_isr < 0) {
+                    since_last_isr = 0;
+                }
+                if (since_last_isr < 2000000 && summary_count >= 3) {
+                    ESP_LOGI(BUTTON_TAG,
+                             "Button edges detected recently (%lldms ago). Diagnostics monitor stopping early.",
+                             (long long)(since_last_isr / 1000));
+                    break;
+                }
+            }
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+
+    if (summary_count >= max_summary_logs) {
+        ESP_LOGW(BUTTON_TAG, "Button diagnostics monitor reached %d summaries without seeing edges.", summary_count);
+    }
+
+    s_button_monitor_task_handle = NULL;
+    vTaskDelete(NULL);
 }
 
 esp_err_t lifecycle_button_init(const lifecycle_button_config_t *config) {
@@ -518,7 +786,14 @@ esp_err_t lifecycle_button_init(const lifecycle_button_config_t *config) {
         s_button_cfg.long_press_us = DEFAULT_LONG_PRESS_US;
     }
 
-    s_button_evt_queue = xQueueCreate(BUTTON_QUEUE_LENGTH, sizeof(uint32_t));
+    ESP_LOGI(BUTTON_TAG,
+             "Button configuration: gpio=%d, debounce=%uus, multi-press window=%uus, long-press=%uus",
+             s_button_cfg.gpio,
+             (unsigned)s_button_cfg.debounce_us,
+             (unsigned)s_button_cfg.double_click_us,
+             (unsigned)s_button_cfg.long_press_us);
+
+    s_button_evt_queue = xQueueCreate(BUTTON_QUEUE_LENGTH, sizeof(lifecycle_button_isr_event_t));
     if (s_button_evt_queue == NULL) {
         return ESP_ERR_NO_MEM;
     }
@@ -540,6 +815,12 @@ esp_err_t lifecycle_button_init(const lifecycle_button_config_t *config) {
         return err;
     }
 
+    int initial_level = gpio_get_level(s_button_cfg.gpio);
+    ESP_LOGI(BUTTON_TAG,
+             "GPIO %d initial level after configuration: %d (0=pressed, 1=released)",
+             s_button_cfg.gpio,
+             initial_level);
+
     err = gpio_set_intr_type(s_button_cfg.gpio, GPIO_INTR_ANYEDGE);
     if (err != ESP_OK) {
         vQueueDelete(s_button_evt_queue);
@@ -553,11 +834,15 @@ esp_err_t lifecycle_button_init(const lifecycle_button_config_t *config) {
         s_button_evt_queue = NULL;
         return err;
     }
+    if (err == ESP_ERR_INVALID_STATE) {
+        ESP_LOGW(BUTTON_TAG, "GPIO ISR service already installed, reusing existing instance");
+    }
 
     bool handler_added = false;
     err = gpio_isr_handler_add(s_button_cfg.gpio, button_isr_handler, (void *)s_button_cfg.gpio);
     if (err == ESP_OK) {
         handler_added = true;
+        ESP_LOGI(BUTTON_TAG, "ISR handler registered for GPIO %d", s_button_cfg.gpio);
     } else {
         vQueueDelete(s_button_evt_queue);
         s_button_evt_queue = NULL;
@@ -573,6 +858,7 @@ esp_err_t lifecycle_button_init(const lifecycle_button_config_t *config) {
         s_button_evt_queue = NULL;
         return err;
     }
+    ESP_LOGI(BUTTON_TAG, "GPIO %d interrupts enabled", s_button_cfg.gpio);
 
     s_last_isr_time_us = 0;
     s_press_start_time_us = -1;
@@ -590,8 +876,27 @@ esp_err_t lifecycle_button_init(const lifecycle_button_config_t *config) {
         return ESP_ERR_NO_MEM;
     }
 
+    if (s_button_monitor_task_handle == NULL) {
+        BaseType_t monitor_created = xTaskCreate(button_monitor_task,
+                                                 "lifecycle_button_diag",
+                                                 2048,
+                                                 NULL,
+                                                 5,
+                                                 &s_button_monitor_task_handle);
+        if (monitor_created != pdPASS) {
+            s_button_monitor_task_handle = NULL;
+            ESP_LOGW(BUTTON_TAG, "Failed to start button diagnostics monitor task");
+        }
+    }
+
     s_button_initialized = true;
     ESP_LOGI(BUTTON_TAG, "Lifecycle button initialised on GPIO %d", s_button_cfg.gpio);
+    ESP_LOGI(BUTTON_TAG,
+             "Action mapping: single=%s, double=%s, triple=%s, long=%s",
+             button_action_to_string(s_button_cfg.single_action),
+             button_action_to_string(s_button_cfg.double_action),
+             button_action_to_string(s_button_cfg.triple_action),
+             button_action_to_string(s_button_cfg.long_action));
     return ESP_OK;
 }
 
