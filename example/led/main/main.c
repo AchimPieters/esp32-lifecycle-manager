@@ -61,6 +61,32 @@ static void led_write(bool on) {
     gpio_set_level(LED_GPIO, on ? 1 : 0);
 }
 
+static const char *lifecycle_button_event_to_string(lifecycle_button_event_t event) {
+    switch (event) {
+        case LIFECYCLE_BUTTON_EVENT_SINGLE:
+            return "single";
+        case LIFECYCLE_BUTTON_EVENT_DOUBLE:
+            return "double";
+        case LIFECYCLE_BUTTON_EVENT_TRIPLE:
+            return "triple";
+        case LIFECYCLE_BUTTON_EVENT_LONG:
+            return "long";
+        default:
+            return "unknown";
+    }
+}
+
+static void lifecycle_button_event_logger(lifecycle_button_event_t event, void *ctx) {
+    const char *ctx_str = ctx != NULL ? (const char *)ctx : "<no context>";
+    int level = gpio_get_level(BUTTON_GPIO);
+    ESP_LOGI(HOMEKIT_TAG,
+             "Lifecycle button callback -> event=%s (%d), gpio level=%d, context=%s",
+             lifecycle_button_event_to_string(event),
+             event,
+             level,
+             ctx_str);
+}
+
 static void accessory_identify_task(void *args) {
     for (int i = 0; i < 3; i++) {
         for (int j = 0; j < 2; j++) {
@@ -188,6 +214,8 @@ void app_main(void) {
         .double_action = LIFECYCLE_BUTTON_ACTION_REQUEST_UPDATE,
         .triple_action = LIFECYCLE_BUTTON_ACTION_RESET_HOMEKIT,
         .long_action = LIFECYCLE_BUTTON_ACTION_FACTORY_RESET,
+        .event_callback = lifecycle_button_event_logger,
+        .event_context = (void *)"app_main",
     };
     ESP_LOGI(HOMEKIT_TAG,
              "Configuring lifecycle button on GPIO %d (active low to GND)",
