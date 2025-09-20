@@ -17,6 +17,10 @@
 
 static const char *TAG = "github_update";
 
+#ifndef ESP_PARTITION_LABEL_MAX_LEN
+#define ESP_PARTITION_LABEL_MAX_LEN 16
+#endif
+
 #define INSTALLED_VER_MAX_LEN 32
 #define INSTALLED_PART_KEY "installed_part"
 #define INSTALLED_LABEL_MAX_LEN (ESP_PARTITION_LABEL_MAX_LEN + 1)
