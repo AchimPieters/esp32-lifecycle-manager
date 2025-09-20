@@ -163,7 +163,15 @@ void app_main(void) {
     const char *resolved_version = lifecycle_get_firmware_revision_string();
     if (resolved_version && resolved_version[0] != '\0') {
         strlcpy(fw_version_buffer, resolved_version, sizeof(fw_version_buffer));
+        ESP_LOGI(HOMEKIT_TAG, "Lifecycle Manager firmware version (NVS): %s", fw_version_buffer);
+    } else {
+        ESP_LOGW(HOMEKIT_TAG,
+                 "Lifecycle Manager firmware version not found in NVS, using fallback: %s",
+                 fw_version_buffer);
     }
+
+    revision.value.string_value = fw_version_buffer;
+    revision.value.is_static = true;
     if (rev_err != ESP_OK) {
         ESP_LOGW(HOMEKIT_TAG, "Firmware revision init failed: %s", esp_err_to_name(rev_err));
     }
