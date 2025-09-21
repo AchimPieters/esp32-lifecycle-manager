@@ -6,12 +6,6 @@ menu "StudioPieters"
               help
                   The GPIO number the LED is connected to.
 
-      config ESP_BUTTON_GPIO
-              int "Set the GPIO for the factory Reset button"
-              default 33
-              help
-                  The GPIO number the button is connected to.
-
       config WIFI_CONFIG_RESTART_ON_DISCONNECT
               bool "Restart when WiFi is disconnected"
               default n
