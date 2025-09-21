@@ -26,7 +26,6 @@
 
 #include <esp_err.h>
 #include <esp_log.h>
-#include <string.h>
 #include <driver/gpio.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
@@ -41,14 +40,6 @@
 #define DEVICE_MANUFACTURER "StudioPieters®"
 #define DEVICE_SERIAL "NLDA4SQN1466"
 #define DEVICE_MODEL "SD466NL/A"
-
-#ifndef CONFIG_APP_PROJECT_VER
-#define CONFIG_APP_PROJECT_VER "0.0.1"
-#endif
-
-static char fw_version_buffer[LIFECYCLE_FW_REVISION_MAX_LEN] = CONFIG_APP_PROJECT_VER;
-
-#define FW_VERSION fw_version_buffer
 
 static const char *HOMEKIT_TAG = "HOMEKIT";
 
@@ -94,7 +85,8 @@ homekit_characteristic_t name = HOMEKIT_CHARACTERISTIC_(NAME, DEVICE_NAME);
 homekit_characteristic_t manufacturer = HOMEKIT_CHARACTERISTIC_(MANUFACTURER, DEVICE_MANUFACTURER);
 homekit_characteristic_t serial = HOMEKIT_CHARACTERISTIC_(SERIAL_NUMBER, DEVICE_SERIAL);
 homekit_characteristic_t model = HOMEKIT_CHARACTERISTIC_(MODEL, DEVICE_MODEL);
-homekit_characteristic_t revision = HOMEKIT_CHARACTERISTIC_(FIRMWARE_REVISION, FW_VERSION);
+homekit_characteristic_t revision = HOMEKIT_CHARACTERISTIC_(FIRMWARE_REVISION,
+                                                            LIFECYCLE_DEFAULT_FW_VERSION);
 homekit_characteristic_t ota_trigger = API_OTA_TRIGGER;
 
 #pragma GCC diagnostic push
@@ -153,27 +145,7 @@ static void on_wifi_ready(void) {
 
 void app_main(void) {
     ESP_ERROR_CHECK(lifecycle_nvs_init());
-
-    esp_err_t rev_err = lifecycle_init_firmware_revision(&revision, FW_VERSION);
-    const char *resolved_version = lifecycle_get_firmware_revision_string();
-    if (resolved_version && resolved_version[0] != '\0') {
-        strlcpy(fw_version_buffer, resolved_version, sizeof(fw_version_buffer));
-        ESP_LOGI(HOMEKIT_TAG, "Lifecycle Manager firmware version (NVS): %s", fw_version_buffer);
-    } else {
-        ESP_LOGW(HOMEKIT_TAG,
-                 "Lifecycle Manager firmware version not found in NVS, using fallback: %s",
-                 fw_version_buffer);
-    }
-
-    revision.value.string_value = fw_version_buffer;
-    revision.value.is_static = true;
-    if (rev_err != ESP_OK) {
-        ESP_LOGW(HOMEKIT_TAG, "Firmware revision init failed: %s", esp_err_to_name(rev_err));
-    }
-
-    ota_trigger.setter = NULL;
-    ota_trigger.setter_ex = lifecycle_handle_ota_trigger;
-    ota_trigger.value.bool_value = false;
+    (void)lifecycle_configure_homekit(&revision, &ota_trigger, HOMEKIT_TAG);
 
     gpio_reset_pin(LED_GPIO);
     gpio_set_direction(LED_GPIO, GPIO_MODE_OUTPUT);

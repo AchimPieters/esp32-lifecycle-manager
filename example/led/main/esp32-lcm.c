@@ -348,6 +348,39 @@ void lifecycle_handle_ota_trigger(homekit_characteristic_t *characteristic,
     }
 }
 
+esp_err_t lifecycle_configure_homekit(homekit_characteristic_t *revision,
+                                      homekit_characteristic_t *ota_trigger,
+                                      const char *log_tag) {
+    if (revision == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    const char *tag = (log_tag != NULL) ? log_tag : LIFECYCLE_TAG;
+    const char *fallback_version = LIFECYCLE_DEFAULT_FW_VERSION;
+
+    esp_err_t rev_err = lifecycle_init_firmware_revision(revision, fallback_version);
+    const char *resolved_version = lifecycle_get_firmware_revision_string();
+    if (resolved_version != NULL && resolved_version[0] != '\0') {
+        ESP_LOGI(tag, "Lifecycle Manager firmware version (NVS): %s", resolved_version);
+    } else {
+        ESP_LOGW(tag,
+                 "Lifecycle Manager firmware version not found in NVS, using fallback: %s",
+                 fallback_version);
+    }
+
+    if (rev_err != ESP_OK) {
+        ESP_LOGW(tag, "Firmware revision init failed: %s", esp_err_to_name(rev_err));
+    }
+
+    if (ota_trigger != NULL) {
+        ota_trigger->setter = NULL;
+        ota_trigger->setter_ex = lifecycle_handle_ota_trigger;
+        ota_trigger->value.bool_value = false;
+    }
+
+    return rev_err;
+}
+
 void lifecycle_request_update_and_reboot(void) {
     ESP_LOGI(LIFECYCLE_TAG, "Requesting Lifecycle Manager update and reboot");
 

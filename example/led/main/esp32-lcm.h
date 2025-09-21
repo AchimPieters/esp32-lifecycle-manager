@@ -1,5 +1,7 @@
 #pragma once
 
+#include <sdkconfig.h>
+
 #include <esp_err.h>
 #include <homekit/homekit.h>
 #include <homekit/characteristics.h>
@@ -23,6 +25,14 @@
     ##__VA_ARGS__
 
 #define API_OTA_TRIGGER HOMEKIT_CHARACTERISTIC_(CUSTOM_OTA_TRIGGER, false)
+
+#ifndef LIFECYCLE_DEFAULT_FW_VERSION
+#ifdef CONFIG_APP_PROJECT_VER
+#define LIFECYCLE_DEFAULT_FW_VERSION CONFIG_APP_PROJECT_VER
+#else
+#define LIFECYCLE_DEFAULT_FW_VERSION "0.0.1"
+#endif
+#endif
 
 #define LIFECYCLE_FW_REVISION_MAX_LEN 32
 
@@ -51,6 +61,14 @@ const char *lifecycle_get_firmware_revision_string(void);
 // Verwerk de custom HomeKit OTA trigger. Gebruik dit als setter van de characteristic.
 void lifecycle_handle_ota_trigger(homekit_characteristic_t *characteristic,
                                   homekit_value_t value);
+
+// Initialise the HomeKit-facing lifecycle characteristics using defaults and
+// stored NVS values. Logs using the provided tag (falls back to the lifecycle
+// tag when NULL) and returns the status from the firmware revision
+// initialisation.
+esp_err_t lifecycle_configure_homekit(homekit_characteristic_t *revision,
+                                      homekit_characteristic_t *ota_trigger,
+                                      const char *log_tag);
 
 // Start WiFi STA op basis van NVS keys (namespace: wifi_cfg, keys: wifi_ssid, wifi_password).
 // Roep 'on_ready' aan zodra IP is verkregen.
