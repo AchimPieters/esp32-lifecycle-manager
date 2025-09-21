@@ -35,9 +35,6 @@
 
 #include "esp32-lcm.h"
 
-// Boot/lifecycle button wired to ground, so keep the internal pull-up enabled
-// and treat a LOW level as a pressed state.
-#define BUTTON_GPIO CONFIG_ESP_BUTTON_GPIO
 #define LED_GPIO CONFIG_ESP_LED_GPIO
 
 #define DEVICE_NAME "HomeKit LED"
@@ -59,32 +56,6 @@ static bool led_on = false;
 
 static void led_write(bool on) {
     gpio_set_level(LED_GPIO, on ? 1 : 0);
-}
-
-static const char *lifecycle_button_event_to_string(lifecycle_button_event_t event) {
-    switch (event) {
-        case LIFECYCLE_BUTTON_EVENT_SINGLE:
-            return "single";
-        case LIFECYCLE_BUTTON_EVENT_DOUBLE:
-            return "double";
-        case LIFECYCLE_BUTTON_EVENT_TRIPLE:
-            return "triple";
-        case LIFECYCLE_BUTTON_EVENT_LONG:
-            return "long";
-        default:
-            return "unknown";
-    }
-}
-
-static void lifecycle_button_event_logger(lifecycle_button_event_t event, void *ctx) {
-    const char *ctx_str = ctx != NULL ? (const char *)ctx : "<no context>";
-    int level = gpio_get_level(BUTTON_GPIO);
-    ESP_LOGI(HOMEKIT_TAG,
-             "Lifecycle button callback -> event=%s (%d), gpio level=%d, context=%s",
-             lifecycle_button_event_to_string(event),
-             event,
-             level,
-             ctx_str);
 }
 
 static void accessory_identify_task(void *args) {
@@ -207,27 +178,6 @@ void app_main(void) {
     gpio_reset_pin(LED_GPIO);
     gpio_set_direction(LED_GPIO, GPIO_MODE_OUTPUT);
     led_write(led_on);
-
-    const lifecycle_button_config_t button_cfg = {
-        .gpio = BUTTON_GPIO,
-        .single_action = LIFECYCLE_BUTTON_ACTION_NONE,
-        .double_action = LIFECYCLE_BUTTON_ACTION_REQUEST_UPDATE,
-        .triple_action = LIFECYCLE_BUTTON_ACTION_RESET_HOMEKIT,
-        .long_action = LIFECYCLE_BUTTON_ACTION_FACTORY_RESET,
-        .event_callback = lifecycle_button_event_logger,
-        .event_context = (void *)"app_main",
-    };
-    ESP_LOGI(HOMEKIT_TAG,
-             "Configuring lifecycle button on GPIO %d (active low to GND)",
-             button_cfg.gpio);
-    ESP_LOGI(HOMEKIT_TAG,
-             "Lifecycle button mapping: single=idle, double=LCM update, triple=HomeKit reset, long=factory reset");
-    ESP_ERROR_CHECK(lifecycle_button_init(&button_cfg));
-
-    int button_level = gpio_get_level(BUTTON_GPIO);
-    ESP_LOGI(HOMEKIT_TAG,
-             "Lifecycle button initial level: %s (0=pressed, 1=released)",
-             button_level == 0 ? "pressed" : "released");
 
     ESP_ERROR_CHECK(wifi_start(on_wifi_ready));
 }

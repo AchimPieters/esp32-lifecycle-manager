@@ -1,7 +1,6 @@
 #pragma once
 
 #include <esp_err.h>
-#include <driver/gpio.h>
 #include <homekit/homekit.h>
 #include <homekit/characteristics.h>
 
@@ -36,7 +35,7 @@ extern "C" {
 // Initialiseer NVS en voer automatische herstelactie uit wanneer er geen ruimte is of versie verandert.
 esp_err_t lifecycle_nvs_init(void);
 
-// Lifecycle acties die ook door de BOOT-knop of HomeKit aangeroepen worden.
+// Lifecycle acties die ook door externe triggers aangeroepen kunnen worden.
 void lifecycle_request_update_and_reboot(void);
 void lifecycle_reset_homekit_and_reboot(void);
 void lifecycle_factory_reset_and_reboot(void);
@@ -52,38 +51,6 @@ const char *lifecycle_get_firmware_revision_string(void);
 // Verwerk de custom HomeKit OTA trigger. Gebruik dit als setter van de characteristic.
 void lifecycle_handle_ota_trigger(homekit_characteristic_t *characteristic,
                                   homekit_value_t value);
-
-typedef enum {
-    LIFECYCLE_BUTTON_EVENT_SINGLE = 0,
-    LIFECYCLE_BUTTON_EVENT_DOUBLE,
-    LIFECYCLE_BUTTON_EVENT_TRIPLE,
-    LIFECYCLE_BUTTON_EVENT_LONG,
-} lifecycle_button_event_t;
-
-typedef enum {
-    LIFECYCLE_BUTTON_ACTION_NONE = 0,
-    LIFECYCLE_BUTTON_ACTION_REQUEST_UPDATE,
-    LIFECYCLE_BUTTON_ACTION_RESET_HOMEKIT,
-    LIFECYCLE_BUTTON_ACTION_FACTORY_RESET,
-} lifecycle_button_action_t;
-
-typedef void (*lifecycle_button_event_cb_t)(lifecycle_button_event_t event, void *ctx);
-
-typedef struct {
-    gpio_num_t gpio;
-    uint32_t debounce_us;
-    uint32_t double_click_us; // Multi-press window (double/triple) in microseconds.
-    uint32_t long_press_us;
-    lifecycle_button_action_t single_action;
-    lifecycle_button_action_t double_action;
-    lifecycle_button_action_t triple_action;
-    lifecycle_button_action_t long_action;
-    lifecycle_button_event_cb_t event_callback;
-    void *event_context;
-} lifecycle_button_config_t;
-
-// Initialiseer de BOOT-knop state machine met de opgegeven acties en optionele callback.
-esp_err_t lifecycle_button_init(const lifecycle_button_config_t *config);
 
 // Start WiFi STA op basis van NVS keys (namespace: wifi_cfg, keys: wifi_ssid, wifi_password).
 // Roep 'on_ready' aan zodra IP is verkregen.
