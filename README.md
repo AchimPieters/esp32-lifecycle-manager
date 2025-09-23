@@ -3,18 +3,20 @@
 ## Signing firmware
 
 After building your firmware, generate a `main.bin.sig` file containing the
-SHA-384 hash of the image followed by its length in bytes. From the directory
-where `make` is run execute:
+SHA-384 hash of the image followed by its length in bytes by running the helper
+script:
 
 ```bash
-openssl sha384 -binary -out build/main.bin.sig build/main.bin
-printf "%08x" `cat build/main.bin | wc -c` | xxd -r -p >> build/main.bin.sig
+./generate_sig.sh [path/to/build_or_main.bin]
 ```
 
-The resulting `build/main.bin.sig` must accompany `build/main.bin` when
-publishing releases. During an OTA update the device downloads both files,
-computes the SHA-384 hash of the image, checks the expected length, and
-activates the update only if they match.
+When no argument is supplied the script expects the ESP-IDF artefacts inside
+`build/` and operates on `build/main.bin`, producing `build/main.bin.sig`. You
+may also pass a different build directory (for example `./generate_sig.sh
+example/build`) or the explicit path to a `main.bin` image. The resulting
+`main.bin.sig` must accompany the image when publishing releases. During an OTA
+update the device downloads both files, computes the SHA-384 hash of the image,
+checks the expected length, and activates the update only if they match.
 
 ## OTA verification
 
