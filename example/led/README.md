@@ -17,6 +17,7 @@ Connect `LED` pin to the following pin:
 | Name | Description | Defaults |
 |------|-------------|----------|
 | `CONFIG_ESP_LED_GPIO` | GPIO number for `LED` pin | "2" Default |
+| `CONFIG_ESP_BUTTON_GPIO` | GPIO number for `BUTTON` pin | "32" Default |
 
 ## Scheme
 
@@ -28,6 +29,7 @@ Connect `LED` pin to the following pin:
 - **espressif/mdns version:** `1.8.0`
 - **wolfssl/wolfssl version:** `5.7.6`
 - **achimpieters/esp32-homekit version:** `1.0.0`
+- **achimpieters/button version:** `1.2.3`
 
 ## Notes
 

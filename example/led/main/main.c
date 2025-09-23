@@ -87,7 +87,7 @@ void button_callback(button_event_t event, void *context) {
         switch (event) {
         case button_event_single_press:
                 ESP_LOGI("BUTTON", "Single press");
-                lifecycle_request_update_and_reboot();
+                lifecycle_request_update_and_reboot(); // Add this line
                 break;
         case button_event_double_press:
                 ESP_LOGI("BUTTON", "Double press");
@@ -95,7 +95,7 @@ void button_callback(button_event_t event, void *context) {
                 break;
         case button_event_long_press:
                 ESP_LOGI("BUTTON", "Long press");
-                lifecycle_factory_reset_and_reboot();
+                lifecycle_factory_reset_and_reboot(); // Add this line
                 break;
         default:
                 ESP_LOGI("BUTTON", "Unknown button event: %d", event);
