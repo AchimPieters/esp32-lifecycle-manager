@@ -87,7 +87,7 @@ void button_callback(button_event_t event, void *context) {
         switch (event) {
         case button_event_single_press:
                 ESP_LOGI("BUTTON", "Single press");
-                // LCM Update
+                lifecycle_request_update_and_reboot();
                 break;
         case button_event_double_press:
                 ESP_LOGI("BUTTON", "Double press");
@@ -95,7 +95,7 @@ void button_callback(button_event_t event, void *context) {
                 break;
         case button_event_long_press:
                 ESP_LOGI("BUTTON", "Long press");
-                //Factory Reset, clean all NVS settings.
+                lifecycle_factory_reset_and_reboot();
                 break;
         default:
                 ESP_LOGI("BUTTON", "Unknown button event: %d", event);
