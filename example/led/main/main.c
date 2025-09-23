@@ -103,31 +103,6 @@ void button_callback(button_event_t event, void *context) {
         }
 }
 
-void reset_configuration_task() {
-//Flash the LED first before we start the reset
-        for (int i=0; i<3; i++) {
-                led_write(true);
-                vTaskDelay(100 / portTICK_PERIOD_MS);
-                led_write(false);
-                vTaskDelay(100 / portTICK_PERIOD_MS);
-        }
-        printf("Resetting Wifi Config\n");
-        wifi_config_reset();
-        vTaskDelay(1000 / portTICK_PERIOD_MS);
-        printf("Resetting HomeKit Config\n");
-        homekit_server_reset();
-        vTaskDelay(1000 / portTICK_PERIOD_MS);
-        printf("Restarting\n");
-        sdk_system_restart();
-        vTaskDelete(NULL);
-}
-
-void reset_configuration() {
-        printf("Resetting Window Covering configuration\n");
-        xTaskCreate(reset_configuration_task, "Reset Window Covering", 256, NULL, 2, NULL);
-}
-
-
 // HomeKit characteristics
 #define DEVICE_NAME "HomeKit LED"
 #define DEVICE_MANUFACTURER "StudioPieters®"
