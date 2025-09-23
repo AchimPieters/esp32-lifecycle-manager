@@ -6,6 +6,12 @@ menu "StudioPieters"
               help
                   The GPIO number the LED is connected to.
 
+      config ESP_BUTTON_GPIO
+              int "Button GPIO"
+              default 32
+              help
+                  GPIO van de knop (actief laag als je button_config_default(button_active_low) gebruikt).
+
       config ESP_SETUP_CODE
               string "HomeKit Setup Code"
               default "338-77-883"

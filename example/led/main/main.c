@@ -31,6 +31,10 @@
 
 #include "esp32-lcm.h" // Add this line
 
+#include <button.h> // Add this line
+
+#define BUTTON_GPIO CONFIG_ESP_BUTTON_GPIO // Add this line
+
 // LED control
 #define LED_GPIO CONFIG_ESP_LED_GPIO
 bool led_on = false;
@@ -78,6 +82,51 @@ void led_on_set(homekit_value_t value) {
         led_on = value.bool_value;
         led_write(led_on);
 }
+
+void button_callback(button_event_t event, void *context) {
+        switch (event) {
+        case button_event_single_press:
+                ESP_LOGI("BUTTON", "Single press");
+                // LCM Update
+                break;
+        case button_event_double_press:
+                ESP_LOGI("BUTTON", "Double press");
+                homekit_server_reset(); //Reset Homekit
+                break;
+        case button_event_long_press:
+                ESP_LOGI("BUTTON", "Long press");
+                //Factory Reset, clean all NVS settings.
+                break;
+        default:
+                ESP_LOGI("BUTTON", "Unknown button event: %d", event);
+                break;
+        }
+}
+
+void reset_configuration_task() {
+//Flash the LED first before we start the reset
+        for (int i=0; i<3; i++) {
+                led_write(true);
+                vTaskDelay(100 / portTICK_PERIOD_MS);
+                led_write(false);
+                vTaskDelay(100 / portTICK_PERIOD_MS);
+        }
+        printf("Resetting Wifi Config\n");
+        wifi_config_reset();
+        vTaskDelay(1000 / portTICK_PERIOD_MS);
+        printf("Resetting HomeKit Config\n");
+        homekit_server_reset();
+        vTaskDelay(1000 / portTICK_PERIOD_MS);
+        printf("Restarting\n");
+        sdk_system_restart();
+        vTaskDelete(NULL);
+}
+
+void reset_configuration() {
+        printf("Resetting Window Covering configuration\n");
+        xTaskCreate(reset_configuration_task, "Reset Window Covering", 256, NULL, 2, NULL);
+}
+
 
 // HomeKit characteristics
 #define DEVICE_NAME "HomeKit LED"
@@ -130,10 +179,16 @@ void on_wifi_ready() {
 }
 
 void app_main(void) {
+        ESP_ERROR_CHECK(lifecycle_nvs_init());
+        ESP_ERROR_CHECK(lifecycle_configure_homekit(&revision, &ota_trigger, "INFORMATION"));
 
-        ESP_ERROR_CHECK(lifecycle_nvs_init()); // Add this line
-        (void)lifecycle_configure_homekit(&revision, &ota_trigger); // Add this line
-
-        wifi_init();
         gpio_init();
+
+        button_config_t btn_cfg = button_config_default(button_active_low);
+        btn_cfg.max_repeat_presses = 3;
+        btn_cfg.long_press_time = 1000;
+
+        if (button_create(BUTTON_GPIO, btn_cfg, button_callback, NULL)) {
+                ESP_LOGE("BUTTON", "Failed to initialize button");
+        }
 }
