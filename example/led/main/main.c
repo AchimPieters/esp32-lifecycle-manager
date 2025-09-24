@@ -92,6 +92,7 @@ void button_callback(button_event_t event, void *context) {
         case button_event_double_press:
                 ESP_LOGI("BUTTON", "Double press");
                 homekit_server_reset(); //Reset Homekit
+                esp_restart();
                 break;
         case button_event_long_press:
                 ESP_LOGI("BUTTON", "Long press");
@@ -154,16 +155,18 @@ void on_wifi_ready() {
 }
 
 void app_main(void) {
-        ESP_ERROR_CHECK(lifecycle_nvs_init());
-        ESP_ERROR_CHECK(lifecycle_configure_homekit(&revision, &ota_trigger, "INFORMATION"));
+        ESP_ERROR_CHECK(lifecycle_nvs_init());  // Add this line
+        ESP_ERROR_CHECK(lifecycle_configure_homekit(&revision, &ota_trigger, "INFORMATION"));  // Add this line
 
         gpio_init();
 
-        button_config_t btn_cfg = button_config_default(button_active_low);
-        btn_cfg.max_repeat_presses = 3;
-        btn_cfg.long_press_time = 1000;
+        button_config_t btn_cfg = button_config_default(button_active_low);  // Add this line
+        btn_cfg.max_repeat_presses = 3;  // Add this line
+        btn_cfg.long_press_time = 1000;  // Add this line
 
-        if (button_create(BUTTON_GPIO, btn_cfg, button_callback, NULL)) {
-                ESP_LOGE("BUTTON", "Failed to initialize button");
+        if (button_create(BUTTON_GPIO, btn_cfg, button_callback, NULL)) {  // Add this line
+                ESP_LOGE("BUTTON", "Failed to initialize button");  // Add this line
         }
+
+        ESP_ERROR_CHECK(wifi_start(on_wifi_ready));  // Add this line
 }
