@@ -60,7 +60,7 @@ const char *lifecycle_get_firmware_revision_string(void);
 
 // Verwerk de custom HomeKit OTA trigger. Gebruik dit als setter van de characteristic.
 void lifecycle_handle_ota_trigger(homekit_characteristic_t *characteristic,
-                                  homekit_value_t value);
+                                  const homekit_value_t value);
 
 // Initialise the HomeKit-facing lifecycle characteristics using defaults and
 // stored NVS values. Logs using the provided tag (falls back to the lifecycle

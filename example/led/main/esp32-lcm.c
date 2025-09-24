@@ -159,7 +159,10 @@ esp_err_t wifi_start(void (*on_ready)(void)) {
     char *ssid = NULL;
     char *pass = NULL;
     esp_err_t err = nvs_load_wifi(&ssid, &pass);
-    if (err != ESP_OK) {
+    if (err == ESP_ERR_NVS_NOT_FOUND) {
+        ESP_LOGW(WIFI_TAG, "WiFi configuratie niet gevonden in NVS; provisioning vereist");
+        return err;
+    } else if (err != ESP_OK) {
         ESP_LOGE(WIFI_TAG, "Kon WiFi config niet laden uit NVS");
         return err;
     }
@@ -329,7 +332,7 @@ const char *lifecycle_get_firmware_revision_string(void) {
 }
 
 void lifecycle_handle_ota_trigger(homekit_characteristic_t *characteristic,
-                                  homekit_value_t value) {
+                                  const homekit_value_t value) {
     if (characteristic == NULL) {
         return;
     }
