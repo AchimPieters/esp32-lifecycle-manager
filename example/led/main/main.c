@@ -170,10 +170,5 @@ void app_main(void) {
                 ESP_LOGE("BUTTON", "Failed to initialize button");  // Add this line
         }
 
-        esp_err_t wifi_err = wifi_start(on_wifi_ready);
-        if (wifi_err == ESP_ERR_NVS_NOT_FOUND) {
-                ESP_LOGW("WIFI", "Geen opgeslagen WiFi-configuratie gevonden; wacht op provisioning");
-        } else if (wifi_err != ESP_OK) {
-                ESP_LOGE("WIFI", "WiFi start mislukt: %s", esp_err_to_name(wifi_err));
-        }
+        esp_err_t wifi_err = wifi_start(on_wifi_ready); // Add this line
 }
