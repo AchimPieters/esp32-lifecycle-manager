@@ -171,4 +171,9 @@ void app_main(void) {
         }
 
         esp_err_t wifi_err = wifi_start(on_wifi_ready); // Add this line
+        if (wifi_err == ESP_ERR_NVS_NOT_FOUND) {
+                ESP_LOGW("WIFI", "WiFi configuration not found; provisioning required");
+        } else if (wifi_err != ESP_OK) {
+                ESP_LOGE("WIFI", "Failed to start WiFi: %s", esp_err_to_name(wifi_err));
+        }
 }
