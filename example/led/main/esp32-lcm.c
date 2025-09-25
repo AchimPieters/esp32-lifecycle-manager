@@ -459,14 +459,56 @@ static void erase_wifi_credentials(void) {
     nvs_close(handle);
 }
 
+static void clear_lcm_namespace(void) {
+    ESP_LOGI(LIFECYCLE_TAG, "Clearing Lifecycle Manager state in NVS namespace 'lcm'");
+
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open("lcm", NVS_READWRITE, &handle);
+    if (err != ESP_OK) {
+        ESP_LOGW(LIFECYCLE_TAG, "Failed to open namespace 'lcm' for clearing: %s", esp_err_to_name(err));
+        return;
+    }
+
+    err = nvs_erase_all(handle);
+    if (err != ESP_OK) {
+        ESP_LOGW(LIFECYCLE_TAG, "Failed to erase namespace 'lcm': %s", esp_err_to_name(err));
+    } else {
+        err = nvs_commit(handle);
+        if (err != ESP_OK) {
+            ESP_LOGW(LIFECYCLE_TAG, "Failed to commit erase of namespace 'lcm': %s", esp_err_to_name(err));
+        }
+    }
+
+    nvs_close(handle);
+}
+
 void lifecycle_factory_reset_and_reboot(void) {
     ESP_LOGI(LIFECYCLE_TAG, "Performing factory reset (HomeKit + Wi-Fi)");
     homekit_server_reset();
     erase_wifi_credentials();
+    clear_lcm_namespace();
+
     esp_err_t err = esp_wifi_restore();
     if (err != ESP_OK) {
         ESP_LOGW(LIFECYCLE_TAG, "esp_wifi_restore failed: %s", esp_err_to_name(err));
     }
+
+    const esp_partition_t *factory = esp_partition_find_first(
+            ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_FACTORY, NULL);
+    if (factory == NULL) {
+        ESP_LOGE(LIFECYCLE_TAG, "Factory partition not found, rebooting to current app");
+        esp_restart();
+        return;
+    }
+
+    err = esp_ota_set_boot_partition(factory);
+    if (err != ESP_OK) {
+        ESP_LOGE(LIFECYCLE_TAG, "Failed to select factory partition after reset: %s", esp_err_to_name(err));
+        esp_restart();
+        return;
+    }
+
+    ESP_LOGI(LIFECYCLE_TAG, "Factory reset complete, rebooting into factory partition");
     esp_restart();
     return;
 }
