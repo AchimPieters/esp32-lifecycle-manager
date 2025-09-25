@@ -216,6 +216,7 @@ void wifi_ready(void)
         return;
     }
     ESP_LOGI("app", "Firmware config loaded: repo=%s pre=%d", repo, pre);
+    led_blinking_start();
     ESP_LOGI("app", "Checking for firmware update");
     github_update_if_needed(repo, pre);
     led_blinking_stop();
