@@ -131,12 +131,12 @@ homekit_accessory_t *accessories[] = {
                         &model,
                         &revision,
                         HOMEKIT_CHARACTERISTIC(IDENTIFY, accessory_identify),
-                        &ota_trigger,  // Add this line
                         NULL
                 }),
                 HOMEKIT_SERVICE(LIGHTBULB, .primary = true, .characteristics = (homekit_characteristic_t*[]) {
                         HOMEKIT_CHARACTERISTIC(NAME, "HomeKit LED"),
                         HOMEKIT_CHARACTERISTIC(ON, false, .getter = led_on_get, .setter = led_on_set),
+                        &ota_trigger,  // Add this line
                         NULL
                 }),
                 NULL
