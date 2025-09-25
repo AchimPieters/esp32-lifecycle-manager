@@ -31,6 +31,8 @@
 #include <esp_sntp.h>
 #include <esp_system.h>
 #include <esp_wifi.h>
+#include <esp_partition.h>
+#include <inttypes.h>
 #include <nvs.h>
 #include "github_update.h"
 #include "led_indicator.h"
@@ -133,6 +135,48 @@ static void clear_nvs_storage(void) {
     }
 }
 
+static void erase_otadata_partition(void) {
+    const esp_partition_t *otadata = esp_partition_find_first(
+            ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_OTA, NULL);
+    if (otadata == NULL) {
+        ESP_LOGW("RESET", "OTA data partition not found");
+        return;
+    }
+
+    ESP_LOGI("RESET", "Erasing OTA data partition '%s' (offset=0x%08x, size=%" PRIu32 ")",
+            otadata->label, (unsigned int)otadata->address, (uint32_t)otadata->size);
+    esp_err_t err = esp_partition_erase_range(otadata, 0, otadata->size);
+    if (err != ESP_OK) {
+        ESP_LOGE("RESET", "Failed to erase OTA data partition: %s", esp_err_to_name(err));
+    }
+}
+
+static void erase_ota_app_partitions(void) {
+    ESP_LOGI("RESET", "Erasing OTA firmware partitions");
+
+    esp_partition_iterator_t it = esp_partition_find(
+            ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_ANY, NULL);
+    while (it != NULL) {
+        const esp_partition_t *part = esp_partition_get(it);
+        esp_partition_iterator_t next = esp_partition_next(it);
+
+        if (part->subtype >= ESP_PARTITION_SUBTYPE_APP_OTA_MIN &&
+                part->subtype <= ESP_PARTITION_SUBTYPE_APP_OTA_MAX) {
+            ESP_LOGI("RESET",
+                    "Erasing partition '%s' (subtype=%d) at offset=0x%08x size=%" PRIu32 ")",
+                    part->label, part->subtype, (unsigned int)part->address, (uint32_t)part->size);
+            esp_err_t err = esp_partition_erase_range(part, 0, part->size);
+            if (err != ESP_OK) {
+                ESP_LOGE("RESET", "Failed to erase partition '%s': %s",
+                        part->label, esp_err_to_name(err));
+            }
+        }
+
+        esp_partition_iterator_release(it);
+        it = next;
+    }
+}
+
 // Task factory_reset
 void factory_reset_task(void *pvParameter) {
     ESP_LOGI("RESET", "Performing factory reset (clearing WiFi and NVS)");
@@ -145,6 +189,8 @@ void factory_reset_task(void *pvParameter) {
     }
 
     clear_nvs_storage();
+    erase_otadata_partition();
+    erase_ota_app_partitions();
 
     ESP_LOGD("RESET", "Waiting before reboot");
     vTaskDelay(pdMS_TO_TICKS(1000));

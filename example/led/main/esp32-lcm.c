@@ -482,11 +482,56 @@ static void clear_lcm_namespace(void) {
     nvs_close(handle);
 }
 
+static void erase_otadata_partition(void) {
+    const esp_partition_t *otadata = esp_partition_find_first(
+            ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_OTA, NULL);
+    if (otadata == NULL) {
+        ESP_LOGW(LIFECYCLE_TAG, "OTA data partition not found");
+        return;
+    }
+
+    ESP_LOGI(LIFECYCLE_TAG,
+            "Erasing OTA data partition '%s' at offset 0x%08" PRIx32 " (size=%" PRIu32 ")",
+            otadata->label, otadata->address, (uint32_t)otadata->size);
+    esp_err_t err = esp_partition_erase_range(otadata, 0, otadata->size);
+    if (err != ESP_OK) {
+        ESP_LOGE(LIFECYCLE_TAG, "Failed to erase OTA data partition: %s", esp_err_to_name(err));
+    }
+}
+
+static void erase_ota_app_partitions(void) {
+    ESP_LOGI(LIFECYCLE_TAG, "Erasing OTA application partitions");
+
+    esp_partition_iterator_t it = esp_partition_find(
+            ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_ANY, NULL);
+    while (it != NULL) {
+        const esp_partition_t *part = esp_partition_get(it);
+        esp_partition_iterator_t next = esp_partition_next(it);
+
+        if (part->subtype >= ESP_PARTITION_SUBTYPE_APP_OTA_MIN &&
+                part->subtype <= ESP_PARTITION_SUBTYPE_APP_OTA_MAX) {
+            ESP_LOGI(LIFECYCLE_TAG,
+                    "Erasing partition '%s' (subtype=%d) at offset 0x%08" PRIx32 " (size=%" PRIu32 ")",
+                    part->label, part->subtype, part->address, (uint32_t)part->size);
+            esp_err_t err = esp_partition_erase_range(part, 0, part->size);
+            if (err != ESP_OK) {
+                ESP_LOGE(LIFECYCLE_TAG, "Failed to erase partition '%s': %s",
+                        part->label, esp_err_to_name(err));
+            }
+        }
+
+        esp_partition_iterator_release(it);
+        it = next;
+    }
+}
+
 void lifecycle_factory_reset_and_reboot(void) {
     ESP_LOGI(LIFECYCLE_TAG, "Performing factory reset (HomeKit + Wi-Fi)");
     homekit_server_reset();
     erase_wifi_credentials();
     clear_lcm_namespace();
+    erase_otadata_partition();
+    erase_ota_app_partitions();
 
     esp_err_t err = esp_wifi_restore();
     if (err != ESP_OK) {
