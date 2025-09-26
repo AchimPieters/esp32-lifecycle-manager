@@ -39,6 +39,7 @@
 
 // LED control
 #define LED_GPIO CONFIG_ESP_LED_GPIO
+static const char *LED_TAG = "LED";
 bool led_on = false;
 
 void led_write(bool on) {
@@ -82,6 +83,7 @@ void led_on_set(homekit_value_t value) {
                 return;
         }
         led_on = value.bool_value;
+        ESP_LOGI(LED_TAG, "Setting LED %s", led_on ? "ON" : "OFF");
         led_write(led_on);
 }
 
@@ -152,8 +154,16 @@ homekit_server_config_t config = {
 };
 
 void on_wifi_ready() {
+        static bool homekit_started = false;
+
+        if (homekit_started) {
+                ESP_LOGI("INFORMATION", "HomeKit server already running; skipping re-initialization");
+                return;
+        }
+
         ESP_LOGI("INFORMATION", "Starting HomeKit server...");
         homekit_server_init(&config);
+        homekit_started = true;
 }
 
 void app_main(void) {
