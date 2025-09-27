@@ -42,6 +42,15 @@
 extern "C" {
 #endif
 
+typedef enum {
+    LIFECYCLE_POST_RESET_NONE = 0,
+    LIFECYCLE_POST_RESET_REASON_HOMEKIT = 1,
+    LIFECYCLE_POST_RESET_REASON_FACTORY = 2,
+    LIFECYCLE_POST_RESET_REASON_UPDATE = 3,
+} lifecycle_post_reset_reason_t;
+
+void lifecycle_log_post_reset_state(const char *log_tag);
+
 // Initialiseer NVS en voer automatische herstelactie uit wanneer er geen ruimte is of versie verandert.
 esp_err_t lifecycle_nvs_init(void);
 

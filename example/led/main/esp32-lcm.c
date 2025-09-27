@@ -28,6 +28,9 @@
 #include <inttypes.h>
 #include <stdio.h>
 
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+
 #include <esp_event.h>
 #include <esp_netif.h>
 #include <esp_wifi.h>
@@ -36,6 +39,8 @@
 #include <esp_ota_ops.h>
 #include <esp_app_desc.h>
 #include <esp_partition.h>
+#include <esp_sleep.h>
+#include <mdns.h>
 #include <nvs.h>
 #include <nvs_flash.h>
 
@@ -57,9 +62,27 @@ static const char *LIFECYCLE_TAG = "LIFECYCLE";
 
 static void (*s_wifi_on_ready_cb)(void) = NULL;
 static bool s_wifi_started = false;
+static esp_netif_t *s_wifi_netif = NULL;
+
+static const uint32_t k_post_reset_magic = 0xC0DEC0DE;
+
+RTC_DATA_ATTR static struct {
+    uint32_t magic;
+    uint32_t reason;
+} s_post_reset_state;
 
 static char s_fw_revision[LIFECYCLE_FW_REVISION_MAX_LEN];
 static bool s_fw_revision_initialized = false;
+
+void wifi_config_shutdown(void) __attribute__((weak));
+
+static void lifecycle_log_step(const char *step);
+static void lifecycle_mark_post_reset(lifecycle_post_reset_reason_t reason);
+static lifecycle_post_reset_reason_t lifecycle_peek_post_reset_reason(void);
+static void lifecycle_clear_post_reset_state(void);
+static void lifecycle_shutdown_homekit(bool reset_store);
+static void lifecycle_stop_provisioning_servers(void);
+static void lifecycle_perform_common_shutdown(bool reset_homekit_store);
 
 static esp_err_t nvs_load_wifi(char **out_ssid, char **out_pass) {
     nvs_handle_t handle;
@@ -149,6 +172,110 @@ static void wifi_event_handler(void *arg, esp_event_base_t base, int32_t id, voi
     }
 }
 
+static void lifecycle_log_step(const char *step) {
+    if (step == NULL) {
+        return;
+    }
+    ESP_LOGI(LIFECYCLE_TAG, "[lifecycle] %s", step);
+}
+
+static void lifecycle_mark_post_reset(lifecycle_post_reset_reason_t reason) {
+    s_post_reset_state.magic = k_post_reset_magic;
+    s_post_reset_state.reason = (uint32_t)reason;
+}
+
+static lifecycle_post_reset_reason_t lifecycle_peek_post_reset_reason(void) {
+    if (s_post_reset_state.magic != k_post_reset_magic) {
+        return LIFECYCLE_POST_RESET_NONE;
+    }
+
+    lifecycle_post_reset_reason_t reason =
+            (lifecycle_post_reset_reason_t)s_post_reset_state.reason;
+    if (reason < LIFECYCLE_POST_RESET_NONE ||
+            reason > LIFECYCLE_POST_RESET_REASON_UPDATE) {
+        return LIFECYCLE_POST_RESET_NONE;
+    }
+
+    return reason;
+}
+
+static void lifecycle_clear_post_reset_state(void) {
+    s_post_reset_state.magic = 0;
+    s_post_reset_state.reason = LIFECYCLE_POST_RESET_NONE;
+}
+
+void lifecycle_log_post_reset_state(const char *log_tag) {
+    const char *tag = (log_tag != NULL) ? log_tag : LIFECYCLE_TAG;
+    lifecycle_post_reset_reason_t reason = lifecycle_peek_post_reset_reason();
+    const char *reason_str = "none";
+
+    switch (reason) {
+        case LIFECYCLE_POST_RESET_NONE:
+            reason_str = "none";
+            break;
+        case LIFECYCLE_POST_RESET_REASON_HOMEKIT:
+            reason_str = "homekit";
+            break;
+        case LIFECYCLE_POST_RESET_REASON_FACTORY:
+            reason_str = "factory";
+            break;
+        case LIFECYCLE_POST_RESET_REASON_UPDATE:
+            reason_str = "update";
+            break;
+        default:
+            reason_str = "unknown";
+            break;
+    }
+
+    ESP_LOGI(tag, "[lifecycle] post_reset_flag=%s", reason_str);
+    lifecycle_clear_post_reset_state();
+}
+
+static void lifecycle_shutdown_homekit(bool reset_store) {
+    lifecycle_log_step("stop_homekit");
+    ESP_LOGD(LIFECYCLE_TAG,
+             "HomeKit stop requested; relying on network teardown for active sessions");
+
+    lifecycle_log_step("wait_hap_clients");
+    vTaskDelay(pdMS_TO_TICKS(100));
+
+    lifecycle_log_step("stop_mdns");
+    esp_err_t mdns_err = mdns_service_remove("_hap", "_tcp");
+    if (mdns_err != ESP_OK && mdns_err != ESP_ERR_NOT_FOUND &&
+            mdns_err != ESP_ERR_INVALID_STATE) {
+        ESP_LOGW(LIFECYCLE_TAG, "Failed to remove mDNS service: %s",
+                 esp_err_to_name(mdns_err));
+    }
+
+    mdns_free();
+
+    if (reset_store) {
+        lifecycle_log_step("reset_homekit_store");
+        homekit_server_reset();
+    }
+}
+
+static void lifecycle_stop_provisioning_servers(void) {
+    if (wifi_config_shutdown) {
+        lifecycle_log_step("stop_provisioning");
+        wifi_config_shutdown();
+    } else {
+        ESP_LOGD(LIFECYCLE_TAG,
+                 "No provisioning shutdown handler registered; skipping");
+    }
+}
+
+static void lifecycle_perform_common_shutdown(bool reset_homekit_store) {
+    lifecycle_shutdown_homekit(reset_homekit_store);
+    lifecycle_stop_provisioning_servers();
+
+    lifecycle_log_step("stop_wifi");
+    esp_err_t stop_err = wifi_stop();
+    if (stop_err != ESP_OK) {
+        ESP_LOGW(LIFECYCLE_TAG, "wifi_stop failed: %s", esp_err_to_name(stop_err));
+    }
+}
+
 esp_err_t wifi_start(void (*on_ready)(void)) {
     if (s_wifi_started) {
         s_wifi_on_ready_cb = on_ready;
@@ -190,7 +317,13 @@ esp_err_t wifi_start(void (*on_ready)(void)) {
         ESP_LOGE(WIFI_TAG, "Failed to create default event loop: %s", esp_err_to_name(err));
         return err;
     }
-    esp_netif_create_default_wifi_sta();
+    if (s_wifi_netif == NULL) {
+        s_wifi_netif = esp_netif_create_default_wifi_sta();
+        if (s_wifi_netif == NULL) {
+            ESP_LOGE(WIFI_TAG, "Failed to create default WiFi STA interface");
+            return ESP_ERR_NO_MEM;
+        }
+    }
 
     WIFI_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL));
     WIFI_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &wifi_event_handler, NULL));
@@ -216,23 +349,62 @@ esp_err_t wifi_stop(void) {
     }
 
     ESP_LOGI(WIFI_TAG, "WiFi stoppen...");
+
+    esp_err_t result = ESP_OK;
+
+    esp_err_t disconnect_err = esp_wifi_disconnect();
+    if (disconnect_err != ESP_OK && disconnect_err != ESP_ERR_WIFI_NOT_STARTED &&
+            disconnect_err != ESP_ERR_WIFI_NOT_INIT) {
+        ESP_LOGW(WIFI_TAG, "esp_wifi_disconnect failed: %s", esp_err_to_name(disconnect_err));
+        if (result == ESP_OK) {
+            result = disconnect_err;
+        }
+    }
+
     esp_err_t stop_err = esp_wifi_stop();
+    if (stop_err != ESP_OK && stop_err != ESP_ERR_WIFI_NOT_INIT) {
+        ESP_LOGW(WIFI_TAG, "esp_wifi_stop failed: %s", esp_err_to_name(stop_err));
+        if (result == ESP_OK) {
+            result = stop_err;
+        }
+    }
+
     esp_err_t unregister_wifi = esp_event_handler_unregister(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler);
+    if (unregister_wifi != ESP_OK && unregister_wifi != ESP_ERR_INVALID_STATE) {
+        ESP_LOGW(WIFI_TAG, "Failed to unregister WiFi event handler: %s",
+                 esp_err_to_name(unregister_wifi));
+        if (result == ESP_OK) {
+            result = unregister_wifi;
+        }
+    }
+
     esp_err_t unregister_ip = esp_event_handler_unregister(IP_EVENT, IP_EVENT_STA_GOT_IP, &wifi_event_handler);
+    if (unregister_ip != ESP_OK && unregister_ip != ESP_ERR_INVALID_STATE) {
+        ESP_LOGW(WIFI_TAG, "Failed to unregister IP event handler: %s",
+                 esp_err_to_name(unregister_ip));
+        if (result == ESP_OK) {
+            result = unregister_ip;
+        }
+    }
+
+    esp_err_t deinit_err = esp_wifi_deinit();
+    if (deinit_err != ESP_OK && deinit_err != ESP_ERR_WIFI_NOT_INIT) {
+        ESP_LOGW(WIFI_TAG, "esp_wifi_deinit failed: %s", esp_err_to_name(deinit_err));
+        if (result == ESP_OK) {
+            result = deinit_err;
+        }
+    }
+
+    if (s_wifi_netif != NULL) {
+        esp_netif_destroy(s_wifi_netif);
+        s_wifi_netif = NULL;
+    }
+
     s_wifi_started = false;
     s_wifi_on_ready_cb = NULL;
 
-    if (stop_err != ESP_OK) {
-        return stop_err;
-    }
-    if (unregister_wifi != ESP_OK) {
-        return unregister_wifi;
-    }
-    if (unregister_ip != ESP_OK) {
-        return unregister_ip;
-    }
-
-    return ESP_OK;
+    ESP_LOGI(WIFI_TAG, "WiFi driver stopped");
+    return result;
 }
 
 esp_err_t lifecycle_nvs_init(void) {
@@ -404,31 +576,60 @@ void lifecycle_request_update_and_reboot(void) {
         nvs_close(handle);
     }
 
+    bool factory_boot_selected = false;
+
     const esp_partition_t *factory = esp_partition_find_first(
             ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_FACTORY, NULL);
     if (factory == NULL) {
         ESP_LOGE(LIFECYCLE_TAG, "Factory partition not found, rebooting to current app");
-        esp_restart();
-        return;
+    } else {
+        lifecycle_log_step("set_boot=factory");
+        err = esp_ota_set_boot_partition(factory);
+        if (err != ESP_OK) {
+            ESP_LOGE(LIFECYCLE_TAG, "Failed to set factory partition for boot: %s", esp_err_to_name(err));
+        } else {
+            lifecycle_log_step("set_post_reset_flag=update");
+            lifecycle_mark_post_reset(LIFECYCLE_POST_RESET_REASON_UPDATE);
+            factory_boot_selected = true;
+        }
     }
 
-    err = esp_ota_set_boot_partition(factory);
-    if (err != ESP_OK) {
-        ESP_LOGE(LIFECYCLE_TAG, "Failed to set factory partition for boot: %s", esp_err_to_name(err));
-        esp_restart();
-        return;
-    }
+    lifecycle_perform_common_shutdown(false);
 
-    ESP_LOGI(LIFECYCLE_TAG, "Rebooting into factory partition for update");
+    lifecycle_log_step("delay_before_reset");
+    vTaskDelay(pdMS_TO_TICKS(100));
+
+    lifecycle_log_step("reboot");
+    if (factory_boot_selected) {
+        ESP_LOGI(LIFECYCLE_TAG, "Rebooting into factory partition for update");
+    } else {
+        ESP_LOGI(LIFECYCLE_TAG, "Rebooting to continue update workflow");
+    }
     esp_restart();
-    return;
 }
 
 void lifecycle_reset_homekit_and_reboot(void) {
     ESP_LOGI(LIFECYCLE_TAG, "Resetting HomeKit state and rebooting");
-    homekit_server_reset();
+    const esp_partition_t *running = esp_ota_get_running_partition();
+    if (running != NULL) {
+        lifecycle_log_step("set_boot=current");
+        esp_err_t err = esp_ota_set_boot_partition(running);
+        if (err != ESP_OK) {
+            ESP_LOGW(LIFECYCLE_TAG, "Failed to re-select running partition: %s",
+                     esp_err_to_name(err));
+        }
+    }
+
+    lifecycle_log_step("set_post_reset_flag=homekit");
+    lifecycle_mark_post_reset(LIFECYCLE_POST_RESET_REASON_HOMEKIT);
+
+    lifecycle_perform_common_shutdown(true);
+
+    lifecycle_log_step("delay_before_reset");
+    vTaskDelay(pdMS_TO_TICKS(100));
+
+    lifecycle_log_step("reboot");
     esp_restart();
-    return;
 }
 
 static void erase_wifi_credentials(void) {
@@ -527,33 +728,53 @@ static void erase_ota_app_partitions(void) {
 
 void lifecycle_factory_reset_and_reboot(void) {
     ESP_LOGI(LIFECYCLE_TAG, "Performing factory reset (HomeKit + Wi-Fi)");
-    homekit_server_reset();
-    erase_wifi_credentials();
-    clear_lcm_namespace();
-    erase_otadata_partition();
-    erase_ota_app_partitions();
 
-    esp_err_t err = esp_wifi_restore();
-    if (err != ESP_OK) {
-        ESP_LOGW(LIFECYCLE_TAG, "esp_wifi_restore failed: %s", esp_err_to_name(err));
-    }
+    bool factory_boot_selected = false;
 
     const esp_partition_t *factory = esp_partition_find_first(
             ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_FACTORY, NULL);
     if (factory == NULL) {
         ESP_LOGE(LIFECYCLE_TAG, "Factory partition not found, rebooting to current app");
-        esp_restart();
-        return;
+    } else {
+        lifecycle_log_step("set_boot=factory");
+        esp_err_t boot_err = esp_ota_set_boot_partition(factory);
+        if (boot_err != ESP_OK) {
+            ESP_LOGE(LIFECYCLE_TAG, "Failed to select factory partition after reset: %s", esp_err_to_name(boot_err));
+        } else {
+            lifecycle_log_step("set_post_reset_flag=factory");
+            lifecycle_mark_post_reset(LIFECYCLE_POST_RESET_REASON_FACTORY);
+            factory_boot_selected = true;
+        }
     }
 
-    err = esp_ota_set_boot_partition(factory);
-    if (err != ESP_OK) {
-        ESP_LOGE(LIFECYCLE_TAG, "Failed to select factory partition after reset: %s", esp_err_to_name(err));
-        esp_restart();
-        return;
+    lifecycle_perform_common_shutdown(true);
+
+    lifecycle_log_step("erase_wifi_credentials");
+    erase_wifi_credentials();
+
+    lifecycle_log_step("clear_lcm_state");
+    clear_lcm_namespace();
+
+    lifecycle_log_step("erase_otadata");
+    erase_otadata_partition();
+
+    lifecycle_log_step("erase_ota_apps");
+    erase_ota_app_partitions();
+
+    lifecycle_log_step("restore_wifi_defaults");
+    esp_err_t wifi_restore_err = esp_wifi_restore();
+    if (wifi_restore_err != ESP_OK) {
+        ESP_LOGW(LIFECYCLE_TAG, "esp_wifi_restore failed: %s", esp_err_to_name(wifi_restore_err));
     }
 
-    ESP_LOGI(LIFECYCLE_TAG, "Factory reset complete, rebooting into factory partition");
+    lifecycle_log_step("delay_before_reset");
+    vTaskDelay(pdMS_TO_TICKS(100));
+
+    lifecycle_log_step("reboot");
+    if (factory_boot_selected) {
+        ESP_LOGI(LIFECYCLE_TAG, "Factory reset complete, rebooting into factory partition");
+    } else {
+        ESP_LOGI(LIFECYCLE_TAG, "Factory reset complete, rebooting current firmware");
+    }
     esp_restart();
-    return;
 }

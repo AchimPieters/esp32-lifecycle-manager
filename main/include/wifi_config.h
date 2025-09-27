@@ -15,3 +15,5 @@ void wifi_config_set(const char *ssid, const char *password);
 void wifi_config_set_custom_html(char *html);
 
 esp_err_t safe_set_auto_connect(bool enable);
+
+void wifi_config_shutdown(void);

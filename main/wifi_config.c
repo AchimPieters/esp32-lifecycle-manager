@@ -1254,5 +1254,29 @@ void wifi_config_set_custom_html(char *html) {
         context->custom_html = html;
 }
 
+void wifi_config_shutdown(void) {
+        if (!context) {
+                DEBUG("wifi_config_shutdown called before initialization; nothing to do");
+                return;
+        }
+
+        INFO("Shutting down WiFi provisioning services");
+
+        wifi_config_softap_stop();
+
+        if (context->monitor_task_handle) {
+                vTaskDelete(context->monitor_task_handle);
+                context->monitor_task_handle = NULL;
+        }
+
+        if (context->network_monitor_timer) {
+                xTimerStop(context->network_monitor_timer, 0);
+                xTimerDelete(context->network_monitor_timer, 0);
+                context->network_monitor_timer = NULL;
+        }
+
+        INFO("WiFi provisioning services stopped");
+}
+
 
 __attribute__((used)) static void *linker_keep_client_send_index = (void *)&client_send_index;

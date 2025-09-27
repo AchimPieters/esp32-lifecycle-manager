@@ -168,6 +168,7 @@ void on_wifi_ready() {
 
 void app_main(void) {
         ESP_ERROR_CHECK(lifecycle_nvs_init());  // Add this line
+        lifecycle_log_post_reset_state("INFORMATION");
         ESP_ERROR_CHECK(lifecycle_configure_homekit(&revision, &ota_trigger, "INFORMATION"));  // Add this line
 
         gpio_init();
