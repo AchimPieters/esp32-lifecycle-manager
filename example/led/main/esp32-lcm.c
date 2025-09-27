@@ -660,27 +660,39 @@ static void erase_wifi_credentials(void) {
     nvs_close(handle);
 }
 
-static void clear_lcm_namespace(void) {
-    ESP_LOGI(LIFECYCLE_TAG, "Clearing Lifecycle Manager state in NVS namespace 'lcm'");
+static void clear_nvs_namespace(const char *namespace, const char *description) {
+    if (namespace == NULL || description == NULL) {
+        return;
+    }
+
+    ESP_LOGI(LIFECYCLE_TAG, "Clearing %s in NVS namespace '%s'", description, namespace);
 
     nvs_handle_t handle;
-    esp_err_t err = nvs_open("lcm", NVS_READWRITE, &handle);
+    esp_err_t err = nvs_open(namespace, NVS_READWRITE, &handle);
     if (err != ESP_OK) {
-        ESP_LOGW(LIFECYCLE_TAG, "Failed to open namespace 'lcm' for clearing: %s", esp_err_to_name(err));
+        ESP_LOGW(LIFECYCLE_TAG, "Failed to open namespace '%s' for clearing: %s", namespace, esp_err_to_name(err));
         return;
     }
 
     err = nvs_erase_all(handle);
     if (err != ESP_OK) {
-        ESP_LOGW(LIFECYCLE_TAG, "Failed to erase namespace 'lcm': %s", esp_err_to_name(err));
+        ESP_LOGW(LIFECYCLE_TAG, "Failed to erase namespace '%s': %s", namespace, esp_err_to_name(err));
     } else {
         err = nvs_commit(handle);
         if (err != ESP_OK) {
-            ESP_LOGW(LIFECYCLE_TAG, "Failed to commit erase of namespace 'lcm': %s", esp_err_to_name(err));
+            ESP_LOGW(LIFECYCLE_TAG, "Failed to commit erase of namespace '%s': %s", namespace, esp_err_to_name(err));
         }
     }
 
     nvs_close(handle);
+}
+
+static void clear_lcm_namespace(void) {
+    clear_nvs_namespace("lcm", "Lifecycle Manager state");
+}
+
+static void clear_fwcfg_namespace(void) {
+    clear_nvs_namespace("fwcfg", "firmware configuration");
 }
 
 static void erase_otadata_partition(void) {
@@ -751,6 +763,9 @@ void lifecycle_factory_reset_and_reboot(void) {
 
     lifecycle_log_step("erase_wifi_credentials");
     erase_wifi_credentials();
+
+    lifecycle_log_step("clear_fw_config");
+    clear_fwcfg_namespace();
 
     lifecycle_log_step("clear_lcm_state");
     clear_lcm_namespace();
