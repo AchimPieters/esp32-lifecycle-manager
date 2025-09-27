@@ -23,6 +23,7 @@
  
 #include <string.h>
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <inttypes.h>
@@ -726,29 +727,67 @@ static void erase_otadata_partition(void) {
     }
 }
 
-static void erase_ota_app_partitions(void) {
-    ESP_LOGI(LIFECYCLE_TAG, "Erasing OTA application partitions");
+static bool erase_ota_partition_by_label(const char *label) {
+    if (label == NULL) {
+        return false;
+    }
+
+    bool erased = false;
 
     esp_partition_iterator_t it = esp_partition_find(
             ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_ANY, NULL);
+
     while (it != NULL) {
         const esp_partition_t *part = esp_partition_get(it);
         esp_partition_iterator_t next = esp_partition_next(it);
 
-        if (part->subtype >= ESP_PARTITION_SUBTYPE_APP_OTA_MIN &&
-                part->subtype <= ESP_PARTITION_SUBTYPE_APP_OTA_MAX) {
-            ESP_LOGI(LIFECYCLE_TAG,
-                    "Erasing partition '%s' (subtype=%d) at offset 0x%08" PRIx32 " (size=%" PRIu32 ")",
-                    part->label, part->subtype, part->address, (uint32_t)part->size);
-            esp_err_t err = esp_partition_erase_range(part, 0, part->size);
-            if (err != ESP_OK) {
-                ESP_LOGE(LIFECYCLE_TAG, "Failed to erase partition '%s': %s",
-                        part->label, esp_err_to_name(err));
+        if (part != NULL && strncmp(part->label, label, sizeof(part->label)) == 0) {
+            if (part->subtype >= ESP_PARTITION_SUBTYPE_APP_OTA_MIN &&
+                    part->subtype <= ESP_PARTITION_SUBTYPE_APP_OTA_MAX) {
+                ESP_LOGI(LIFECYCLE_TAG,
+                        "Erasing OTA partition '%s' at offset 0x%08" PRIx32 " (size=%" PRIu32 ")",
+                        part->label, part->address, (uint32_t)part->size);
+                esp_err_t err = esp_partition_erase_range(part, 0, part->size);
+                if (err != ESP_OK) {
+                    ESP_LOGE(LIFECYCLE_TAG, "Failed to erase partition '%s': %s",
+                            part->label, esp_err_to_name(err));
+                } else {
+                    erased = true;
+                }
+            } else {
+                ESP_LOGW(LIFECYCLE_TAG,
+                        "Partition '%s' found but subtype %d is not an OTA application",
+                        part->label, part->subtype);
             }
         }
 
         esp_partition_iterator_release(it);
         it = next;
+    }
+
+    return erased;
+}
+
+static void erase_ota_app_partitions(void) {
+    ESP_LOGI(LIFECYCLE_TAG, "Erasing OTA application partitions");
+
+    const char *labels[] = {
+        "ota_1",
+        "ota_2",
+        "ota_0",
+    };
+
+    bool any_erased = false;
+    for (size_t i = 0; i < sizeof(labels) / sizeof(labels[0]); ++i) {
+        bool erased = erase_ota_partition_by_label(labels[i]);
+        if (!erased) {
+            ESP_LOGW(LIFECYCLE_TAG, "OTA partition '%s' not found or already empty", labels[i]);
+        }
+        any_erased |= erased;
+    }
+
+    if (!any_erased) {
+        ESP_LOGW(LIFECYCLE_TAG, "No OTA partitions were erased");
     }
 }
 
