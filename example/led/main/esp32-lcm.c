@@ -660,6 +660,20 @@ static void erase_wifi_credentials(void) {
     nvs_close(handle);
 }
 
+static void erase_nvs_partition(void) {
+    lifecycle_log_step("erase_nvs_partition");
+
+    esp_err_t err = nvs_flash_deinit();
+    if (err != ESP_OK && err != ESP_ERR_NVS_NOT_INITIALIZED) {
+        ESP_LOGW(LIFECYCLE_TAG, "nvs_flash_deinit failed: %s", esp_err_to_name(err));
+    }
+
+    err = nvs_flash_erase();
+    if (err != ESP_OK) {
+        ESP_LOGE(LIFECYCLE_TAG, "nvs_flash_erase failed: %s", esp_err_to_name(err));
+    }
+}
+
 static void clear_nvs_namespace(const char *namespace, const char *description) {
     if (namespace == NULL || description == NULL) {
         return;
@@ -759,7 +773,10 @@ void lifecycle_factory_reset_and_reboot(void) {
         }
     }
 
-    lifecycle_perform_common_shutdown(true);
+    lifecycle_log_step("reset_homekit_store");
+    homekit_server_reset();
+
+    lifecycle_perform_common_shutdown(false);
 
     lifecycle_log_step("erase_wifi_credentials");
     erase_wifi_credentials();
@@ -781,6 +798,8 @@ void lifecycle_factory_reset_and_reboot(void) {
     if (wifi_restore_err != ESP_OK) {
         ESP_LOGW(LIFECYCLE_TAG, "esp_wifi_restore failed: %s", esp_err_to_name(wifi_restore_err));
     }
+
+    erase_nvs_partition();
 
     lifecycle_log_step("delay_before_reset");
     vTaskDelay(pdMS_TO_TICKS(100));
