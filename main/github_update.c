@@ -1,5 +1,6 @@
 #include <string.h>
 #include <stdlib.h>
+#include <stdbool.h>
 #include "esp_log.h"
 #include "esp_https_ota.h"
 #include "esp_http_client.h"
@@ -285,7 +286,8 @@ static const esp_partition_t *find_partition_for_version(int maj, int min, int p
 }
 
 static esp_err_t set_boot_partition_for_installed_firmware(int maj, int min, int pat,
-                                                           const char *version_str) {
+                                                           const char *version_str,
+                                                           bool *partition_changed) {
     const esp_partition_t *target = NULL;
     char label[INSTALLED_LABEL_MAX_LEN];
 
@@ -311,9 +313,23 @@ static esp_err_t set_boot_partition_for_installed_firmware(int maj, int min, int
         return ESP_ERR_NOT_FOUND;
     }
 
+    const esp_partition_t *current_boot = esp_ota_get_boot_partition();
+    if (current_boot && current_boot->address == target->address) {
+        ESP_LOGI(TAG, "Boot partition already set to %s; skipping change",
+                 target->label);
+        if (partition_changed) {
+            *partition_changed = false;
+        }
+        return ESP_OK;
+    }
+
     ESP_LOGI(TAG, "Restoring boot partition to %s at offset 0x%lx", target->label,
              (unsigned long)target->address);
-    return esp_ota_set_boot_partition(target);
+    esp_err_t set_err = esp_ota_set_boot_partition(target);
+    if (partition_changed && set_err == ESP_OK) {
+        *partition_changed = true;
+    }
+    return set_err;
 }
 
 esp_err_t save_fw_config(const char *repo, bool pre) {
@@ -871,10 +887,12 @@ esp_err_t github_update_if_needed(const char *repo, bool prerelease) {
             if (curValid) {
                 ESP_LOGI(TAG, "Update was requested but version %d.%d.%d is already installed",
                          curMaj, curMin, curPat);
+                bool partition_changed = false;
                 esp_err_t boot_err = set_boot_partition_for_installed_firmware(
                         curMaj, curMin, curPat,
-                        installed_version[0] != '\0' ? installed_version : version_to_store);
-                if (boot_err == ESP_OK) {
+                        installed_version[0] != '\0' ? installed_version : version_to_store,
+                        &partition_changed);
+                if (boot_err == ESP_OK && partition_changed) {
                     esp_err_t clear_err = write_update_request_flag(false);
                     if (clear_err != ESP_OK) {
                         ESP_LOGW(TAG, "Failed to clear update request flag: %s",
@@ -884,6 +902,10 @@ esp_err_t github_update_if_needed(const char *repo, bool prerelease) {
                     ESP_LOGI(TAG, "Rebooting into previously installed firmware");
                     esp_restart();
                     return ESP_OK;
+                } else if (boot_err == ESP_OK) {
+                    ESP_LOGI(TAG,
+                             "Boot partition already pointed at installed firmware; "
+                             "skipping reboot");
                 }
                 ESP_LOGE(TAG, "Failed to select installed firmware partition: %s",
                          esp_err_to_name(boot_err));
