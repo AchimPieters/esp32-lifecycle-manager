@@ -70,6 +70,7 @@ static const uint32_t k_post_reset_magic = 0xC0DEC0DE;
 RTC_DATA_ATTR static struct {
     uint32_t magic;
     uint32_t reason;
+    uint32_t restart_count;
 } s_post_reset_state;
 
 static char s_fw_revision[LIFECYCLE_FW_REVISION_MAX_LEN];
@@ -81,6 +82,8 @@ static void lifecycle_log_step(const char *step);
 static void lifecycle_mark_post_reset(lifecycle_post_reset_reason_t reason);
 static lifecycle_post_reset_reason_t lifecycle_peek_post_reset_reason(void);
 static void lifecycle_clear_post_reset_state(void);
+static uint32_t lifecycle_increment_restart_counter(void);
+static void lifecycle_reset_restart_counter(void);
 static void lifecycle_shutdown_homekit(bool reset_store);
 static void lifecycle_stop_provisioning_servers(void);
 static void lifecycle_perform_common_shutdown(bool reset_homekit_store);
@@ -205,8 +208,37 @@ static void lifecycle_clear_post_reset_state(void) {
     s_post_reset_state.reason = LIFECYCLE_POST_RESET_NONE;
 }
 
+static uint32_t lifecycle_increment_restart_counter(void) {
+    if (s_post_reset_state.restart_count == UINT32_MAX) {
+        s_post_reset_state.restart_count = 0;
+    }
+
+    s_post_reset_state.restart_count++;
+    return s_post_reset_state.restart_count;
+}
+
+static void lifecycle_reset_restart_counter(void) {
+    s_post_reset_state.restart_count = 0;
+}
+
 void lifecycle_log_post_reset_state(const char *log_tag) {
     const char *tag = (log_tag != NULL) ? log_tag : LIFECYCLE_TAG;
+    uint32_t restart_count = lifecycle_increment_restart_counter();
+
+    ESP_LOGI(tag, "[lifecycle] consecutive_restart_count=%" PRIu32, restart_count);
+
+    if (restart_count >= 10U) {
+        ESP_LOGW(tag, "[lifecycle] Detected 10 consecutive restarts; performing factory reset countdown");
+        for (int i = 10; i >= 0; --i) {
+            ESP_LOGW(tag, "[lifecycle] Factory reset in %d", i);
+            vTaskDelay(pdMS_TO_TICKS(1000));
+        }
+
+        lifecycle_reset_restart_counter();
+        lifecycle_factory_reset_and_reboot();
+        return;
+    }
+
     lifecycle_post_reset_reason_t reason = lifecycle_peek_post_reset_reason();
     const char *reason_str = "none";
 
@@ -793,6 +825,8 @@ static void erase_ota_app_partitions(void) {
 
 void lifecycle_factory_reset_and_reboot(void) {
     ESP_LOGI(LIFECYCLE_TAG, "Performing factory reset (HomeKit + Wi-Fi)");
+
+    lifecycle_reset_restart_counter();
 
     bool factory_boot_selected = false;
 
