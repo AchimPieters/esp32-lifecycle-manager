@@ -68,7 +68,7 @@ static esp_netif_t *s_wifi_netif = NULL;
 
 static const uint32_t k_post_reset_magic = 0xC0DEC0DE;
 #ifndef CONFIG_LCM_RESTART_COUNTER_TIMEOUT_MS
-#define CONFIG_LCM_RESTART_COUNTER_TIMEOUT_MS 60000
+#define CONFIG_LCM_RESTART_COUNTER_TIMEOUT_MS 5000
 #endif
 
 #if CONFIG_LCM_RESTART_COUNTER_TIMEOUT_MS <= 0
