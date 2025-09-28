@@ -101,6 +101,13 @@
     .networks li:hover {
       background-color: #e0e0e5;
     }
+    /* Ensure the selected state takes precedence over hover/focus */
+    .networks li.selected,
+    .networks li.selected:hover,
+    .networks li.selected:focus {
+      background-color: #d6eaff;
+      font-weight: 600;
+    }
     .networks li.secure {
       position: relative;
     }
@@ -119,7 +126,7 @@
     .networks li {
       position: relative;
       padding-left: 2.5rem;
-      /* ruimte voor icoon */
+      /* space for icon */
     }
     .networks li:not(.other)::before {
       content: "";
@@ -132,10 +139,6 @@
       background-image: url("data:image/svg+xml;utf8,%3Csvg%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%20width%3D%2224.9mm%22%20height%3D%2224.9mm%22%20viewBox%3D%220%200%2070.59%2070.59%22%3E%3Cpath%20d%3D%22M35.29%2C70.59c-4.87%2C0-9.44-.92-13.7-2.75-4.27-1.83-8.02-4.37-11.25-7.61-3.23-3.24-5.76-6.99-7.6-11.25s-2.75-8.82-2.75-13.69.92-9.44%2C2.75-13.7%2C4.37-8.02%2C7.6-11.25c3.23-3.23%2C6.98-5.76%2C11.25-7.6%2C4.27-1.83%2C8.83-2.75%2C13.7-2.75s9.43%2C0.92%2C13.7%2C2.75c4.27%2C1.83%2C8.02%2C4.37%2C11.25%2C7.6%2C3.23%2C3.23%2C5.76%2C6.98%2C7.6%2C11.25s2.75%2C8.83%2C2.75%2C13.7-.92%2C9.43-2.75%2C13.69-4.37%2C8%2C-7.6%2C11.25c-3.23%2C3.24-6.98%2C5.78-11.25%2C7.61-4.27%2C1.83-8.83%2C2.75-13.7%2C2.75ZM15.54%2C32.98c.21.28.49.42.85.42.36%2C0%2C.67-.15.95-.45%2C2.33-2.49%2C5.03-4.39%2C8.1-5.69%2C3.07-1.3%2C6.37-1.96%2C9.9-1.96%2C3.53%2C0%2C6.83%2C0.65%2C9.91%2C1.96%2C3.08%2C1.3%2C5.78%2C3.21%2C8.11%2C5.73.58.58%2C1.16.57%2C1.76-.03l2.66-2.7c.48-.51.52-1.03.1-1.56-1.61-1.98-3.62-3.72-6.02-5.21-2.4-1.49-5.02-2.64-7.87-3.46-2.85-.82-5.74-1.23-8.67-1.23s-5.82.41-8.67%2C1.23c-2.85.82-5.47%2C1.97-7.87%2C3.46-2.4%2C1.49-4.41%2C3.23-6.02%2C5.21-.44.53-.4%2C1.05.1%2C1.56l2.66%2C2.73ZM23.67%2C41.14c.65.62%2C1.27.6%2C1.87-.07%2C1.2-1.34%2C2.68-2.4%2C4.43-3.2%2C1.75-.8%2C3.54-1.18%2C5.36-1.16%2C1.8-.02%2C3.59.36%2C5.36%2C1.16%2C1.78.8%2C3.28%2C1.87%2C4.5%2C3.24.28.3.58.45.9.45.32%2C0%2C.62-.14.9-.42l3.01-3.04c.23-.21.35-.46.36-.74.01-.29-.09-.54-.29-.74-1.61-1.96-3.75-3.53-6.4-4.71-2.65-1.18-5.43-1.77-8.34-1.77s-5.69.59-8.34%2C1.77c-2.65%2C1.18-4.8%2C2.75-6.44%2C4.71-.39.48-.35.98.14%2C1.49l2.98%2C3.04ZM35.33%2C51.9c.28%2C0%2C.54-.07.8-.21.25-.14.59-.42%2C1-.83l4.74-4.6c.48-.48.53-.98.14-1.49-.71-.95-1.68-1.72-2.91-2.32-1.22-.6-2.48-.9-3.77-.9-1.31%2C0-2.58.31-3.81.93-1.22.62-2.2%2C1.44-2.94%2C2.46-.3.44-.23.88.21%2C1.31l4.77%2C4.6c.39.42.71.69.97.83.25.14.52.21.8.21Z%22%20fill%3D%22%23939598%22/%3E%3C/svg%3E");
       background-size: contain;
       background-repeat: no-repeat;
-    }
-    .networks li.selected {
-      background-color: #d6eaff;
-      font-weight: 600;
     }
     .networks li.other {
       text-align: center;
@@ -201,23 +204,23 @@
         <input type="password" id="password" name="password" />
       </div>
       <section class="card">
-        <h3>Firmware bron (GitHub)</h3>
+        <h3>Firmware Source (GitHub)</h3>
 
-        <label for="repo">Repo (owner/repo)</label>
-        <input id="repo" name="repo" type="text" placeholder="bv. AchimPieters/esp32-test" required />
+        <label for="repo">Repository (owner/repo)</label>
+        <input id="repo" name="repo" type="text" placeholder="e.g. AchimPieters/esp32-test" required />
 
         <label class="checkbox">
           <input id="use_prerelease" name="use_prerelease" type="checkbox" />
-          Gebruik pre-release
+          Use pre-release
         </label>
 
       </section>
       <section class="card">
-        <h3>LED identificatie</h3>
+        <h3>LED Identification</h3>
 
         <label class="checkbox">
           <input id="led_indicator" name="led_indicator" type="checkbox" checked />
-          Gebruik LED tijdens update
+          Use LED during update
         </label>
 
         <label for="led_gpio">GPIO</label>
@@ -280,45 +283,42 @@
     function hide(el) {
       el.style.display = 'none';
     }
-    function selectNetwork(el) {
-      document.querySelectorAll('ul.networks li').forEach(n => n.classList.remove('selected'));
-      el.classList.add('selected');
+    if (networks_block) {
+      networks_block.addEventListener('click', (e) => {
+        const li = e.target.closest('li');
+        if (!li || !networks_block.contains(li)) return;
+
+        networks_block.querySelectorAll('li').forEach(n => n.classList.remove('selected'));
+        li.classList.add('selected');
+
+        if (li.classList.contains('other')) {
+          ssid_field.value = '';
+          show(ssid_block);
+          show(password_block);
+          enable(ssid_field);
+          enable(password_field);
+          disable(join_button);
+          password_block.classList.remove('required');
+          return;
+        }
+
+        ssid_field.value = li.innerText.trim();
+        hide(ssid_block);
+
+        if (li.classList.contains('secure')) {
+          show(password_block);
+          enable(password_field);
+          disable(join_button);
+          password_block.classList.add('required');
+        } else {
+          hide(password_block);
+          password_field.value = '';
+          disable(password_field);
+          enable(join_button);
+          password_block.classList.remove('required');
+        }
+      });
     }
-    document.querySelectorAll('ul.networks li.unsecure').forEach(li => {
-      li.onclick = () => {
-        selectNetwork(li);
-        ssid_field.value = li.innerText;
-        hide(ssid_block);
-        hide(password_block);
-        disable(password_field);
-        password_field.value = '';
-        enable(join_button);
-      };
-    });
-    document.querySelectorAll('ul.networks li.secure').forEach(li => {
-      li.onclick = () => {
-        selectNetwork(li);
-        ssid_field.value = li.innerText;
-        hide(ssid_block);
-        enable(password_field);
-        show(password_block);
-        disable(join_button);
-        password_block.classList.add('required');
-      };
-    });
-    document.querySelectorAll('ul.networks li.other').forEach(li => {
-      li.onclick = () => {
-        if (li.classList.contains('selected')) return;
-        selectNetwork(li);
-        ssid_field.value = '';
-        show(ssid_block);
-        show(password_block);
-        enable(ssid_field);
-        enable(password_field);
-        disable(join_button);
-        password_block.classList.remove('required');
-      };
-    });
     if (document.querySelectorAll('ul.networks li').length === 1) {
       show(document.querySelector('.nonetworks'));
       hide(networks_block);
