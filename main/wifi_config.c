@@ -909,6 +909,14 @@ static void dns_stop() {
 static void wifi_config_softap_start() {
         INFO("Starting AP mode");
 
+        ESP_LOGD("wifi_config", "Disabling STA auto-connect before enabling SoftAP");
+        sdk_wifi_station_set_auto_connect(false);
+
+        esp_err_t disconnect_err = esp_wifi_disconnect();
+        if (disconnect_err != ESP_OK) {
+                ESP_LOGD("wifi_config", "esp_wifi_disconnect returned %s", esp_err_to_name(disconnect_err));
+        }
+
         sdk_wifi_set_opmode(STATIONAP_MODE);
 
         uint8_t macaddr[6];
@@ -1070,7 +1078,6 @@ static int wifi_config_station_connect() {
 
         ESP_LOGD("wifi_config", "Initiating connection");
         sdk_wifi_station_connect();
-        sdk_wifi_station_set_auto_connect(true);
 
         free(wifi_ssid);
         if (wifi_password)
