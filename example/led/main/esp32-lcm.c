@@ -67,7 +67,18 @@ static bool s_wifi_started = false;
 static esp_netif_t *s_wifi_netif = NULL;
 
 static const uint32_t k_post_reset_magic = 0xC0DEC0DE;
-static const uint64_t k_restart_counter_timeout_us = 5ULL * 1000ULL * 1000ULL;
+#ifndef CONFIG_LCM_RESTART_COUNTER_TIMEOUT_MS
+#define CONFIG_LCM_RESTART_COUNTER_TIMEOUT_MS 60000
+#endif
+
+#if CONFIG_LCM_RESTART_COUNTER_TIMEOUT_MS <= 0
+#error "CONFIG_LCM_RESTART_COUNTER_TIMEOUT_MS must be a positive value"
+#endif
+
+static const uint64_t k_restart_counter_timeout_us =
+    ((uint64_t)CONFIG_LCM_RESTART_COUNTER_TIMEOUT_MS) * 1000ULL;
+static const uint64_t k_restart_counter_timeout_ms =
+    k_restart_counter_timeout_us / 1000ULL;
 static const char *k_restart_counter_namespace = "lcm";
 static const char *k_restart_counter_key = "restart_count";
 
@@ -318,7 +329,7 @@ static void lifecycle_restart_counter_timeout(void *arg) {
     if (s_post_reset_state.restart_count != 0U) {
         ESP_LOGI(tag,
                 "[lifecycle] No restart detected within %llu ms; clearing counter",
-                (unsigned long long)(k_restart_counter_timeout_us / 1000ULL));
+                (unsigned long long)k_restart_counter_timeout_ms);
     }
 
     lifecycle_reset_restart_counter();
@@ -360,7 +371,7 @@ static void lifecycle_schedule_restart_counter_timeout(const char *log_tag) {
 
     ESP_LOGD(tag,
             "[lifecycle] Restart counter timeout armed for %llu ms",
-            (unsigned long long)(k_restart_counter_timeout_us / 1000ULL));
+            (unsigned long long)k_restart_counter_timeout_ms);
 }
 
 void lifecycle_log_post_reset_state(const char *log_tag) {

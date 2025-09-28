@@ -23,3 +23,11 @@ checks the expected length, and activates the update only if they match.
 The device downloads `main.bin` and `main.bin.sig` during an OTA update. The
 signature file contains the expected SHA-384 hash and image length, allowing the
 device to verify the firmware before applying it.
+
+## Consecutive restart factory reset window
+
+The Lifecycle Manager performs a factory reset after detecting 10 consecutive
+restarts. The restarts must all occur within the configurable
+`CONFIG_LCM_RESTART_COUNTER_TIMEOUT_MS` window (60 seconds by default). If the
+device runs longer than that window without restarting, the counter resets and
+the sequence must be repeated from the beginning.

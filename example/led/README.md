@@ -36,6 +36,9 @@ Connect `LED` pin to the following pin:
 - Choose your GPIO number under `StudioPieters` in `menuconfig`. The default is `2` (On an ESP32 WROOM 32D).
 - Set your `WiFi SSID` and `WiFi Password` under `StudioPieters` in `menuconfig`.
 - **Optional:** You can change `HomeKit Setup Code` and `HomeKit Setup ID` under `StudioPieters` in `menuconfig`. _(Note: you need to make a new QR-CODE to make it work.)_
+- The automatic factory reset requires 10 consecutive restarts within the
+  `Lifecycle Manager → Restart counter timeout window (ms)` menuconfig option
+  (60 seconds by default). Waiting longer than that window clears the counter.
 
 ## HomeKit extensions
 
