@@ -26,12 +26,13 @@ device to verify the firmware before applying it.
 
 ## Consecutive restart factory reset window
 
-The Lifecycle Manager performs a factory reset after detecting 10 consecutive
-restarts. The restarts must all occur within the configurable
+The Lifecycle Manager performs a factory reset after detecting between 10 and
+12 consecutive restarts. The restarts must all occur within the configurable
 `CONFIG_LCM_RESTART_COUNTER_TIMEOUT_MS` window (60 seconds by default). If the
 device runs longer than that window without restarting, the counter resets and
-the sequence must be repeated from the beginning. After the tenth restart, the
-device enters an on-device countdown that lasts roughly 11 seconds before the
-factory reset routine runs. Make sure to leave the device powered on during
-this countdown; toggling power again during this period prevents the
-`lifecycle_factory_reset_and_reboot()` helper from executing.
+the sequence must be repeated from the beginning. Once the restart counter
+reaches the configured window, the device enters an on-device countdown that
+lasts roughly 11 seconds before the factory reset routine runs. Make sure to
+leave the device powered on during this countdown; toggling power again during
+this period keeps the counter inside the 10–12 restart window so the
+`lifecycle_factory_reset_and_reboot()` helper eventually executes.
