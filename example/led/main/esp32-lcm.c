@@ -91,6 +91,7 @@ RTC_DATA_ATTR static struct {
 static char s_fw_revision[LIFECYCLE_FW_REVISION_MAX_LEN];
 static bool s_fw_revision_initialized = false;
 static esp_timer_handle_t s_restart_counter_timer = NULL;
+static bool s_nvs_initialized = false;
 
 void wifi_config_shutdown(void) __attribute__((weak));
 
@@ -105,10 +106,16 @@ static void lifecycle_schedule_restart_counter_timeout(const char *log_tag);
 static void lifecycle_shutdown_homekit(bool reset_store);
 static void lifecycle_stop_provisioning_servers(void);
 static void lifecycle_perform_common_shutdown(bool reset_homekit_store);
-static esp_err_t load_restart_counter_from_nvs(uint32_t *out_value);
-static esp_err_t save_restart_counter_to_nvs(uint32_t value);
+static esp_err_t load_restart_counter_from_nvs(uint32_t *out_value, const char *log_tag);
+static esp_err_t save_restart_counter_to_nvs(uint32_t value, const char *log_tag);
+static esp_err_t lifecycle_ensure_nvs_initialized(const char *log_tag);
 
 static esp_err_t nvs_load_wifi(char **out_ssid, char **out_pass) {
+    esp_err_t init_err = lifecycle_ensure_nvs_initialized(WIFI_TAG);
+    if (init_err != ESP_OK) {
+        return init_err;
+    }
+
     nvs_handle_t handle;
     esp_err_t err = nvs_open("wifi_cfg", NVS_READONLY, &handle);
     if (err != ESP_OK) {
@@ -228,16 +235,57 @@ static void lifecycle_clear_post_reset_state(void) {
     s_post_reset_state.reason = LIFECYCLE_POST_RESET_NONE;
 }
 
-static esp_err_t load_restart_counter_from_nvs(uint32_t *out_value) {
+static esp_err_t lifecycle_ensure_nvs_initialized(const char *log_tag) {
+    if (s_nvs_initialized) {
+        return ESP_OK;
+    }
+
+    const char *tag = (log_tag != NULL) ? log_tag : LIFECYCLE_TAG;
+
+    esp_err_t ret = nvs_flash_init();
+    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_LOGW(tag,
+                 "[lifecycle] NVS init issue (%s); attempting erase",
+                 esp_err_to_name(ret));
+        esp_err_t erase_err = nvs_flash_erase();
+        if (erase_err != ESP_OK) {
+            ESP_LOGE(tag,
+                     "[lifecycle] Failed to erase NVS while recovering init: %s",
+                     esp_err_to_name(erase_err));
+            return erase_err;
+        }
+        ret = nvs_flash_init();
+    }
+
+    if (ret != ESP_OK) {
+        ESP_LOGE(tag,
+                 "[lifecycle] Failed to initialise NVS: %s",
+                 esp_err_to_name(ret));
+        return ret;
+    }
+
+    s_nvs_initialized = true;
+    return ESP_OK;
+}
+
+static esp_err_t load_restart_counter_from_nvs(uint32_t *out_value, const char *log_tag) {
     if (out_value == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
 
     uint32_t value = 0;
     nvs_handle_t handle;
+    const char *tag = (log_tag != NULL) ? log_tag : LIFECYCLE_TAG;
+
+    esp_err_t init_err = lifecycle_ensure_nvs_initialized(tag);
+    if (init_err != ESP_OK) {
+        *out_value = 0;
+        return init_err;
+    }
+
     esp_err_t err = nvs_open(k_restart_counter_namespace, NVS_READWRITE, &handle);
     if (err != ESP_OK) {
-        ESP_LOGE(LIFECYCLE_TAG,
+        ESP_LOGE(tag,
                  "[lifecycle] Failed to open NVS namespace '%s' for restart counter: %s",
                  k_restart_counter_namespace,
                  esp_err_to_name(err));
@@ -250,7 +298,7 @@ static esp_err_t load_restart_counter_from_nvs(uint32_t *out_value) {
         value = 0;
         err = ESP_OK;
     } else if (err != ESP_OK) {
-        ESP_LOGE(LIFECYCLE_TAG,
+        ESP_LOGE(tag,
                  "[lifecycle] Failed to read restart counter from NVS: %s",
                  esp_err_to_name(err));
     }
@@ -260,11 +308,18 @@ static esp_err_t load_restart_counter_from_nvs(uint32_t *out_value) {
     return err;
 }
 
-static esp_err_t save_restart_counter_to_nvs(uint32_t value) {
+static esp_err_t save_restart_counter_to_nvs(uint32_t value, const char *log_tag) {
+    const char *tag = (log_tag != NULL) ? log_tag : LIFECYCLE_TAG;
+
+    esp_err_t init_err = lifecycle_ensure_nvs_initialized(tag);
+    if (init_err != ESP_OK) {
+        return init_err;
+    }
+
     nvs_handle_t handle;
     esp_err_t err = nvs_open(k_restart_counter_namespace, NVS_READWRITE, &handle);
     if (err != ESP_OK) {
-        ESP_LOGE(LIFECYCLE_TAG,
+        ESP_LOGE(tag,
                  "[lifecycle] Failed to open NVS namespace '%s' for restart counter: %s",
                  k_restart_counter_namespace,
                  esp_err_to_name(err));
@@ -273,7 +328,7 @@ static esp_err_t save_restart_counter_to_nvs(uint32_t value) {
 
     err = nvs_set_u32(handle, k_restart_counter_key, value);
     if (err != ESP_OK) {
-        ESP_LOGE(LIFECYCLE_TAG,
+        ESP_LOGE(tag,
                  "[lifecycle] Failed to store restart counter in NVS: %s",
                  esp_err_to_name(err));
         nvs_close(handle);
@@ -282,7 +337,7 @@ static esp_err_t save_restart_counter_to_nvs(uint32_t value) {
 
     esp_err_t commit_err = nvs_commit(handle);
     if (commit_err != ESP_OK) {
-        ESP_LOGE(LIFECYCLE_TAG,
+        ESP_LOGE(tag,
                  "[lifecycle] Failed to commit restart counter to NVS: %s",
                  esp_err_to_name(commit_err));
         err = commit_err;
@@ -312,7 +367,7 @@ static void lifecycle_reset_restart_counter(void) {
     }
     s_post_reset_state.restart_count = 0;
 
-    esp_err_t err = save_restart_counter_to_nvs(0);
+    esp_err_t err = save_restart_counter_to_nvs(0, NULL);
     if (err != ESP_OK) {
         ESP_LOGW(LIFECYCLE_TAG,
                  "[lifecycle] Failed to reset restart counter in NVS: %s",
@@ -377,7 +432,7 @@ static void lifecycle_schedule_restart_counter_timeout(const char *log_tag) {
 void lifecycle_log_post_reset_state(const char *log_tag) {
     const char *tag = (log_tag != NULL) ? log_tag : LIFECYCLE_TAG;
     uint32_t persisted_count = 0;
-    esp_err_t load_err = load_restart_counter_from_nvs(&persisted_count);
+    esp_err_t load_err = load_restart_counter_from_nvs(&persisted_count, tag);
     if (load_err == ESP_OK) {
         if (persisted_count > s_post_reset_state.restart_count) {
             s_post_reset_state.restart_count = persisted_count;
@@ -390,7 +445,7 @@ void lifecycle_log_post_reset_state(const char *log_tag) {
 
     uint32_t restart_count = lifecycle_increment_restart_counter();
 
-    esp_err_t save_err = save_restart_counter_to_nvs(restart_count);
+    esp_err_t save_err = save_restart_counter_to_nvs(restart_count, tag);
     if (save_err != ESP_OK) {
         ESP_LOGW(tag,
                  "[lifecycle] Failed to persist restart counter to NVS (err=%s)",
@@ -615,23 +670,7 @@ esp_err_t wifi_stop(void) {
 }
 
 esp_err_t lifecycle_nvs_init(void) {
-    esp_err_t ret = nvs_flash_init();
-    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-        ESP_LOGW(LIFECYCLE_TAG, "NVS init issue (%s), erasing...", esp_err_to_name(ret));
-        esp_err_t erase_err = nvs_flash_erase();
-        if (erase_err != ESP_OK) {
-            ESP_LOGE(LIFECYCLE_TAG, "Failed to erase NVS: %s", esp_err_to_name(erase_err));
-            return erase_err;
-        }
-        ret = nvs_flash_init();
-    }
-
-    if (ret != ESP_OK) {
-        ESP_LOGE(LIFECYCLE_TAG, "NVS init failed: %s", esp_err_to_name(ret));
-        return ret;
-    }
-
-    return ESP_OK;
+    return lifecycle_ensure_nvs_initialized(LIFECYCLE_TAG);
 }
 
 esp_err_t lifecycle_init_firmware_revision(homekit_characteristic_t *revision,
@@ -654,6 +693,11 @@ esp_err_t lifecycle_init_firmware_revision(homekit_characteristic_t *revision,
 
     esp_err_t status = ESP_OK;
     bool used_stored_value = false;
+
+    esp_err_t init_err = lifecycle_ensure_nvs_initialized(LIFECYCLE_TAG);
+    if (init_err != ESP_OK) {
+        return init_err;
+    }
 
     nvs_handle_t handle;
     esp_err_t err = nvs_open("fwcfg", NVS_READWRITE, &handle);
@@ -842,6 +886,14 @@ void lifecycle_reset_homekit_and_reboot(void) {
 static void erase_wifi_credentials(void) {
     ESP_LOGI(LIFECYCLE_TAG, "Clearing Wi-Fi credentials from NVS namespace 'wifi_cfg'");
 
+    esp_err_t init_err = lifecycle_ensure_nvs_initialized(LIFECYCLE_TAG);
+    if (init_err != ESP_OK) {
+        ESP_LOGW(LIFECYCLE_TAG,
+                 "Failed to initialise NVS while clearing Wi-Fi credentials: %s",
+                 esp_err_to_name(init_err));
+        return;
+    }
+
     nvs_handle_t handle;
     esp_err_t err = nvs_open("wifi_cfg", NVS_READWRITE, &handle);
     if (err != ESP_OK) {
@@ -875,6 +927,8 @@ static void erase_nvs_partition(void) {
         ESP_LOGW(LIFECYCLE_TAG, "nvs_flash_deinit failed: %s", esp_err_to_name(err));
     }
 
+    s_nvs_initialized = false;
+
     err = nvs_flash_erase();
     if (err != ESP_OK) {
         ESP_LOGE(LIFECYCLE_TAG, "nvs_flash_erase failed: %s", esp_err_to_name(err));
@@ -887,6 +941,15 @@ static void clear_nvs_namespace(const char *namespace, const char *description) 
     }
 
     ESP_LOGI(LIFECYCLE_TAG, "Clearing %s in NVS namespace '%s'", description, namespace);
+
+    esp_err_t init_err = lifecycle_ensure_nvs_initialized(LIFECYCLE_TAG);
+    if (init_err != ESP_OK) {
+        ESP_LOGW(LIFECYCLE_TAG,
+                 "Failed to initialise NVS while clearing namespace '%s': %s",
+                 namespace,
+                 esp_err_to_name(init_err));
+        return;
+    }
 
     nvs_handle_t handle;
     esp_err_t err = nvs_open(namespace, NVS_READWRITE, &handle);
