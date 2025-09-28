@@ -38,7 +38,7 @@ Connect `LED` pin to the following pin:
 - **Optional:** You can change `HomeKit Setup Code` and `HomeKit Setup ID` under `StudioPieters` in `menuconfig`. _(Note: you need to make a new QR-CODE to make it work.)_
 - The automatic factory reset requires 10 consecutive restarts within the
   `Lifecycle Manager → Restart counter timeout window (ms)` menuconfig option
-  (60 seconds by default). Waiting longer than that window clears the counter.
+  (5 seconds by default). Waiting longer than that window clears the counter.
 
 ## HomeKit extensions
 

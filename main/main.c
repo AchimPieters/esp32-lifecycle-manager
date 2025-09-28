@@ -44,7 +44,7 @@ static const char *RESTART_COUNTER_NAMESPACE = "lcm";
 static const char *RESTART_COUNTER_KEY = "restart_count";
 static const uint32_t RESTART_COUNTER_THRESHOLD_MIN = 10U;
 static const uint32_t RESTART_COUNTER_THRESHOLD_MAX = 12U;
-static const uint32_t RESTART_COUNTER_RESET_TIMEOUT_MS = 60000U;
+static const uint32_t RESTART_COUNTER_RESET_TIMEOUT_MS = 5000U;
 
 static esp_timer_handle_t restart_counter_timer = NULL;
 static uint32_t restart_counter_value = 0U;

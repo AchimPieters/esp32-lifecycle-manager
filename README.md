@@ -28,7 +28,7 @@ device to verify the firmware before applying it.
 
 The Lifecycle Manager performs a factory reset after detecting between 10 and
 12 consecutive restarts. The restarts must all occur within the configurable
-`CONFIG_LCM_RESTART_COUNTER_TIMEOUT_MS` window (60 seconds by default). If the
+`CONFIG_LCM_RESTART_COUNTER_TIMEOUT_MS` window (5 seconds by default). If the
 device runs longer than that window without restarting, the counter resets and
 the sequence must be repeated from the beginning. Once the restart counter
 reaches the configured window, the device enters an on-device countdown that
