@@ -68,6 +68,8 @@ static esp_netif_t *s_wifi_netif = NULL;
 
 static const uint32_t k_post_reset_magic = 0xC0DEC0DE;
 static const uint64_t k_restart_counter_timeout_us = 5ULL * 1000ULL * 1000ULL;
+static const char *k_restart_counter_namespace = "lcm";
+static const char *k_restart_counter_key = "restart_count";
 
 RTC_DATA_ATTR static struct {
     uint32_t magic;
@@ -92,6 +94,8 @@ static void lifecycle_schedule_restart_counter_timeout(const char *log_tag);
 static void lifecycle_shutdown_homekit(bool reset_store);
 static void lifecycle_stop_provisioning_servers(void);
 static void lifecycle_perform_common_shutdown(bool reset_homekit_store);
+static esp_err_t load_restart_counter_from_nvs(uint32_t *out_value);
+static esp_err_t save_restart_counter_to_nvs(uint32_t value);
 
 static esp_err_t nvs_load_wifi(char **out_ssid, char **out_pass) {
     nvs_handle_t handle;
@@ -213,6 +217,70 @@ static void lifecycle_clear_post_reset_state(void) {
     s_post_reset_state.reason = LIFECYCLE_POST_RESET_NONE;
 }
 
+static esp_err_t load_restart_counter_from_nvs(uint32_t *out_value) {
+    if (out_value == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    uint32_t value = 0;
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open(k_restart_counter_namespace, NVS_READWRITE, &handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(LIFECYCLE_TAG,
+                 "[lifecycle] Failed to open NVS namespace '%s' for restart counter: %s",
+                 k_restart_counter_namespace,
+                 esp_err_to_name(err));
+        *out_value = 0;
+        return err;
+    }
+
+    err = nvs_get_u32(handle, k_restart_counter_key, &value);
+    if (err == ESP_ERR_NVS_NOT_FOUND) {
+        value = 0;
+        err = ESP_OK;
+    } else if (err != ESP_OK) {
+        ESP_LOGE(LIFECYCLE_TAG,
+                 "[lifecycle] Failed to read restart counter from NVS: %s",
+                 esp_err_to_name(err));
+    }
+
+    nvs_close(handle);
+    *out_value = value;
+    return err;
+}
+
+static esp_err_t save_restart_counter_to_nvs(uint32_t value) {
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open(k_restart_counter_namespace, NVS_READWRITE, &handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(LIFECYCLE_TAG,
+                 "[lifecycle] Failed to open NVS namespace '%s' for restart counter: %s",
+                 k_restart_counter_namespace,
+                 esp_err_to_name(err));
+        return err;
+    }
+
+    err = nvs_set_u32(handle, k_restart_counter_key, value);
+    if (err != ESP_OK) {
+        ESP_LOGE(LIFECYCLE_TAG,
+                 "[lifecycle] Failed to store restart counter in NVS: %s",
+                 esp_err_to_name(err));
+        nvs_close(handle);
+        return err;
+    }
+
+    esp_err_t commit_err = nvs_commit(handle);
+    if (commit_err != ESP_OK) {
+        ESP_LOGE(LIFECYCLE_TAG,
+                 "[lifecycle] Failed to commit restart counter to NVS: %s",
+                 esp_err_to_name(commit_err));
+        err = commit_err;
+    }
+
+    nvs_close(handle);
+    return err;
+}
+
 static uint32_t lifecycle_increment_restart_counter(void) {
     uint32_t previous = s_post_reset_state.restart_count;
     if (s_post_reset_state.restart_count == UINT32_MAX) {
@@ -232,6 +300,13 @@ static void lifecycle_reset_restart_counter(void) {
         ESP_LOGD(LIFECYCLE_TAG, "[lifecycle] restart counter reset");
     }
     s_post_reset_state.restart_count = 0;
+
+    esp_err_t err = save_restart_counter_to_nvs(0);
+    if (err != ESP_OK) {
+        ESP_LOGW(LIFECYCLE_TAG,
+                 "[lifecycle] Failed to reset restart counter in NVS: %s",
+                 esp_err_to_name(err));
+    }
 }
 
 static void lifecycle_restart_counter_timeout(void *arg) {
@@ -290,7 +365,26 @@ static void lifecycle_schedule_restart_counter_timeout(const char *log_tag) {
 
 void lifecycle_log_post_reset_state(const char *log_tag) {
     const char *tag = (log_tag != NULL) ? log_tag : LIFECYCLE_TAG;
+    uint32_t persisted_count = 0;
+    esp_err_t load_err = load_restart_counter_from_nvs(&persisted_count);
+    if (load_err == ESP_OK) {
+        if (persisted_count > s_post_reset_state.restart_count) {
+            s_post_reset_state.restart_count = persisted_count;
+        }
+    } else {
+        ESP_LOGW(tag,
+                 "[lifecycle] Failed to load restart counter from NVS (err=%s); using RTC value",
+                 esp_err_to_name(load_err));
+    }
+
     uint32_t restart_count = lifecycle_increment_restart_counter();
+
+    esp_err_t save_err = save_restart_counter_to_nvs(restart_count);
+    if (save_err != ESP_OK) {
+        ESP_LOGW(tag,
+                 "[lifecycle] Failed to persist restart counter to NVS (err=%s)",
+                 esp_err_to_name(save_err));
+    }
 
     ESP_LOGI(tag, "[lifecycle] consecutive_restart_count=%" PRIu32, restart_count);
 
