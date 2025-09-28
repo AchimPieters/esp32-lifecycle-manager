@@ -41,6 +41,7 @@
 #include <esp_app_desc.h>
 #include <esp_partition.h>
 #include <esp_sleep.h>
+#include <esp_timer.h>
 #include <mdns.h>
 #include <nvs.h>
 #include <nvs_flash.h>
@@ -66,14 +67,17 @@ static bool s_wifi_started = false;
 static esp_netif_t *s_wifi_netif = NULL;
 
 static const uint32_t k_post_reset_magic = 0xC0DEC0DE;
+static const uint64_t k_restart_counter_timeout_us = 5ULL * 1000ULL * 1000ULL;
 
 RTC_DATA_ATTR static struct {
     uint32_t magic;
     uint32_t reason;
+    uint32_t restart_count;
 } s_post_reset_state;
 
 static char s_fw_revision[LIFECYCLE_FW_REVISION_MAX_LEN];
 static bool s_fw_revision_initialized = false;
+static esp_timer_handle_t s_restart_counter_timer = NULL;
 
 void wifi_config_shutdown(void) __attribute__((weak));
 
@@ -81,6 +85,10 @@ static void lifecycle_log_step(const char *step);
 static void lifecycle_mark_post_reset(lifecycle_post_reset_reason_t reason);
 static lifecycle_post_reset_reason_t lifecycle_peek_post_reset_reason(void);
 static void lifecycle_clear_post_reset_state(void);
+static uint32_t lifecycle_increment_restart_counter(void);
+static void lifecycle_reset_restart_counter(void);
+static void lifecycle_restart_counter_timeout(void *arg);
+static void lifecycle_schedule_restart_counter_timeout(const char *log_tag);
 static void lifecycle_shutdown_homekit(bool reset_store);
 static void lifecycle_stop_provisioning_servers(void);
 static void lifecycle_perform_common_shutdown(bool reset_homekit_store);
@@ -205,8 +213,101 @@ static void lifecycle_clear_post_reset_state(void) {
     s_post_reset_state.reason = LIFECYCLE_POST_RESET_NONE;
 }
 
+static uint32_t lifecycle_increment_restart_counter(void) {
+    uint32_t previous = s_post_reset_state.restart_count;
+    if (s_post_reset_state.restart_count == UINT32_MAX) {
+        s_post_reset_state.restart_count = 0;
+    }
+
+    s_post_reset_state.restart_count++;
+    ESP_LOGD(LIFECYCLE_TAG,
+            "[lifecycle] restart counter incremented (previous=%" PRIu32 ", current=%" PRIu32 ")",
+            previous,
+            s_post_reset_state.restart_count);
+    return s_post_reset_state.restart_count;
+}
+
+static void lifecycle_reset_restart_counter(void) {
+    if (s_post_reset_state.restart_count != 0U) {
+        ESP_LOGD(LIFECYCLE_TAG, "[lifecycle] restart counter reset");
+    }
+    s_post_reset_state.restart_count = 0;
+}
+
+static void lifecycle_restart_counter_timeout(void *arg) {
+    const char *tag = (const char *)arg;
+    if (tag == NULL) {
+        tag = LIFECYCLE_TAG;
+    }
+
+    if (s_post_reset_state.restart_count != 0U) {
+        ESP_LOGI(tag,
+                "[lifecycle] No restart detected within %llu ms; clearing counter",
+                (unsigned long long)(k_restart_counter_timeout_us / 1000ULL));
+    }
+
+    lifecycle_reset_restart_counter();
+}
+
+static void lifecycle_schedule_restart_counter_timeout(const char *log_tag) {
+    const char *tag = (log_tag != NULL) ? log_tag : LIFECYCLE_TAG;
+
+    if (s_restart_counter_timer == NULL) {
+        const esp_timer_create_args_t timer_args = {
+            .callback = lifecycle_restart_counter_timeout,
+            .arg = (void *)LIFECYCLE_TAG,
+            .name = "restart_cnt_reset",
+        };
+
+        esp_err_t err = esp_timer_create(&timer_args, &s_restart_counter_timer);
+        if (err != ESP_OK) {
+            ESP_LOGE(tag,
+                    "[lifecycle] Failed to create restart counter timer: %s",
+                    esp_err_to_name(err));
+            return;
+        }
+    }
+
+    esp_err_t err = esp_timer_stop(s_restart_counter_timer);
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+        ESP_LOGW(tag,
+                "[lifecycle] Failed to stop restart counter timer: %s",
+                esp_err_to_name(err));
+    }
+
+    err = esp_timer_start_once(s_restart_counter_timer, k_restart_counter_timeout_us);
+    if (err != ESP_OK) {
+        ESP_LOGE(tag,
+                "[lifecycle] Failed to start restart counter timer: %s",
+                esp_err_to_name(err));
+        return;
+    }
+
+    ESP_LOGD(tag,
+            "[lifecycle] Restart counter timeout armed for %llu ms",
+            (unsigned long long)(k_restart_counter_timeout_us / 1000ULL));
+}
+
 void lifecycle_log_post_reset_state(const char *log_tag) {
     const char *tag = (log_tag != NULL) ? log_tag : LIFECYCLE_TAG;
+    uint32_t restart_count = lifecycle_increment_restart_counter();
+
+    ESP_LOGI(tag, "[lifecycle] consecutive_restart_count=%" PRIu32, restart_count);
+
+    lifecycle_schedule_restart_counter_timeout(tag);
+
+    if (restart_count >= 10U) {
+        ESP_LOGW(tag, "[lifecycle] Detected 10 consecutive restarts; performing factory reset countdown");
+        for (int i = 10; i >= 0; --i) {
+            ESP_LOGW(tag, "[lifecycle] Factory reset in %d", i);
+            vTaskDelay(pdMS_TO_TICKS(1000));
+        }
+
+        lifecycle_reset_restart_counter();
+        lifecycle_factory_reset_and_reboot();
+        return;
+    }
+
     lifecycle_post_reset_reason_t reason = lifecycle_peek_post_reset_reason();
     const char *reason_str = "none";
 
@@ -793,6 +894,8 @@ static void erase_ota_app_partitions(void) {
 
 void lifecycle_factory_reset_and_reboot(void) {
     ESP_LOGI(LIFECYCLE_TAG, "Performing factory reset (HomeKit + Wi-Fi)");
+
+    lifecycle_reset_restart_counter();
 
     bool factory_boot_selected = false;
 
