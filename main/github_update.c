@@ -874,47 +874,56 @@ esp_err_t github_update_if_needed(const char *repo, bool prerelease) {
         ESP_LOGE(TAG, "Invalid release version, assuming 0.0.0");
     }
     if (relValid && curValid && cmp_version(relMaj, relMin, relPat, curMaj, curMin, curPat) <= 0) {
-        ESP_LOGI(TAG, "Firmware already up to date");
+        const esp_partition_t *release_partition = find_partition_for_version(relMaj, relMin, relPat);
         const char *version_to_store = sanitized_version[0] ? sanitized_version : raw_tag;
-        if (version_to_store && version_to_store[0] != '\0') {
-            esp_err_t store_err = store_installed_version_if_needed(version_to_store, NULL);
-            if (store_err != ESP_OK) {
-                ESP_LOGW(TAG, "Unable to refresh stored firmware version: %s",
-                         esp_err_to_name(store_err));
-            }
-        }
-        if (update_requested) {
-            if (curValid) {
-                ESP_LOGI(TAG, "Update was requested but version %d.%d.%d is already installed",
-                         curMaj, curMin, curPat);
-                bool partition_changed = false;
-                esp_err_t boot_err = set_boot_partition_for_installed_firmware(
-                        curMaj, curMin, curPat,
-                        installed_version[0] != '\0' ? installed_version : version_to_store,
-                        &partition_changed);
-                if (boot_err == ESP_OK && partition_changed) {
-                    esp_err_t clear_err = write_update_request_flag(false);
-                    if (clear_err != ESP_OK) {
-                        ESP_LOGW(TAG, "Failed to clear update request flag: %s",
-                                 esp_err_to_name(clear_err));
-                    }
-                    cJSON_Delete(json);
-                    ESP_LOGI(TAG, "Rebooting into previously installed firmware");
-                    esp_restart();
-                    return ESP_OK;
-                } else if (boot_err == ESP_OK) {
-                    ESP_LOGI(TAG,
-                             "Boot partition already pointed at installed firmware; "
-                             "skipping reboot");
+
+        if (!release_partition) {
+            ESP_LOGW(TAG,
+                     "Version %d.%d.%d not found in OTA partitions; firmware will be downloaded",
+                     relMaj, relMin, relPat);
+        } else {
+            ESP_LOGI(TAG, "Firmware already up to date on partition %s", release_partition->label);
+            if (version_to_store && version_to_store[0] != '\0') {
+                esp_err_t store_err = store_installed_version_if_needed(version_to_store,
+                                                                        release_partition->label);
+                if (store_err != ESP_OK) {
+                    ESP_LOGW(TAG, "Unable to refresh stored firmware version: %s",
+                             esp_err_to_name(store_err));
                 }
-                ESP_LOGE(TAG, "Failed to select installed firmware partition: %s",
-                         esp_err_to_name(boot_err));
-            } else {
-                ESP_LOGW(TAG, "Update was requested but installed version could not be determined");
             }
+            if (update_requested) {
+                if (curValid) {
+                    ESP_LOGI(TAG, "Update was requested but version %d.%d.%d is already installed",
+                             curMaj, curMin, curPat);
+                    bool partition_changed = false;
+                    esp_err_t boot_err = set_boot_partition_for_installed_firmware(
+                            curMaj, curMin, curPat,
+                            installed_version[0] != '\0' ? installed_version : version_to_store,
+                            &partition_changed);
+                    if (boot_err == ESP_OK && partition_changed) {
+                        esp_err_t clear_err = write_update_request_flag(false);
+                        if (clear_err != ESP_OK) {
+                            ESP_LOGW(TAG, "Failed to clear update request flag: %s",
+                                     esp_err_to_name(clear_err));
+                        }
+                        cJSON_Delete(json);
+                        ESP_LOGI(TAG, "Rebooting into previously installed firmware");
+                        esp_restart();
+                        return ESP_OK;
+                    } else if (boot_err == ESP_OK) {
+                        ESP_LOGI(TAG,
+                                 "Boot partition already pointed at installed firmware; "
+                                 "skipping reboot");
+                    }
+                    ESP_LOGE(TAG, "Failed to select installed firmware partition: %s",
+                             esp_err_to_name(boot_err));
+                } else {
+                    ESP_LOGW(TAG, "Update was requested but installed version could not be determined");
+                }
+            }
+            cJSON_Delete(json);
+            return ESP_OK;
         }
-        cJSON_Delete(json);
-        return ESP_OK;
     }
     ESP_LOGD(TAG, "Scanning assets for firmware and signature");
     for (int i=0;i<cJSON_GetArraySize(assets);++i){
