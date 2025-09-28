@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.5)
 
-set(DEFAULT_FW_VERSION "0.0.2")
+set(DEFAULT_FW_VERSION "0.0.0")
 set(PROJECT_BASE_VERSION "${DEFAULT_FW_VERSION}")
 
 execute_process(
