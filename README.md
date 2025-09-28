@@ -30,9 +30,10 @@ The Lifecycle Manager performs a factory reset after detecting between 10 and
 12 consecutive restarts. The restarts must all occur within the configurable
 `CONFIG_LCM_RESTART_COUNTER_TIMEOUT_MS` window (5 seconds by default). If the
 device runs longer than that window without restarting, the counter resets and
-the sequence must be repeated from the beginning. Once the restart counter
-reaches the configured window, the device enters an on-device countdown that
-lasts roughly 11 seconds before the factory reset routine runs. Make sure to
-leave the device powered on during this countdown; toggling power again during
-this period keeps the counter inside the 10–12 restart window so the
-`lifecycle_factory_reset_and_reboot()` helper eventually executes.
+the sequence must be repeated from the beginning. Performing more than 12
+consecutive restarts also clears the counter, preventing accidental triggers
+from very noisy power conditions. Once the restart counter reaches at least 10
+events, the device enters an on-device countdown that lasts roughly 11 seconds
+before the factory reset routine runs. Keep the device powered on during this
+countdown; interrupting the power will cancel the sequence and you will need to
+start over from the first restart to retry the factory reset shortcut.

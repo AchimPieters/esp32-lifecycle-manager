@@ -71,8 +71,24 @@ static const uint32_t k_post_reset_magic = 0xC0DEC0DE;
 #define CONFIG_LCM_RESTART_COUNTER_TIMEOUT_MS 5000
 #endif
 
+#ifndef CONFIG_LCM_RESTART_COUNTER_MIN_RESETS
+#define CONFIG_LCM_RESTART_COUNTER_MIN_RESETS 10
+#endif
+
+#ifndef CONFIG_LCM_RESTART_COUNTER_MAX_RESETS
+#define CONFIG_LCM_RESTART_COUNTER_MAX_RESETS 12
+#endif
+
 #if CONFIG_LCM_RESTART_COUNTER_TIMEOUT_MS <= 0
 #error "CONFIG_LCM_RESTART_COUNTER_TIMEOUT_MS must be a positive value"
+#endif
+
+#if CONFIG_LCM_RESTART_COUNTER_MIN_RESETS <= 0
+#error "CONFIG_LCM_RESTART_COUNTER_MIN_RESETS must be a positive value"
+#endif
+
+#if CONFIG_LCM_RESTART_COUNTER_MAX_RESETS < CONFIG_LCM_RESTART_COUNTER_MIN_RESETS
+#error "CONFIG_LCM_RESTART_COUNTER_MAX_RESETS must be >= CONFIG_LCM_RESTART_COUNTER_MIN_RESETS"
 #endif
 
 static const uint64_t k_restart_counter_timeout_us =
@@ -454,11 +470,23 @@ void lifecycle_log_post_reset_state(const char *log_tag) {
 
     ESP_LOGI(tag, "[lifecycle] consecutive_restart_count=%" PRIu32, restart_count);
 
-    lifecycle_schedule_restart_counter_timeout(tag);
+    if (restart_count > CONFIG_LCM_RESTART_COUNTER_MAX_RESETS) {
+        ESP_LOGW(tag,
+                 "[lifecycle] Detected %" PRIu32 " consecutive restarts; exceeding maximum window %d, resetting counter",
+                 restart_count,
+                 CONFIG_LCM_RESTART_COUNTER_MAX_RESETS);
+        lifecycle_reset_restart_counter();
+        lifecycle_schedule_restart_counter_timeout(tag);
+        return;
+    }
 
-    if (restart_count >= 10U) {
-        ESP_LOGW(tag, "[lifecycle] Detected 10 consecutive restarts; performing factory reset countdown");
-        for (int i = 10; i >= 0; --i) {
+    if (restart_count >= CONFIG_LCM_RESTART_COUNTER_MIN_RESETS) {
+        ESP_LOGW(tag,
+                 "[lifecycle] Detected %" PRIu32 " consecutive restarts within factory reset window (%d-%d); starting countdown",
+                 restart_count,
+                 CONFIG_LCM_RESTART_COUNTER_MIN_RESETS,
+                 CONFIG_LCM_RESTART_COUNTER_MAX_RESETS);
+        for (int i = CONFIG_LCM_RESTART_COUNTER_MIN_RESETS; i >= 0; --i) {
             ESP_LOGW(tag, "[lifecycle] Factory reset in %d", i);
             vTaskDelay(pdMS_TO_TICKS(1000));
         }
@@ -467,6 +495,8 @@ void lifecycle_log_post_reset_state(const char *log_tag) {
         lifecycle_factory_reset_and_reboot();
         return;
     }
+
+    lifecycle_schedule_restart_counter_timeout(tag);
 
     lifecycle_post_reset_reason_t reason = lifecycle_peek_post_reset_reason();
     const char *reason_str = "none";
