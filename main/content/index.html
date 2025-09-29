@@ -98,7 +98,7 @@
       cursor: pointer;
       transition: background 0.2s ease;
     }
-    .networks li:hover {
+    .networks li:hover:not(.selected) {
       background-color: #e0e0e5;
     }
     /* Ensure the selected state takes precedence over hover/focus */
@@ -166,8 +166,63 @@
     .checkbox {
       display: flex;
       align-items: center;
-      gap: 0.5rem;
+      justify-content: space-between;
+      gap: 1rem;
       margin-bottom: 1rem;
+    }
+    .checkbox-text {
+      flex: 1;
+    }
+    .checkbox select {
+      flex: 0 0 auto;
+      min-width: 140px;
+      padding: 0.5rem 0.75rem;
+      border: 1px solid #d2d2d7;
+      border-radius: 12px;
+      background-color: #f9f9f9;
+      font-size: 1rem;
+    }
+    .toggleWrapper {
+      position: relative;
+      width: 50px;
+      height: 28px;
+      flex-shrink: 0;
+    }
+    .toggleWrapper input.mobileToggle {
+      opacity: 0;
+      width: 0;
+      height: 0;
+    }
+    .toggleWrapper input.mobileToggle + label {
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      border-radius: 28px;
+      border: 1px solid #e4e4e4;
+      background-color: #f1f1f1;
+      transition: background-color 0.35s cubic-bezier(.54, 1.60, .5, 1);
+      cursor: pointer;
+    }
+    .toggleWrapper input.mobileToggle + label::before {
+      content: "";
+      position: absolute;
+      top: 1px;
+      left: 1px;
+      width: 26px;
+      height: 26px;
+      border-radius: 50%;
+      background: #ffffff;
+      box-shadow: 0 0 0 1px hsla(0, 0%, 0%, 0.1), 0 4px 0px 0 hsla(0, 0%, 0%, .04), 0 4px 9px hsla(0, 0%, 0%, .13), 0 3px 3px hsla(0, 0%, 0%, .05);
+      transition: transform 0.35s cubic-bezier(.54, 1.60, .5, 1);
+    }
+    .toggleWrapper input.mobileToggle:checked + label {
+      background-color: #34c759;
+      border-color: #34c759;
+    }
+    .toggleWrapper input.mobileToggle:checked + label::before {
+      transform: translateX(22px);
     }
     .muted {
       color: #999;
@@ -209,32 +264,40 @@
         <label for="repo">Repository (owner/repo)</label>
         <input id="repo" name="repo" type="text" placeholder="e.g. AchimPieters/esp32-test" required />
 
-        <label class="checkbox">
-          <input id="use_prerelease" name="use_prerelease" type="checkbox" />
-          Use pre-release
-        </label>
+        <div class="checkbox">
+          <label class="checkbox-text" for="use_prerelease">Use pre-release</label>
+          <div class="toggleWrapper">
+            <input id="use_prerelease" name="use_prerelease" type="checkbox" class="mobileToggle" />
+            <label for="use_prerelease"></label>
+          </div>
+        </div>
 
       </section>
       <section class="card">
         <h3>LED Identification</h3>
 
-        <label class="checkbox">
-          <input id="led_indicator" name="led_indicator" type="checkbox" checked />
-          Use LED during update
-        </label>
+        <div class="checkbox">
+          <label class="checkbox-text" for="led_indicator">Use LED during update</label>
+          <div class="toggleWrapper">
+            <input id="led_indicator" name="led_indicator" type="checkbox" class="mobileToggle" />
+            <label for="led_indicator"></label>
+          </div>
+        </div>
 
-        <label for="led_gpio">GPIO</label>
-        <select id="led_gpio" name="led_gpio">
-          <option value="n">no pin</option>
-          <option value="2">gpio-2</option><option value="4">gpio-4</option><option value="5">gpio-5</option>
-          <option value="12">gpio-12</option><option value="13">gpio-13</option><option value="14">gpio-14</option>
-          <option value="15">gpio-15</option><option value="16">gpio-16</option><option value="17">gpio-17</option>
-          <option value="18">gpio-18</option><option value="19">gpio-19</option><option value="20">gpio-20</option>
-          <option value="21">gpio-21</option><option value="22">gpio-22</option><option value="23">gpio-23</option>
-          <option value="24">gpio-24</option><option value="25">gpio-25</option><option value="26">gpio-26</option>
-          <option value="27">gpio-27</option><option value="28">gpio-28</option><option value="29">gpio-29</option>
-          <option value="30">gpio-30</option><option value="31">gpio-31</option><option value="32">gpio-32</option>
-        </select>
+        <div class="checkbox">
+          <label class="checkbox-text" for="led_gpio">GPIO</label>
+          <select id="led_gpio" name="led_gpio">
+            <option value="n" selected>No pin</option>
+            <option value="2">GPIO2</option><option value="4">GPIO4</option><option value="5">GPIO5</option>
+            <option value="12">GPIO12</option><option value="13">GPIO13</option><option value="14">GPIO14</option>
+            <option value="15">GPIO15</option><option value="16">GPIO16</option><option value="17">GPIO17</option>
+            <option value="18">GPIO18</option><option value="19">GPIO19</option><option value="20">GPIO20</option>
+            <option value="21">GPIO21</option><option value="22">GPIO22</option><option value="23">GPIO23</option>
+            <option value="24">GPIO24</option><option value="25">GPIO25</option><option value="26">GPIO26</option>
+            <option value="27">GPIO27</option><option value="28">GPIO28</option><option value="29">GPIO29</option>
+            <option value="30">GPIO30</option><option value="31">GPIO31</option><option value="32">GPIO32</option>
+          </select>
+        </div>
       </section>
       <input type="submit" id="join" value="Join" disabled />
     </form>
