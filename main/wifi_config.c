@@ -412,11 +412,11 @@ static void wifi_scan_task(void *arg)
 #include "index.html.h"
 
 static void wifi_config_send_led_preferences(client_t *client) {
-        bool enabled = true;
+        bool enabled = false;
         int gpio = CONFIG_ESP_LED_GPIO;
 
         if (!load_led_config(&enabled, &gpio)) {
-                enabled = true;
+                enabled = false;
                 gpio = CONFIG_ESP_LED_GPIO;
         }
 
