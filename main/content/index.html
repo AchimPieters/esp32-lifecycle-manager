@@ -320,9 +320,24 @@
     }
 
     if (led_checkbox) {
+      led_checkbox.checked = false;
       led_checkbox.addEventListener('change', updateLedControls);
     }
     updateLedControls();
+
+    function selectNetworkItem(li) {
+      if (!networks_block || !li) {
+        return;
+      }
+      networks_block.querySelectorAll('li').forEach(n => n.classList.remove('selected'));
+      li.classList.add('selected');
+    }
+
+    function ensureSelection(li) {
+      if (!li.classList.contains('selected')) {
+        selectNetworkItem(li);
+      }
+    }
 
     window.applyLedPreferences = (enabled, gpioValue) => {
       if (!led_checkbox || !led_select) {
@@ -347,12 +362,18 @@
       el.style.display = 'none';
     }
     if (networks_block) {
+      networks_block.addEventListener('pointerdown', (e) => {
+        const li = e.target.closest('li');
+        if (!li || !networks_block.contains(li)) return;
+
+        selectNetworkItem(li);
+      });
+
       networks_block.addEventListener('click', (e) => {
         const li = e.target.closest('li');
         if (!li || !networks_block.contains(li)) return;
 
-        networks_block.querySelectorAll('li').forEach(n => n.classList.remove('selected'));
-        li.classList.add('selected');
+        ensureSelection(li);
 
         if (li.classList.contains('other')) {
           ssid_field.value = '';
