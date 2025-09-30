@@ -420,7 +420,7 @@ static void wifi_config_send_led_preferences(client_t *client) {
                 gpio = CONFIG_ESP_LED_GPIO;
         }
 
-        const char *value = "n";
+        const char *value = "";
         char value_buf[12];
         if (gpio >= 0 && gpio <= 32) {
                 snprintf(value_buf, sizeof(value_buf), "%d", gpio);
@@ -536,7 +536,7 @@ static void wifi_config_server_on_settings_update(client_t *client) {
 
     bool led = led_param && (strcmp(led_param->value, "on") == 0 || strcmp(led_param->value, "1") == 0);
     int gpio = -1;
-    if (gpio_param && gpio_param->value && strcmp(gpio_param->value, "n") != 0) {
+    if (gpio_param && gpio_param->value && gpio_param->value[0] != '\0' && strcmp(gpio_param->value, "n") != 0) {
         int candidate = atoi(gpio_param->value);
         if (candidate >= 0 && candidate <= 32) {
             gpio = candidate;
