@@ -170,7 +170,7 @@ Connect the pins as described below (configurable via `menuconfig`):
 
 ## 11. Schematic
 
-![HomeKit LED](https://raw.githubusercontent.com/AchimPieters/esp32-homekit-demo/refs/heads/main/examples/led/scheme.png)
+![HomeKit LED](https://github.com/AchimPieters/esp32-lifecycle-manager/blob/main/example/led/scheme.png)
 
 ## 12. Requirements
 
