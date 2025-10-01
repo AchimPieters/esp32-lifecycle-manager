@@ -1,115 +1,125 @@
 # ESP32 Lifecycle Manager (LCM)
 
-LCM is een kleine maar krachtige firmwarelaag die het volledige levenscyclusbeheer
-van een ESP32-apparaat automatiseert. Zie het als de "beheerder" die je hardware
-klaarmaakt voor gebruik, nieuwe firmware ophaalt, updates controleert en het
-apparaat terugbrengt naar de fabrieksinstellingen wanneer dat nodig is. Ook als je
-nog nooit met ESP-IDF hebt gewerkt, helpt LCM je om in een paar stappen van een
-verse module naar een volledig beheerd apparaat te gaan.
+ESP32 Lifecycle Manager (LCM) is a lightweight helper firmware that shepherds an
+ESP32-based device through its entire lifecycle. You can think of it as the
+"operations center" that boots first, prepares network access, installs your
+application firmware, keeps it up to date, and offers recovery tools when
+something goes wrong. Even if you are new to ESP-IDF, LCM guides you from an
+unconfigured module to a fully managed device in a few straightforward steps.
 
-## Wat doet LCM precies?
+## How LCM operates
 
-LCM start bij elke boot en bepaalt of het apparaat in de gebruiksmodus kan
-doorgaan of dat er onderhoud nodig is. De firmware beheert onder meer het
-vastleggen van netwerkgegevens, het downloaden en valideren van nieuwe software
-versies en het uitvoeren van resets. Daarmee hoef je zelf geen afzonderlijke
-scripts of tools te bouwen; LCM bundelt alle basisfuncties die je nodig hebt om
-ESP32-apparaten op afstand te beheren.
+At every boot LCM starts before your application. It evaluates whether the
+system can continue normal operation or whether maintenance is required. The
+firmware stores Wi-Fi credentials, checks for new releases, validates firmware
+signatures, and triggers recovery flows when necessary. This means you do not
+need to build these management utilities yourself—LCM bundles the essentials for
+remote lifecycle control of ESP32 devices.
 
-## Belangrijkste functies
+## Core capabilities
 
-### AP-modus
-LCM kan een tijdelijk access point (hotspot) starten zodat je apparaat altijd
-bereikbaar is, zelfs wanneer er nog geen Wi-Fi-instellingen zijn opgeslagen. Je
-verbindt eenvoudig met deze hotspot om het apparaat te configureren.
+### Access Point (AP) mode
 
-### CNA (Captive Portal)
-Wanneer je verbindt met het access point opent er automatisch een captive
-portal. Hierin kun je:
+LCM can launch a temporary access point so the device remains reachable even
+before any Wi-Fi network has been configured. Connect to this hotspot to perform
+initial setup.
 
-- **Wi-Fi selecteren** – Kies een zichtbaar netwerk en vul het wachtwoord in.
-- **Handmatig een netwerk toevoegen** – Ideaal voor verborgen SSID's of
-  netwerken die niet in de lijst verschijnen.
-- **GitHub-repository instellen** – Geef de URL op van de release die LCM moet
-  monitoren voor updates (`main.bin` en `main.bin.sig`).
-- **LED-identificatie activeren** – Laat de status-LED knipperen zodat je het
-  juiste apparaat herkent tijdens installatie of service.
+### Captive portal (CNA)
 
-### Download en installatie van `main.bin`
-Na provisioning haalt LCM zowel `main.bin` als `main.bin.sig` op, valideert de
-SHA-384 handtekening én bestandsgrootte en installeert de firmware alleen als de
-controle slaagt.
+When you join the LCM access point a captive portal automatically opens. From
+this portal you can:
 
-### Software-update (`ota_trigger`)
-Met een OTA-trigger (bijvoorbeeld via een webrequest) kun je op afstand een
-firmware-update starten zodra er een nieuwe release beschikbaar is.
+- **Select a visible Wi-Fi network** and provide its password.
+- **Add a hidden Wi-Fi network manually** by entering the SSID and password.
+- **Configure the GitHub repository URL** where LCM should look for new
+  firmware releases (`main.bin` and `main.bin.sig`).
+- **Blink the status LED for identification** so you can confirm you are working
+  with the correct device during installation or servicing.
 
-### Hardware-update (bijv. knop)
-LCM ondersteunt fysieke bedieningen zoals een knop om een updateproces te
-starten of te bevestigen. Ideaal voor apparaten die zonder computer moeten
-kunnen updaten.
+### Downloading and installing `main.bin`
 
-### Resets en herstelfuncties
-- **Software factory reset** – Roept via de API de resetroutine aan die alle
-  opgeslagen configuratie wist en het apparaat opnieuw start.
-- **Hardware factory reset** – Door het apparaat 10 keer snel achter elkaar te
-  resetten (power-cycles) triggert LCM automatisch een fabrieksreset.
+After provisioning, LCM downloads `main.bin` and the accompanying
+`main.bin.sig`. It validates the SHA-384 signature as well as the reported file
+size and only activates the firmware when the verification succeeds.
 
-### Automatische versie-instelling
-Tijdens installatie of update schrijft LCM automatisch de waarde van
-`LIFECYCLE_DEFAULT_FW_VERSION` weg, zodat je op afstand kunt controleren welke
-firmware momenteel actief is.
+### Software update (`ota_trigger`)
 
-## Werkstroom van een nieuwe installatie
+You can initiate an over-the-air update through an OTA trigger (for example via
+an HTTP request) whenever a new release becomes available.
 
-1. **Eerste boot** – LCM start in AP-modus en biedt de captive portal aan.
-2. **Netwerkconfiguratie** – De gebruiker koppelt het apparaat aan een Wi-Fi-netwerk
-   en slaat ook de GitHub-repository op waar updates klaarstaan.
-3. **Firmware ophalen** – LCM downloadt `main.bin` en `main.bin.sig`, controleert de
-   handtekening en de bestandsgrootte en activeert vervolgens de firmware.
-4. **Normale werking** – Het apparaat draait nu de applicatiefirmware; LCM blijft op
-   de achtergrond beschikbaar voor OTA en reset-functionaliteit.
+### Hardware-assisted update
 
-## Zelf compileren met ESP-IDF
+LCM can listen to hardware controls such as a physical button to start or
+confirm the update flow. This is useful for devices that must update without a
+connected computer.
 
-1. Installeer ESP-IDF volgens de officiële handleiding van Espressif.
-2. Selecteer het juiste doelplatform:
+### Reset and recovery options
+
+- **Software factory reset** – Use the LCM API to erase the stored configuration
+  and reboot the device.
+- **Hardware factory reset** – Quickly power-cycle or reset the device 10 times
+  in succession. Once LCM detects the pattern it starts an ~11 second countdown
+  and performs the factory reset automatically.
+
+### Automatic firmware version stamping
+
+During installation or update LCM writes the value of
+`LIFECYCLE_DEFAULT_FW_VERSION` so you can verify remotely which firmware version
+is running.
+
+## Typical installation flow
+
+1. **First boot** – LCM starts in AP mode and exposes the captive portal.
+2. **Network provisioning** – The installer links the device to a Wi-Fi network
+   and stores the GitHub repository that hosts signed firmware releases.
+3. **Firmware acquisition** – LCM downloads `main.bin` and `main.bin.sig`,
+   validates both files, and activates the firmware upon success.
+4. **Normal operation** – Your application firmware now runs while LCM remains on
+   standby to handle OTA updates and recovery tasks.
+
+## Building LCM with ESP-IDF
+
+1. Install ESP-IDF by following the official Espressif documentation.
+2. Select the correct target for your board:
+
    ```bash
-   idf.py set-target esp32        # of esp32s2, esp32s3, esp32c3, ...
+   idf.py set-target esp32        # or esp32s2, esp32s3, esp32c3, ...
    ```
-3. Bouw de lifecycle-manager firmware:
+
+3. Build the lifecycle manager firmware:
+
    ```bash
    idf.py build
    ```
-   De output verschijnt in `build/` als `main.bin`.
 
-## Firmware ondertekenen (`main.bin` en `main.bin.sig`)
+   The resulting `main.bin` will be placed inside the `build/` directory.
 
-Na het bouwen moet elke firmwareversie voorzien worden van een signature-bestand.
-Voer de onderstaande stappen uit in de projectroot:
+## Signing `main.bin`
+
+Every firmware release must be accompanied by a signature file. From the project
+root run:
 
 ```bash
 openssl sha384 -binary -out build/main.bin.sig build/main.bin
 printf "%08x" "$(wc -c < build/main.bin)" | xxd -r -p >> build/main.bin.sig
 ```
 
-> Tip: gebruik het meegeleverde script `./generate_sig.sh` om deze stappen
-> automatisch uit te voeren.
+> Tip: the repository includes `./generate_sig.sh` to automate these commands.
 
-Publiceer beide bestanden in een release op GitHub, bijvoorbeeld onder versie
-`0.0.1`. Volg [Semantic Versioning](https://semver.org/) voor het kiezen van het
-versienummer:
+Upload both files to a GitHub release (for example version `0.0.1`). Follow
+[Semantic Versioning](https://semver.org/) when deciding on the version number:
 
-- **MAJOR** verhogen bij niet-compatibele API-wijzigingen.
-- **MINOR** verhogen bij nieuwe, achterwaarts-compatibele features.
-- **PATCH** verhogen bij bugfixes die achterwaarts compatibel zijn.
+- Increase **MAJOR** for incompatible API changes.
+- Increase **MINOR** when you add backward-compatible functionality.
+- Increase **PATCH** for backward-compatible bug fixes.
 
-## Flash-instructies per chipset
+## Flash instructions by chipset
 
-Gebruik `esptool.py` (beschikbaar via `pip install esptool`) en vervang de
-bestandsnamen door de output van jouw build:
+Use `esptool.py` (installable via `pip install esptool`) and replace the
+filenames with the artifacts produced by your build.
 
 ### ESP32
+
 ```bash
 python -m esptool --chip esp32 -b 460800 --before default_reset --after hard_reset \
   write_flash --flash_mode dio --flash_size 4MB --flash_freq 40m \
@@ -120,6 +130,7 @@ python -m esptool --chip esp32 -b 460800 --before default_reset --after hard_res
 ```
 
 ### ESP32-S2
+
 ```bash
 python -m esptool --chip esp32s2 -b 460800 --before default_reset --after hard_reset \
   write_flash --flash_mode dio --flash_size 4MB --flash_freq 80m \
@@ -130,6 +141,7 @@ python -m esptool --chip esp32s2 -b 460800 --before default_reset --after hard_r
 ```
 
 ### ESP32-S3
+
 ```bash
 python -m esptool --chip esp32s3 -b 460800 --before default_reset --after hard_reset \
   write_flash --flash_mode dio --flash_size 4MB --flash_freq 80m \
@@ -140,6 +152,7 @@ python -m esptool --chip esp32s3 -b 460800 --before default_reset --after hard_r
 ```
 
 ### ESP32-C2
+
 ```bash
 python -m esptool --chip esp32c2 -b 460800 --before default_reset --after hard_reset \
   write_flash --flash_mode dio --flash_size 4MB --flash_freq 60m \
@@ -150,6 +163,7 @@ python -m esptool --chip esp32c2 -b 460800 --before default_reset --after hard_r
 ```
 
 ### ESP32-C3
+
 ```bash
 python -m esptool --chip esp32c3 -b 460800 --before default_reset --after hard_reset \
   write_flash --flash_mode dio --flash_size 4MB --flash_freq 80m \
@@ -160,6 +174,7 @@ python -m esptool --chip esp32c3 -b 460800 --before default_reset --after hard_r
 ```
 
 ### ESP32-C5
+
 ```bash
 python -m esptool --chip esp32c5 -b 460800 --before default_reset --after hard_reset \
   write_flash --flash_mode dio --flash_size 4MB --flash_freq 80m \
@@ -170,6 +185,7 @@ python -m esptool --chip esp32c5 -b 460800 --before default_reset --after hard_r
 ```
 
 ### ESP32-C6 / ESP32-C61
+
 ```bash
 python -m esptool --chip esp32c6 -b 460800 --before default_reset --after hard_reset \
   write_flash --flash_mode dio --flash_size 4MB --flash_freq 80m \
@@ -179,15 +195,15 @@ python -m esptool --chip esp32c6 -b 460800 --before default_reset --after hard_r
   0x20000 esp32c6-lifecycle-manager.bin
 ```
 
-> Gebruik voor de ESP32-C61 dezelfde offsets en vervang uitsluitend de bestandsnamen.
+> For ESP32-C61 use the same offsets and swap only the filenames.
 
-## Resetten en herstellen
+## Reset and recovery recap
 
-- **Software reset naar fabrieksinstellingen** – Aanroep van de LCM API zet alle
-  opgeslagen configuratie terug en start het apparaat opnieuw op.
-- **Hardware reset naar fabrieksinstellingen** – Zet het apparaat 10 keer snel
-  achter elkaar uit en weer aan. Zodra LCM het patroon detecteert, volgt een
-  aftelvenster van ~11 seconden waarna de fabrieksreset wordt uitgevoerd.
+- **Software factory reset** – Triggered through the LCM API to wipe stored
+  configuration and reboot.
+- **Hardware factory reset** – Power-cycle or reset the device 10 consecutive
+  times. LCM detects the pattern, waits roughly 11 seconds, and then executes the
+  factory reset.
 
-Met deze stappen kun je als beginner snel en veilig een ESP32-device provisionen,
-voorzien van jouw eigen firmware en op afstand beheren met behulp van LCM.
+Armed with these steps you can quickly provision an ESP32 device, deploy your
+own firmware, and keep it managed remotely through LCM.
