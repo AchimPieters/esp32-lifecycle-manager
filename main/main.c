@@ -22,6 +22,8 @@
  **/
 
 #include <stdio.h>
+#include <stdlib.h>
+#include <stdbool.h>
 #include <esp_log.h>
 #include <nvs_flash.h>
 #include <freertos/FreeRTOS.h>
@@ -33,10 +35,21 @@
 #include <esp_timer.h>
 #include <esp_wifi.h>
 #include <esp_partition.h>
+#include <esp_idf_version.h>
+#include <esp_chip_info.h>
+#include "soc/soc_caps.h"
 #include <inttypes.h>
 #include <nvs.h>
 #include "github_update.h"
 #include "led_indicator.h"
+
+#if ESP_IDF_VERSION < ESP_IDF_VERSION_VAL(5, 5, 1)
+#error "esp32-lifecycle-manager requires ESP-IDF v5.5.1 or newer"
+#endif
+
+#if !SOC_WIFI_SUPPORTED
+#error "esp32-lifecycle-manager requires a Wi-Fi capable target"
+#endif
 
 static const char *TAG = "main";
 
@@ -57,6 +70,40 @@ static bool led_enabled = true;
 static bool led_on = false;
 static TaskHandle_t led_task = NULL;
 static bool led_blinking = false;
+
+static const char *chip_model_to_str(esp_chip_model_t model) {
+    switch (model) {
+        case ESP_CHIP_MODEL_ESP32: return "ESP32";
+        case ESP_CHIP_MODEL_ESP32S2: return "ESP32-S2";
+        case ESP_CHIP_MODEL_ESP32S3: return "ESP32-S3";
+        case ESP_CHIP_MODEL_ESP32C2: return "ESP32-C2";
+        case ESP_CHIP_MODEL_ESP32C3: return "ESP32-C3";
+        case ESP_CHIP_MODEL_ESP32C5: return "ESP32-C5";
+        case ESP_CHIP_MODEL_ESP32C6: return "ESP32-C6";
+#ifdef ESP_CHIP_MODEL_ESP32C61
+        case ESP_CHIP_MODEL_ESP32C61: return "ESP32-C61";
+#endif
+        default: return "unknown";
+    }
+}
+
+static bool chip_model_supported(esp_chip_model_t model) {
+    switch (model) {
+        case ESP_CHIP_MODEL_ESP32:
+        case ESP_CHIP_MODEL_ESP32S2:
+        case ESP_CHIP_MODEL_ESP32S3:
+        case ESP_CHIP_MODEL_ESP32C2:
+        case ESP_CHIP_MODEL_ESP32C3:
+        case ESP_CHIP_MODEL_ESP32C5:
+        case ESP_CHIP_MODEL_ESP32C6:
+#ifdef ESP_CHIP_MODEL_ESP32C61
+        case ESP_CHIP_MODEL_ESP32C61:
+#endif
+            return true;
+        default:
+            return false;
+    }
+}
 
 #define LED_BLINK_ON_MS 500
 #define LED_BLINK_OFF_MS 500
@@ -383,7 +430,28 @@ static void lifecycle_factory_reset_and_reboot(void) {
 }
 
 void app_main(void) {
-    ESP_LOGI(TAG, "Application start");
+    esp_chip_info_t chip_info;
+    esp_chip_info(&chip_info);
+    const char *chip_name = chip_model_to_str(chip_info.model);
+    bool wifi_capable = (chip_info.features & CHIP_FEATURE_WIFI_BGN) != 0;
+#ifdef CHIP_FEATURE_WIFI_HE
+    wifi_capable = wifi_capable || (chip_info.features & CHIP_FEATURE_WIFI_HE) != 0;
+#endif
+    if (!chip_model_supported(chip_info.model)) {
+        ESP_LOGE(TAG, "Unsupported chip model detected (id=%d)", chip_info.model);
+        abort();
+    }
+    if (!wifi_capable) {
+        ESP_LOGE(TAG, "%s does not report Wi-Fi capability; aborting", chip_name);
+        abort();
+    }
+    ESP_LOGI(TAG,
+             "Application start on %s rev %d with %d CPU core%s%s",
+             chip_name,
+             chip_info.revision,
+             chip_info.cores,
+             chip_info.cores == 1 ? "" : "s",
+             (chip_info.features & CHIP_FEATURE_EMB_FLASH) ? ", embedded flash" : "");
     esp_err_t err = nvs_flash_init();
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "NVS init failed: %s", esp_err_to_name(err));

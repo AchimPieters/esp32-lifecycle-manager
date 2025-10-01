@@ -2,6 +2,10 @@
 
 This folder contains a complete HomeKit LED accessory that uses the **Lifecycle Manager (LCM)**. The guide below walks you step by step through converting the original demo (without LCM) into the new LCM-enabled version. It is written for beginners: for every section you learn what to add, why it matters, and what it does.
 
+> **Note:** Build this example with ESP-IDF v5.5.1 (or newer within the v5
+> series) and one of the Wi-Fi capable ESP32 targets listed in the main
+> project README.
+
 ## 1. Understand the basics
 
 | Component | Without LCM | With LCM |

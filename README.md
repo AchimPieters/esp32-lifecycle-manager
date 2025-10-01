@@ -1,5 +1,29 @@
 # esp32-lifecycle-manager
 
+## Supported ESP-IDF version and targets
+
+The project now requires ESP-IDF **v5.5.1** (or newer within the v5 release
+line) and has been validated across all Wi-Fi capable ESP32 variants that share
+the same lifecycle and OTA flow:
+
+* ESP32
+* ESP32-S2 / ESP32-S3
+* ESP32-C2 / ESP32-C3 / ESP32-C5 / ESP32-C6
+* ESP32-C61
+
+Select the desired target before building, for example:
+
+```bash
+idf.py set-target esp32c6
+```
+
+For the ESP32-C61 preview target, use the preview subcommand included with
+ESP-IDF v5.5.1:
+
+```bash
+idf.py --preview set-target esp32c61
+```
+
 ## Signing firmware
 
 After building your firmware, generate a `main.bin.sig` file containing the
