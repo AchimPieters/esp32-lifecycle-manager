@@ -36,7 +36,7 @@ this portal you can:
 - **Blink the status LED for identification** so you can confirm you are working
   with the correct device during installation or servicing.
 
-![main_screen](https://github.com/AchimPieters/esp32-lifecycle-manager/blob/main/main_screen.png)
+<img src="https://github.com/AchimPieters/esp32-lifecycle-manager/blob/main/main_screen.png" width="400">
 
 ### Downloading and installing `main.bin`
 
