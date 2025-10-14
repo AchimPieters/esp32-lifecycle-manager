@@ -395,7 +395,15 @@ void app_main(void) {
     if (handle_power_cycle_sequence()) {
         return;
     }
-    if (!load_led_config(&led_enabled, &led_gpio, &led_active_high)) {
+    bool cfg_led_enabled = led_enabled;
+    int cfg_led_gpio = led_gpio;
+    bool cfg_led_active_high = true;
+
+    if (load_led_config(&cfg_led_enabled, &cfg_led_gpio, &cfg_led_active_high)) {
+        led_enabled = cfg_led_enabled;
+        led_gpio = cfg_led_gpio;
+        led_active_high = cfg_led_active_high;
+    } else {
         led_active_high = true;
     }
     gpio_init();
