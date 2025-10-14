@@ -446,7 +446,7 @@ bool load_led_config(bool *enabled, int *gpio, bool *active_high) {
 
     uint8_t en;
     int32_t pin;
-    uint8_t level = 1;
+    uint8_t level = 0;
     err = nvs_get_u8(h, "led_en", &en);
     if (err != ESP_OK) {
         nvs_close(h);
@@ -460,7 +460,7 @@ bool load_led_config(bool *enabled, int *gpio, bool *active_high) {
     err = nvs_get_u8(h, "led_lvl", &level);
     if (err != ESP_OK) {
         if (err == ESP_ERR_NVS_NOT_FOUND) {
-            level = 1;
+            level = 0;
         } else {
             nvs_close(h);
             return false;
