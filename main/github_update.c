@@ -395,7 +395,7 @@ bool load_fw_config(char *repo, size_t repo_len, bool *pre) {
     return true;
 }
 
-esp_err_t save_led_config(bool enabled, int gpio) {
+esp_err_t save_led_config(bool enabled, int gpio, bool active_high) {
     nvs_handle_t h;
     esp_err_t err = nvs_open("fwcfg", NVS_READWRITE, &h);
     if (err != ESP_OK) {
@@ -422,16 +422,22 @@ esp_err_t save_led_config(bool enabled, int gpio) {
         return err;
     }
 
+    if ((err = nvs_set_u8(h, "led_lvl", active_high ? 1 : 0)) != ESP_OK) {
+        ESP_LOGE(TAG, "nvs_set_u8(led_lvl) failed: %s", esp_err_to_name(err));
+        nvs_close(h);
+        return err;
+    }
+
     err = nvs_commit(h);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "nvs_commit failed: %s", esp_err_to_name(err));
     }
-    ESP_LOGD(TAG, "Saved LED config enabled=%d gpio=%d", enabled, gpio);
+    ESP_LOGD(TAG, "Saved LED config enabled=%d gpio=%d active_high=%d", enabled, gpio, active_high);
     nvs_close(h);
     return err;
 }
 
-bool load_led_config(bool *enabled, int *gpio) {
+bool load_led_config(bool *enabled, int *gpio, bool *active_high) {
     nvs_handle_t h;
     esp_err_t err = nvs_open("fwcfg", NVS_READONLY, &h);
     if (err != ESP_OK) {
@@ -440,6 +446,7 @@ bool load_led_config(bool *enabled, int *gpio) {
 
     uint8_t en;
     int32_t pin;
+    uint8_t level = 1;
     err = nvs_get_u8(h, "led_en", &en);
     if (err != ESP_OK) {
         nvs_close(h);
@@ -450,12 +457,22 @@ bool load_led_config(bool *enabled, int *gpio) {
         nvs_close(h);
         return false;
     }
+    err = nvs_get_u8(h, "led_lvl", &level);
+    if (err != ESP_OK) {
+        if (err == ESP_ERR_NVS_NOT_FOUND) {
+            level = 1;
+        } else {
+            nvs_close(h);
+            return false;
+        }
+    }
     if (pin > 32) {
         ESP_LOGW(TAG, "Stored LED GPIO %ld out of range; using disabled", (long)pin);
         pin = -1;
     }
     if (enabled) *enabled = en != 0;
     if (gpio) *gpio = (int)pin;
+    if (active_high) *active_high = level != 0;
     nvs_close(h);
     return true;
 }

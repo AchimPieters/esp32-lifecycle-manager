@@ -297,6 +297,15 @@
             <option value="30">GPIO30</option><option value="31">GPIO31</option><option value="32">GPIO32</option>
           </select>
         </div>
+
+        <div class="checkbox">
+          <label class="checkbox-text" for="led_level_toggle">LED Level</label>
+          <div class="toggleWrapper">
+            <input id="led_level_toggle" type="checkbox" class="mobileToggle" />
+            <label for="led_level_toggle"></label>
+          </div>
+          <input type="hidden" id="led_level" name="led_level" value="low" />
+        </div>
       </section>
       <input type="submit" id="join" value="Join" disabled />
     </form>
@@ -311,16 +320,32 @@
     const join_button = document.getElementById('join');
     const led_checkbox = document.getElementById('led_indicator');
     const led_select = document.getElementById('led_gpio');
+    const led_level_input = document.getElementById('led_level');
+    const led_level_toggle = document.getElementById('led_level_toggle');
 
     function updateLedControls() {
+      const shouldDisable = !led_checkbox.checked;
       if (led_select) {
-        led_select.disabled = !led_checkbox.checked;
+        led_select.disabled = shouldDisable;
+      }
+      if (led_level_input) {
+        led_level_input.disabled = shouldDisable;
+      }
+      if (led_level_toggle) {
+        led_level_toggle.disabled = shouldDisable;
       }
     }
 
     if (led_checkbox) {
       led_checkbox.checked = false;
       led_checkbox.addEventListener('change', updateLedControls);
+    }
+    if (led_level_toggle && led_level_input) {
+      led_level_toggle.checked = false;
+      led_level_input.value = 'low';
+      led_level_toggle.addEventListener('change', () => {
+        led_level_input.value = led_level_toggle.checked ? 'high' : 'low';
+      });
     }
     updateLedControls();
 
@@ -332,18 +357,25 @@
       li.classList.add('selected');
     }
 
-    window.applyLedPreferences = (enabled, gpioValue) => {
-      if (!led_checkbox || !led_select) {
+    window.applyLedPreferences = (enabled, gpioValue, level) => {
+      if (!led_checkbox) {
         return;
       }
       led_checkbox.checked = !!enabled;
-      const normalizedValue = gpioValue === undefined || gpioValue === null ? '' : String(gpioValue);
-      const optionValues = Array.from(led_select.options).map(opt => opt.value);
-      const fallbackValue = optionValues.length ? optionValues[0] : '';
-      if (normalizedValue && normalizedValue !== 'n' && optionValues.includes(normalizedValue)) {
-        led_select.value = normalizedValue;
-      } else {
-        led_select.value = fallbackValue;
+      if (led_select) {
+        const normalizedValue = gpioValue === undefined || gpioValue === null ? '' : String(gpioValue);
+        const optionValues = Array.from(led_select.options).map(opt => opt.value);
+        const fallbackValue = optionValues.length ? optionValues[0] : '';
+        if (normalizedValue && normalizedValue !== 'n' && optionValues.includes(normalizedValue)) {
+          led_select.value = normalizedValue;
+        } else {
+          led_select.value = fallbackValue;
+        }
+      }
+      if (led_level_input && led_level_toggle) {
+        const normalizedLevel = level === 'high' || level === 'low' ? level : 'low';
+        led_level_input.value = normalizedLevel;
+        led_level_toggle.checked = normalizedLevel === 'high';
       }
       updateLedControls();
     };
