@@ -55,6 +55,7 @@ void wifi_ready(void);
 static int led_gpio = CONFIG_ESP_LED_GPIO;
 static bool led_enabled = true;
 static bool led_on = false;
+static bool led_active_high = false;
 static TaskHandle_t led_task = NULL;
 static bool led_blinking = false;
 
@@ -65,7 +66,8 @@ void led_write(bool on) {
     if (led_gpio < 0) return;
     ESP_LOGD(TAG, "Setting LED %s", on ? "ON" : "OFF");
     led_on = on;
-    gpio_set_level(led_gpio, on ? 1 : 0);
+    int level = (on == led_active_high) ? 1 : 0;
+    gpio_set_level(led_gpio, level);
 }
 
 static void led_blink_task(void *pv) {
@@ -393,7 +395,9 @@ void app_main(void) {
     if (handle_power_cycle_sequence()) {
         return;
     }
-    load_led_config(&led_enabled, &led_gpio);
+    if (!load_led_config(&led_enabled, &led_gpio, &led_active_high)) {
+        led_active_high = false;
+    }
     gpio_init();
     wifi_config_init("LCM", NULL, wifi_ready);
 }

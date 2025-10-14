@@ -414,10 +414,12 @@ static void wifi_scan_task(void *arg)
 static void wifi_config_send_led_preferences(client_t *client) {
         bool enabled = false;
         int gpio = CONFIG_ESP_LED_GPIO;
+        bool active_high = false;
 
-        if (!load_led_config(&enabled, &gpio)) {
+        if (!load_led_config(&enabled, &gpio, &active_high)) {
                 enabled = false;
                 gpio = CONFIG_ESP_LED_GPIO;
+                active_high = false;
         }
 
         const char *value = "";
@@ -427,13 +429,16 @@ static void wifi_config_send_led_preferences(client_t *client) {
                 value = value_buf;
         }
 
-        char script[160];
+        const char *level_value = active_high ? "high" : "low";
+
+        char script[208];
         int written = snprintf(
                 script,
                 sizeof(script),
-                "<script>if(window.applyLedPreferences){window.applyLedPreferences(%s,'%s');}</script>",
+                "<script>if(window.applyLedPreferences){window.applyLedPreferences(%s,'%s','%s');}</script>",
                 enabled ? "true" : "false",
-                value);
+                value,
+                level_value);
         if (written <= 0 || written >= (int)sizeof(script)) {
                 ESP_LOGE("wifi_config", "Failed to compose LED preference script");
                 return;
@@ -503,6 +508,7 @@ static void wifi_config_server_on_settings_update(client_t *client) {
     form_param_t *pre_param = form_params_find(form, "use_prerelease");
     form_param_t *led_param = form_params_find(form, "led_indicator");
     form_param_t *gpio_param = form_params_find(form, "led_gpio");
+    form_param_t *level_param = form_params_find(form, "led_level");
 
     if (!ssid_param) {
         DEBUG("Invalid form data, redirecting to /settings");
@@ -520,6 +526,7 @@ static void wifi_config_server_on_settings_update(client_t *client) {
     DEBUG("Setting ota.pre param = %s", pre_param ? pre_param->value : "(none)");
     DEBUG("Setting led_indicator param = %s", led_param ? led_param->value : "(none)");
     DEBUG("Setting led_gpio param = %s", gpio_param ? gpio_param->value : "(none)");
+    DEBUG("Setting led_level param = %s", level_param ? level_param->value : "(none)");
 
     sysparam_set_string("wifi_ssid", ssid_param->value);
 
@@ -535,6 +542,18 @@ static void wifi_config_server_on_settings_update(client_t *client) {
     }
 
     bool led = led_param && (strcmp(led_param->value, "on") == 0 || strcmp(led_param->value, "1") == 0);
+    bool active_high = false;
+    if (level_param && level_param->value) {
+        if (strcmp(level_param->value, "high") == 0 || strcmp(level_param->value, "1") == 0) {
+            active_high = true;
+        } else if (strcmp(level_param->value, "low") == 0 || strcmp(level_param->value, "0") == 0) {
+            active_high = false;
+        } else {
+            ESP_LOGW("wifi_config", "Unknown LED level value '%s', defaulting to low", level_param->value);
+        }
+    } else {
+        (void) load_led_config(NULL, NULL, &active_high);
+    }
     int gpio = -1;
     if (gpio_param && gpio_param->value && gpio_param->value[0] != '\0' && strcmp(gpio_param->value, "n") != 0) {
         int candidate = atoi(gpio_param->value);
@@ -544,8 +563,8 @@ static void wifi_config_server_on_settings_update(client_t *client) {
             ESP_LOGW("wifi_config", "Ignoring invalid LED GPIO selection: %s", gpio_param->value);
         }
     }
-    DEBUG("Persisting led_indicator=%d gpio=%d", led, gpio);
-    save_led_config(led, gpio);
+    DEBUG("Persisting led_indicator=%d gpio=%d active_high=%d", led, gpio, active_high);
+    save_led_config(led, gpio, active_high);
 
     form_params_free(form);
 

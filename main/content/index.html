@@ -297,6 +297,14 @@
             <option value="30">GPIO30</option><option value="31">GPIO31</option><option value="32">GPIO32</option>
           </select>
         </div>
+
+        <div class="checkbox">
+          <label class="checkbox-text" for="led_level">LED Level</label>
+          <select id="led_level" name="led_level">
+            <option value="low" selected>Low (Off)</option>
+            <option value="high">High (On)</option>
+          </select>
+        </div>
       </section>
       <input type="submit" id="join" value="Join" disabled />
     </form>
@@ -311,10 +319,15 @@
     const join_button = document.getElementById('join');
     const led_checkbox = document.getElementById('led_indicator');
     const led_select = document.getElementById('led_gpio');
+    const led_level_select = document.getElementById('led_level');
 
     function updateLedControls() {
+      const shouldDisable = !led_checkbox.checked;
       if (led_select) {
-        led_select.disabled = !led_checkbox.checked;
+        led_select.disabled = shouldDisable;
+      }
+      if (led_level_select) {
+        led_level_select.disabled = shouldDisable;
       }
     }
 
@@ -332,18 +345,24 @@
       li.classList.add('selected');
     }
 
-    window.applyLedPreferences = (enabled, gpioValue) => {
-      if (!led_checkbox || !led_select) {
+    window.applyLedPreferences = (enabled, gpioValue, level) => {
+      if (!led_checkbox) {
         return;
       }
       led_checkbox.checked = !!enabled;
-      const normalizedValue = gpioValue === undefined || gpioValue === null ? '' : String(gpioValue);
-      const optionValues = Array.from(led_select.options).map(opt => opt.value);
-      const fallbackValue = optionValues.length ? optionValues[0] : '';
-      if (normalizedValue && normalizedValue !== 'n' && optionValues.includes(normalizedValue)) {
-        led_select.value = normalizedValue;
-      } else {
-        led_select.value = fallbackValue;
+      if (led_select) {
+        const normalizedValue = gpioValue === undefined || gpioValue === null ? '' : String(gpioValue);
+        const optionValues = Array.from(led_select.options).map(opt => opt.value);
+        const fallbackValue = optionValues.length ? optionValues[0] : '';
+        if (normalizedValue && normalizedValue !== 'n' && optionValues.includes(normalizedValue)) {
+          led_select.value = normalizedValue;
+        } else {
+          led_select.value = fallbackValue;
+        }
+      }
+      if (led_level_select) {
+        const normalizedLevel = level === 'high' || level === 'low' ? level : 'low';
+        led_level_select.value = normalizedLevel;
       }
       updateLedControls();
     };
