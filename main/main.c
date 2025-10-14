@@ -55,7 +55,7 @@ void wifi_ready(void);
 static int led_gpio = CONFIG_ESP_LED_GPIO;
 static bool led_enabled = true;
 static bool led_on = false;
-static bool led_active_high = false;
+static bool led_active_high = true;
 static TaskHandle_t led_task = NULL;
 static bool led_blinking = false;
 
@@ -396,7 +396,7 @@ void app_main(void) {
         return;
     }
     if (!load_led_config(&led_enabled, &led_gpio, &led_active_high)) {
-        led_active_high = false;
+        led_active_high = true;
     }
     gpio_init();
     wifi_config_init("LCM", NULL, wifi_ready);
