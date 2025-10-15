@@ -68,7 +68,11 @@ static esp_netif_t *s_wifi_netif = NULL;
 
 static const uint32_t k_post_reset_magic = 0xC0DEC0DE;
 #ifndef CONFIG_LCM_RESTART_COUNTER_TIMEOUT_MS
-#define CONFIG_LCM_RESTART_COUNTER_TIMEOUT_MS 0
+#define CONFIG_LCM_RESTART_COUNTER_TIMEOUT_MS 5000
+#endif
+
+#if CONFIG_LCM_RESTART_COUNTER_TIMEOUT_MS <= 0
+#error "CONFIG_LCM_RESTART_COUNTER_TIMEOUT_MS must be a positive value"
 #endif
 
 static const uint64_t k_restart_counter_timeout_us =
@@ -390,12 +394,6 @@ static void lifecycle_restart_counter_timeout(void *arg) {
 
 static void lifecycle_schedule_restart_counter_timeout(const char *log_tag) {
     const char *tag = (log_tag != NULL) ? log_tag : LIFECYCLE_TAG;
-
-    if (k_restart_counter_timeout_us == 0ULL) {
-        ESP_LOGD(tag,
-                "[lifecycle] Restart counter auto-reset disabled; retaining power-cycle count until manual reset");
-        return;
-    }
 
     if (s_restart_counter_timer == NULL) {
         const esp_timer_create_args_t timer_args = {

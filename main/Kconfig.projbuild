@@ -12,14 +12,4 @@ menu "StudioPieters"
               help
                   Enable this option to reboot the device if the WiFi connection is lost.
 
-      config LCM_RESTART_COUNTER_TIMEOUT_MS
-              int "Restart counter auto-reset timeout (ms)"
-              default 0
-              range 0 600000
-              help
-                  Set the idle time in milliseconds after which the power-cycle counter
-                  is automatically cleared. Use 0 to disable the automatic reset so
-                  that the counter persists until a non power-on reset or a factory
-                  reset clears it.
-
 endmenu
