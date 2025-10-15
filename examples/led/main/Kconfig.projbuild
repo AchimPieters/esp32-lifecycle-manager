@@ -24,14 +24,4 @@ menu "StudioPieters"
               help
                    If you want to change the HomeKit Setup ID, you can do that here (Note: you need to make a new QR-CODE To make it work)
 
-      config LCM_RESTART_COUNTER_TIMEOUT_MS
-              int "Restart counter auto-reset timeout (ms)"
-              default 0
-              range 0 600000
-              help
-                  Hoe lang (in milliseconden) het apparaat aan moet blijven voordat
-                  de automatische reset van de power-cycle teller plaatsvindt.
-                  Kies 0 om de teller niet automatisch te wissen zodat 10-12
-                  power-cycles altijd een fabrieksreset afdwingen.
-
 endmenu
