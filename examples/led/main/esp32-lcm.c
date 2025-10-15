@@ -81,8 +81,6 @@ static const uint64_t k_restart_counter_timeout_ms =
     k_restart_counter_timeout_us / 1000ULL;
 static const char *k_restart_counter_namespace = "lcm";
 static const char *k_restart_counter_key = "restart_count";
-static const uint32_t k_restart_counter_threshold_min = 10U;
-static const uint32_t k_restart_counter_threshold_max = 12U;
 
 RTC_DATA_ATTR static struct {
     uint32_t magic;
@@ -447,40 +445,27 @@ void lifecycle_log_post_reset_state(const char *log_tag) {
 
     uint32_t restart_count = lifecycle_increment_restart_counter();
 
-    uint32_t effective_count = restart_count;
-    if (restart_count > k_restart_counter_threshold_max) {
-        ESP_LOGW(tag,
-                 "[lifecycle] Detected %" PRIu32 " consecutive restarts; capping to %" PRIu32 " for factory reset window",
-                 restart_count,
-                 k_restart_counter_threshold_max);
-        effective_count = k_restart_counter_threshold_max;
-        s_post_reset_state.restart_count = effective_count;
-    }
-
-    esp_err_t save_err = save_restart_counter_to_nvs(effective_count, tag);
+    esp_err_t save_err = save_restart_counter_to_nvs(restart_count, tag);
     if (save_err != ESP_OK) {
         ESP_LOGW(tag,
                  "[lifecycle] Failed to persist restart counter to NVS (err=%s)",
                  esp_err_to_name(save_err));
     }
 
-    restart_count = effective_count;
-
     ESP_LOGI(tag, "[lifecycle] consecutive_restart_count=%" PRIu32, restart_count);
 
-    if (restart_count >= k_restart_counter_threshold_min &&
-            restart_count <= k_restart_counter_threshold_max) {
-        ESP_LOGW(tag,
-                 "[lifecycle] Detected %" PRIu32 " consecutive restarts within factory reset window (%" PRIu32 "-%" PRIu32 "); triggering factory reset",
-                 restart_count,
-                 k_restart_counter_threshold_min,
-                 k_restart_counter_threshold_max);
+    lifecycle_schedule_restart_counter_timeout(tag);
+
+    if (restart_count >= 10U) {
+        ESP_LOGW(tag, "[lifecycle] Detected 10 consecutive restarts; performing factory reset countdown");
+        for (int i = 10; i >= 0; --i) {
+            ESP_LOGW(tag, "[lifecycle] Factory reset in %d", i);
+            vTaskDelay(pdMS_TO_TICKS(1000));
+        }
+
+        lifecycle_reset_restart_counter();
         lifecycle_factory_reset_and_reboot();
         return;
-    }
-
-    if (restart_count < k_restart_counter_threshold_min) {
-        lifecycle_schedule_restart_counter_timeout(tag);
     }
 
     lifecycle_post_reset_reason_t reason = lifecycle_peek_post_reset_reason();
@@ -1078,6 +1063,8 @@ static void erase_ota_app_partitions(void) {
 void lifecycle_factory_reset_and_reboot(void) {
     ESP_LOGI(LIFECYCLE_TAG, "Performing factory reset (HomeKit + Wi-Fi)");
 
+    lifecycle_reset_restart_counter();
+
     bool factory_boot_selected = false;
 
     const esp_partition_t *factory = esp_partition_find_first(
@@ -1123,8 +1110,6 @@ void lifecycle_factory_reset_and_reboot(void) {
     }
 
     erase_nvs_partition();
-
-    lifecycle_reset_restart_counter();
 
     lifecycle_log_step("delay_before_reset");
     vTaskDelay(pdMS_TO_TICKS(100));
