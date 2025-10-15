@@ -44,7 +44,13 @@ static const char *RESTART_COUNTER_NAMESPACE = "lcm";
 static const char *RESTART_COUNTER_KEY = "restart_count";
 static const uint32_t RESTART_COUNTER_THRESHOLD_MIN = 10U;
 static const uint32_t RESTART_COUNTER_THRESHOLD_MAX = 12U;
-static const uint32_t RESTART_COUNTER_RESET_TIMEOUT_MS = 5000U;
+
+#ifndef CONFIG_LCM_RESTART_COUNTER_TIMEOUT_MS
+#define CONFIG_LCM_RESTART_COUNTER_TIMEOUT_MS 0
+#endif
+
+static const uint32_t RESTART_COUNTER_RESET_TIMEOUT_MS =
+        (uint32_t)CONFIG_LCM_RESTART_COUNTER_TIMEOUT_MS;
 
 static esp_timer_handle_t restart_counter_timer = NULL;
 static uint32_t restart_counter_value = 0U;
@@ -256,6 +262,12 @@ static void restart_counter_timeout(void *arg) {
 }
 
 static void restart_counter_schedule_reset(void) {
+    if (RESTART_COUNTER_RESET_TIMEOUT_MS == 0U) {
+        ESP_LOGD(TAG,
+                "Restart counter auto-reset timeout disabled; retaining power-cycle count until manual reset");
+        return;
+    }
+
     if (restart_counter_timer == NULL) {
         const esp_timer_create_args_t args = {
             .callback = restart_counter_timeout,
