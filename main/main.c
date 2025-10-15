@@ -303,21 +303,29 @@ static bool handle_power_cycle_sequence(void) {
     count++;
 
     ESP_LOGI(TAG, "Consecutive power cycles: %" PRIu32, count);
+    restart_counter_store(count);
 
-    uint32_t persisted_count = count;
     if (count > RESTART_COUNTER_THRESHOLD_MAX) {
         ESP_LOGW(TAG,
-                "Detected %" PRIu32 " consecutive power cycles; exceeding maximum window %" PRIu32 "; capping at %" PRIu32 " for factory reset",
-                count, RESTART_COUNTER_THRESHOLD_MAX, RESTART_COUNTER_THRESHOLD_MAX);
-        persisted_count = RESTART_COUNTER_THRESHOLD_MAX;
+                "Detected %" PRIu32 " consecutive power cycles; exceeding maximum window %" PRIu32 ", resetting counter",
+                count, RESTART_COUNTER_THRESHOLD_MAX);
+        restart_counter_reset();
+        restart_counter_schedule_reset();
+        return false;
     }
 
-    restart_counter_store(persisted_count);
-
-    if (persisted_count >= RESTART_COUNTER_THRESHOLD_MIN) {
+    if (count >= RESTART_COUNTER_THRESHOLD_MIN) {
         ESP_LOGW(TAG,
-                "Detected %" PRIu32 " consecutive power cycles within factory reset window (%" PRIu32 "-%" PRIu32 "); triggering factory reset",
-                persisted_count, RESTART_COUNTER_THRESHOLD_MIN, RESTART_COUNTER_THRESHOLD_MAX);
+                "Detected %" PRIu32 " consecutive power cycles within factory reset window (%" PRIu32 "-%" PRIu32 "); starting countdown",
+                count, RESTART_COUNTER_THRESHOLD_MIN, RESTART_COUNTER_THRESHOLD_MAX);
+
+        for (int i = (int)RESTART_COUNTER_THRESHOLD_MIN; i >= 0; --i) {
+            ESP_LOGW(TAG, "Factory reset in %d", i);
+            vTaskDelay(pdMS_TO_TICKS(1000));
+        }
+
+        restart_counter_reset();
+
         lifecycle_factory_reset_and_reboot();
         return true;
     }
