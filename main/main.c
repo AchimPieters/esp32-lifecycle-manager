@@ -58,7 +58,6 @@ static bool led_on = false;
 static bool led_active_high = false;
 static TaskHandle_t led_task = NULL;
 static bool led_blinking = false;
-static void led_indicator_apply(bool enabled, int gpio, bool active_high);
 
 #define LED_BLINK_ON_MS 500
 #define LED_BLINK_OFF_MS 500
@@ -118,68 +117,13 @@ void led_blinking_stop() {
 void gpio_init() {
     ESP_LOGD(TAG, "Initializing GPIO");
     // LED setup
-    if (led_gpio >= 0 && led_enabled) {
+    if (led_gpio >= 0) {
         gpio_reset_pin(led_gpio);
         gpio_set_direction(led_gpio, GPIO_MODE_OUTPUT);
         led_write(led_on);
         ESP_LOGD(TAG, "LED GPIO configured on pin %d", led_gpio);
-    } else if (led_gpio >= 0) {
-        gpio_reset_pin(led_gpio);
-        ESP_LOGD(TAG, "LED indicator disabled on GPIO %d", led_gpio);
-    } else {
-        ESP_LOGD(TAG, "LED indicator disabled");
-    }
-}
-
-static void led_indicator_apply(bool enabled, int gpio, bool active_high) {
-    bool resume_blinking = led_blinking;
-    int previous_gpio = led_gpio;
-
-    if (led_blinking) {
-        led_blinking_stop();
-    } else {
-        led_write(false);
     }
 
-    if (previous_gpio >= 0 && previous_gpio != gpio) {
-        gpio_reset_pin(previous_gpio);
-    }
-
-    if (gpio > 32) {
-        ESP_LOGW(TAG, "Requested LED GPIO %d out of range; disabling indicator", gpio);
-        gpio = -1;
-    }
-
-    led_gpio = gpio;
-    led_active_high = active_high;
-    led_enabled = enabled && gpio >= 0;
-    if (!led_enabled) {
-        led_on = false;
-    }
-
-    gpio_init();
-
-    if (led_gpio >= 0 && led_enabled) {
-        led_write(false);
-    }
-
-    if (resume_blinking && led_enabled) {
-        led_blinking_start();
-    }
-}
-
-void led_indicator_reload(void) {
-    bool enabled = true;
-    int gpio = CONFIG_ESP_LED_GPIO;
-    bool active_high = false;
-
-    if (!load_led_config(&enabled, &gpio, &active_high)) {
-        enabled = CONFIG_ESP_LED_GPIO >= 0;
-        gpio = CONFIG_ESP_LED_GPIO;
-        active_high = false;
-    }
-
-    led_indicator_apply(enabled, gpio, active_high);
 }
 
 static bool factory_reset_requested = false;
@@ -451,7 +395,10 @@ void app_main(void) {
     if (handle_power_cycle_sequence()) {
         return;
     }
-    led_indicator_reload();
+    if (!load_led_config(&led_enabled, &led_gpio, &led_active_high)) {
+        led_active_high = false;
+    }
+    gpio_init();
     wifi_config_init("LCM", NULL, wifi_ready);
 }
 
