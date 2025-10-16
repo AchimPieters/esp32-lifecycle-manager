@@ -37,9 +37,17 @@
 #include <nvs.h>
 #include "github_update.h"
 #include "led_indicator.h"
-#include "lifecycle_restart_counter.h"
 
 static const char *TAG = "main";
+
+static const char *RESTART_COUNTER_NAMESPACE = "lcm";
+static const char *RESTART_COUNTER_KEY = "restart_count";
+static const uint32_t RESTART_COUNTER_THRESHOLD_MIN = 10U;
+static const uint32_t RESTART_COUNTER_THRESHOLD_MAX = 12U;
+static const uint32_t RESTART_COUNTER_RESET_TIMEOUT_MS = 5000U;
+
+static esp_timer_handle_t restart_counter_timer = NULL;
+static uint32_t restart_counter_value = 0U;
 
 static void sntp_start_and_wait(void);
 void wifi_ready(void);
@@ -176,58 +184,153 @@ void led_indicator_reload(void) {
 
 static bool factory_reset_requested = false;
 
+static esp_err_t restart_counter_store(uint32_t value) {
+    restart_counter_value = value;
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open(RESTART_COUNTER_NAMESPACE, NVS_READWRITE, &handle);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Failed to open restart counter namespace: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    err = nvs_set_u32(handle, RESTART_COUNTER_KEY, value);
+    if (err == ESP_OK) {
+        err = nvs_commit(handle);
+    }
+
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Failed to persist restart counter: %s", esp_err_to_name(err));
+    }
+
+    nvs_close(handle);
+    return err;
+}
+
+static uint32_t restart_counter_load(void) {
+    nvs_handle_t handle;
+    uint32_t value = 0;
+
+    esp_err_t err = nvs_open(RESTART_COUNTER_NAMESPACE, NVS_READWRITE, &handle);
+    if (err != ESP_OK) {
+        if (err != ESP_ERR_NVS_NOT_FOUND) {
+            ESP_LOGW(TAG, "Failed to open restart counter namespace: %s", esp_err_to_name(err));
+        }
+        restart_counter_value = 0;
+        return 0;
+    }
+
+    err = nvs_get_u32(handle, RESTART_COUNTER_KEY, &value);
+    if (err == ESP_ERR_NVS_NOT_FOUND) {
+        value = 0;
+        err = ESP_OK;
+    }
+
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Failed to read restart counter: %s", esp_err_to_name(err));
+        value = 0;
+    }
+
+    nvs_close(handle);
+    restart_counter_value = value;
+    return value;
+}
+
+static void restart_counter_reset(void) {
+    if (restart_counter_timer != NULL) {
+        esp_err_t stop_err = esp_timer_stop(restart_counter_timer);
+        if (stop_err != ESP_OK && stop_err != ESP_ERR_INVALID_STATE) {
+            ESP_LOGW(TAG, "Failed to stop restart counter timer: %s", esp_err_to_name(stop_err));
+        }
+    }
+
+    restart_counter_value = 0;
+    if (restart_counter_store(0) == ESP_OK) {
+        ESP_LOGI(TAG, "Restart counter reset");
+    }
+}
+
+static void restart_counter_timeout(void *arg) {
+    (void)arg;
+    ESP_LOGI(TAG, "Restart counter timeout expired; clearing counter");
+    restart_counter_reset();
+}
+
+static void restart_counter_schedule_reset(void) {
+    if (restart_counter_timer == NULL) {
+        const esp_timer_create_args_t args = {
+            .callback = restart_counter_timeout,
+            .arg = NULL,
+            .name = "rst_cnt",
+        };
+
+        esp_err_t create_err = esp_timer_create(&args, &restart_counter_timer);
+        if (create_err != ESP_OK) {
+            ESP_LOGW(TAG, "Failed to create restart counter timer: %s", esp_err_to_name(create_err));
+            return;
+        }
+    }
+
+    esp_err_t stop_err = esp_timer_stop(restart_counter_timer);
+    if (stop_err != ESP_OK && stop_err != ESP_ERR_INVALID_STATE) {
+        ESP_LOGW(TAG, "Failed to stop restart counter timer: %s", esp_err_to_name(stop_err));
+    }
+
+    esp_err_t start_err = esp_timer_start_once(restart_counter_timer,
+            (uint64_t)RESTART_COUNTER_RESET_TIMEOUT_MS * 1000ULL);
+    if (start_err != ESP_OK) {
+        ESP_LOGW(TAG, "Failed to start restart counter timer: %s", esp_err_to_name(start_err));
+    } else {
+        ESP_LOGD(TAG, "Restart counter timeout armed for %" PRIu32 " ms", RESTART_COUNTER_RESET_TIMEOUT_MS);
+    }
+}
+
 static void lifecycle_factory_reset_and_reboot(void);
 
 static bool handle_power_cycle_sequence(void) {
-    if (!lifecycle_restart_counter_is_available()) {
-        ESP_LOGW(TAG, "Restart counter unavailable; skipping power-cycle detection");
-        return false;
-    }
-
     esp_reset_reason_t reason = esp_reset_reason();
-    uint32_t count = lifecycle_restart_counter_get();
-
     if (reason != ESP_RST_POWERON && reason != ESP_RST_EXT) {
-        if (count != 0) {
+        if (restart_counter_value != 0) {
             ESP_LOGI(TAG, "Reset reason %d detected; clearing restart counter", reason);
-            lifecycle_restart_counter_reset();
+            restart_counter_reset();
         }
         return false;
     }
 
-    if (count == 0) {
-        return false;
+    uint32_t count = restart_counter_value;
+    if (count >= UINT32_MAX) {
+        count = 0;
     }
+    count++;
 
     ESP_LOGI(TAG, "Consecutive power cycles: %" PRIu32, count);
+    restart_counter_store(count);
 
-    if (count > LIFECYCLE_RESTART_COUNTER_THRESHOLD_MAX) {
+    if (count > RESTART_COUNTER_THRESHOLD_MAX) {
         ESP_LOGW(TAG,
                 "Detected %" PRIu32 " consecutive power cycles; exceeding maximum window %" PRIu32 ", resetting counter",
-                count, (uint32_t)LIFECYCLE_RESTART_COUNTER_THRESHOLD_MAX);
-        lifecycle_restart_counter_reset();
-        lifecycle_restart_counter_schedule_reset();
+                count, RESTART_COUNTER_THRESHOLD_MAX);
+        restart_counter_reset();
+        restart_counter_schedule_reset();
         return false;
     }
 
-    if (count >= LIFECYCLE_RESTART_COUNTER_THRESHOLD_MIN) {
+    if (count >= RESTART_COUNTER_THRESHOLD_MIN) {
         ESP_LOGW(TAG,
                 "Detected %" PRIu32 " consecutive power cycles within factory reset window (%" PRIu32 "-%" PRIu32 "); starting countdown",
-                count, (uint32_t)LIFECYCLE_RESTART_COUNTER_THRESHOLD_MIN,
-                (uint32_t)LIFECYCLE_RESTART_COUNTER_THRESHOLD_MAX);
+                count, RESTART_COUNTER_THRESHOLD_MIN, RESTART_COUNTER_THRESHOLD_MAX);
 
-        for (int i = (int)LIFECYCLE_RESTART_COUNTER_THRESHOLD_MIN; i >= 0; --i) {
+        for (int i = (int)RESTART_COUNTER_THRESHOLD_MIN; i >= 0; --i) {
             ESP_LOGW(TAG, "Factory reset in %d", i);
             vTaskDelay(pdMS_TO_TICKS(1000));
         }
 
-        lifecycle_restart_counter_reset();
+        restart_counter_reset();
 
         lifecycle_factory_reset_and_reboot();
         return true;
     }
 
-    lifecycle_restart_counter_schedule_reset();
+    restart_counter_schedule_reset();
     return false;
 }
 
@@ -334,23 +437,17 @@ void factory_reset() {
 
 static void lifecycle_factory_reset_and_reboot(void) {
     ESP_LOGW(TAG, "Triggering lifecycle factory reset and reboot");
-    lifecycle_restart_counter_reset();
     factory_reset();
 }
 
 void app_main(void) {
     ESP_LOGI(TAG, "Application start");
     esp_err_t err = nvs_flash_init();
-    if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-        ESP_LOGW(TAG, "NVS requires erase during app startup (err=%s)", esp_err_to_name(err));
-        ESP_ERROR_CHECK(nvs_flash_erase());
-        ESP_ERROR_CHECK(nvs_flash_init());
-    } else if (err == ESP_ERR_NVS_INVALID_STATE) {
-        ESP_LOGD(TAG, "NVS already initialized before app_main");
-    } else if (err != ESP_OK) {
+    if (err != ESP_OK) {
         ESP_LOGE(TAG, "NVS init failed: %s", esp_err_to_name(err));
     }
 
+    restart_counter_load();
     if (handle_power_cycle_sequence()) {
         return;
     }
