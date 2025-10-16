@@ -42,7 +42,6 @@
 #include <esp_partition.h>
 #include <esp_sleep.h>
 #include <esp_timer.h>
-#include <esp_private/startup_internal.h>
 #include <mdns.h>
 #include <nvs.h>
 #include <nvs_flash.h>
@@ -82,7 +81,6 @@ static const uint64_t k_restart_counter_timeout_ms =
     k_restart_counter_timeout_us / 1000ULL;
 static const char *k_restart_counter_namespace = "lcm";
 static const char *k_restart_counter_key = "restart_count";
-static const uint32_t k_restart_counter_factory_reset_threshold = 10U;
 
 RTC_DATA_ATTR static struct {
     uint32_t magic;
@@ -94,7 +92,6 @@ static char s_fw_revision[LIFECYCLE_FW_REVISION_MAX_LEN];
 static bool s_fw_revision_initialized = false;
 static esp_timer_handle_t s_restart_counter_timer = NULL;
 static bool s_nvs_initialized = false;
-static bool s_restart_counter_bootstrap_done = false;
 
 void wifi_config_shutdown(void) __attribute__((weak));
 
@@ -432,88 +429,6 @@ static void lifecycle_schedule_restart_counter_timeout(const char *log_tag) {
             (unsigned long long)k_restart_counter_timeout_ms);
 }
 
-static esp_err_t lifecycle_restart_counter_bootstrap(void) {
-    s_restart_counter_bootstrap_done = true;
-
-    const char *tag = LIFECYCLE_TAG;
-    uint32_t stored_count = 0;
-    esp_err_t load_err = load_restart_counter_from_nvs(&stored_count, tag);
-    if (load_err != ESP_OK) {
-        stored_count = 0;
-    }
-
-    esp_reset_reason_t reason = esp_reset_reason();
-    bool is_power_cycle = (reason == ESP_RST_POWERON) || (reason == ESP_RST_EXT);
-
-    const esp_partition_t *running = esp_ota_get_running_partition();
-    bool running_is_factory =
-            (running != NULL && running->subtype == ESP_PARTITION_SUBTYPE_APP_FACTORY);
-
-    if (!is_power_cycle) {
-        if (stored_count != 0U) {
-            esp_err_t reset_err = save_restart_counter_to_nvs(0, tag);
-            if (reset_err != ESP_OK) {
-                ESP_LOGW(tag,
-                         "[lifecycle] Failed to clear restart counter after non-power reset: %s",
-                         esp_err_to_name(reset_err));
-            }
-        }
-        s_post_reset_state.restart_count = 0;
-        return ESP_OK;
-    }
-
-    if (stored_count == UINT32_MAX) {
-        stored_count = 0;
-    }
-
-    uint32_t new_count = stored_count + 1U;
-    if (new_count > k_restart_counter_factory_reset_threshold && running_is_factory) {
-        new_count = k_restart_counter_factory_reset_threshold;
-    }
-
-    s_post_reset_state.restart_count = new_count;
-
-    esp_err_t save_err = save_restart_counter_to_nvs(new_count, tag);
-    if (save_err != ESP_OK) {
-        ESP_LOGW(tag,
-                 "[lifecycle] Failed to persist restart counter during bootstrap: %s",
-                 esp_err_to_name(save_err));
-    }
-
-    if (new_count >= k_restart_counter_factory_reset_threshold && !running_is_factory) {
-        ESP_LOGW(tag,
-                 "[lifecycle] Detected %" PRIu32 " power cycles before app_main; rebooting into factory",
-                 new_count);
-
-        const esp_partition_t *factory = esp_partition_find_first(
-                ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_FACTORY, NULL);
-        if (factory == NULL) {
-            ESP_LOGE(tag, "[lifecycle] Factory partition not found; cannot trigger factory reset");
-            return ESP_OK;
-        }
-
-        esp_err_t boot_err = esp_ota_set_boot_partition(factory);
-        if (boot_err != ESP_OK) {
-            ESP_LOGE(tag,
-                     "[lifecycle] Failed to select factory partition for reset: %s",
-                     esp_err_to_name(boot_err));
-            return ESP_OK;
-        }
-
-        lifecycle_mark_post_reset(LIFECYCLE_POST_RESET_REASON_FACTORY);
-        ESP_LOGI(tag,
-                 "[lifecycle] Restarting early to execute factory reset workflow in Lifecycle Manager");
-        esp_restart();
-    }
-
-    return ESP_OK;
-}
-
-ESP_SYSTEM_INIT_FN(lifecycle_restart_counter_bootstrap_fn, CORE,
-                   ESP_SYSTEM_INIT_ALL_CORES, 200) {
-    return lifecycle_restart_counter_bootstrap();
-}
-
 void lifecycle_log_post_reset_state(const char *log_tag) {
     const char *tag = (log_tag != NULL) ? log_tag : LIFECYCLE_TAG;
     uint32_t persisted_count = 0;
@@ -528,28 +443,22 @@ void lifecycle_log_post_reset_state(const char *log_tag) {
                  esp_err_to_name(load_err));
     }
 
-    uint32_t restart_count = s_post_reset_state.restart_count;
+    uint32_t restart_count = lifecycle_increment_restart_counter();
 
-    if (!s_restart_counter_bootstrap_done) {
-        restart_count = lifecycle_increment_restart_counter();
-
-        esp_err_t save_err = save_restart_counter_to_nvs(restart_count, tag);
-        if (save_err != ESP_OK) {
-            ESP_LOGW(tag,
-                     "[lifecycle] Failed to persist restart counter to NVS (err=%s)",
-                     esp_err_to_name(save_err));
-        }
+    esp_err_t save_err = save_restart_counter_to_nvs(restart_count, tag);
+    if (save_err != ESP_OK) {
+        ESP_LOGW(tag,
+                 "[lifecycle] Failed to persist restart counter to NVS (err=%s)",
+                 esp_err_to_name(save_err));
     }
 
     ESP_LOGI(tag, "[lifecycle] consecutive_restart_count=%" PRIu32, restart_count);
 
     lifecycle_schedule_restart_counter_timeout(tag);
 
-    if (restart_count >= k_restart_counter_factory_reset_threshold) {
-        ESP_LOGW(tag,
-                 "[lifecycle] Detected %" PRIu32 " consecutive restarts; performing factory reset countdown",
-                 restart_count);
-        for (int i = (int)k_restart_counter_factory_reset_threshold; i >= 0; --i) {
+    if (restart_count >= 10U) {
+        ESP_LOGW(tag, "[lifecycle] Detected 10 consecutive restarts; performing factory reset countdown");
+        for (int i = 10; i >= 0; --i) {
             ESP_LOGW(tag, "[lifecycle] Factory reset in %d", i);
             vTaskDelay(pdMS_TO_TICKS(1000));
         }
