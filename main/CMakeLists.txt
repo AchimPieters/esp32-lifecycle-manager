@@ -5,7 +5,6 @@ idf_component_register(
         "wifi_config_util.c"
         "form_urlencoded.c"
         "github_update.c"
-        "lifecycle_restart_counter.c"
     INCLUDE_DIRS
         "."
         "include"
@@ -24,8 +23,6 @@ idf_component_register(
         app_update
         mbedtls
         json
-    PRIV_REQUIRES
-        esp_system
         EMBED_TXTFILES
             "content/index.html"
 )
