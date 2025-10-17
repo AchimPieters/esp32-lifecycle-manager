@@ -75,10 +75,13 @@ static uint32_t compute_state_checksum(const lcm_restart_state_t *state)
 static bool load_restart_state_from_flash(lcm_restart_state_t *out)
 {
     lcm_restart_state_t state = {0};
-    if (bootloader_flash_read(LCM_STATE_OFFSET, &state, sizeof(state), true) != ESP_OK) {
+    const esp_err_t read_err = bootloader_flash_read(LCM_STATE_OFFSET, &state, sizeof(state), true);
+    if (read_err != ESP_OK) {
+        ESP_LOGW(TAG, "read restart state failed (%d)", (int)read_err);
         return false;
     }
     if (state.magic != LCM_STATE_MAGIC) {
+        ESP_LOGI(TAG, "restart state magic invalid (0x%08x)", (unsigned)state.magic);
         return false;
     }
 
@@ -107,8 +110,27 @@ static esp_err_t store_restart_state_to_flash(const lcm_restart_state_t *state)
     err = bootloader_flash_write(LCM_STATE_OFFSET, &snapshot, sizeof(snapshot), true);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "write restart state failed (%d)", (int)err);
+        return err;
     }
-    return err;
+
+    lcm_restart_state_t verify = {0};
+    err = bootloader_flash_read(LCM_STATE_OFFSET, &verify, sizeof(verify), true);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "verify restart state read failed (%d)", (int)err);
+        return err;
+    }
+
+    if (memcmp(&verify, &snapshot, sizeof(snapshot)) != 0) {
+        ESP_LOGW(TAG, "verify restart state mismatch (magic=0x%08x count=%u timestamp=%llu checksum=0x%08x)",
+                 (unsigned)verify.magic,
+                 (unsigned)verify.restart_count,
+                 (unsigned long long)verify.last_timestamp_us,
+                 (unsigned)verify.checksum);
+        return ESP_FAIL;
+    }
+
+    ESP_LOGI(TAG, "wrote restart counter %u to flash", (unsigned)snapshot.restart_count);
+    return ESP_OK;
 }
 
 static bool is_supported_reset_reason(soc_reset_reason_t reason)
