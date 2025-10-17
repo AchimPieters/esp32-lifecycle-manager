@@ -1,5 +1,6 @@
 #include <stdbool.h>
 #include <stdint.h>
+#include <string.h>
 
 #include "esp_err.h"
 #include "esp_log.h"
@@ -38,6 +39,12 @@ typedef struct {
     uint64_t last_timestamp_us;
     uint32_t checksum;
 } lcm_restart_state_t;
+
+#if __STDC_VERSION__ >= 201112L
+_Static_assert(sizeof(lcm_restart_state_t) <= 32, "restart state must fit in flash buffer");
+#else
+typedef char lcm_restart_state_t_buffer_too_large[(sizeof(lcm_restart_state_t) <= 32) ? 1 : -1];
+#endif
 
 void bootloader_hooks_include(void) {}
 
@@ -84,13 +91,16 @@ static esp_err_t store_restart_state_to_flash(const lcm_restart_state_t *state)
     snapshot.magic = LCM_STATE_MAGIC;
     snapshot.checksum = compute_state_checksum(&snapshot);
 
+    uint8_t buffer[32] = {0};
+    memcpy(buffer, &snapshot, sizeof(snapshot));
+
     esp_err_t err = bootloader_flash_erase_range(LCM_STATE_OFFSET, LCM_STATE_SIZE);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "erase restart state failed (%d)", (int)err);
         return err;
     }
 
-    err = bootloader_flash_write(LCM_STATE_OFFSET, &snapshot, sizeof(snapshot), true);
+    err = bootloader_flash_write(LCM_STATE_OFFSET, buffer, sizeof(buffer), true);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "write restart state failed (%d)", (int)err);
     }
