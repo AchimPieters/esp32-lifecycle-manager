@@ -40,11 +40,18 @@
 
 static const char *TAG = "main";
 
+#ifndef CONFIG_LCM_RESTART_THRESHOLD
+#define CONFIG_LCM_RESTART_THRESHOLD 10
+#endif
+
+#ifndef CONFIG_LCM_RESTART_COUNTER_TIMEOUT_MS
+#define CONFIG_LCM_RESTART_COUNTER_TIMEOUT_MS 5000
+#endif
+
 static const char *RESTART_COUNTER_NAMESPACE = "lcm";
 static const char *RESTART_COUNTER_KEY = "restart_count";
-static const uint32_t RESTART_COUNTER_THRESHOLD_MIN = 10U;
-static const uint32_t RESTART_COUNTER_THRESHOLD_MAX = 12U;
-static const uint32_t RESTART_COUNTER_RESET_TIMEOUT_MS = 5000U;
+static const uint32_t RESTART_COUNTER_THRESHOLD = CONFIG_LCM_RESTART_THRESHOLD;
+static const uint32_t RESTART_COUNTER_RESET_TIMEOUT_MS = CONFIG_LCM_RESTART_COUNTER_TIMEOUT_MS;
 
 static esp_timer_handle_t restart_counter_timer = NULL;
 static uint32_t restart_counter_value = 0U;
@@ -249,21 +256,12 @@ static bool handle_power_cycle_sequence(void) {
     ESP_LOGI(TAG, "Consecutive power cycles: %" PRIu32, count);
     restart_counter_store(count);
 
-    if (count > RESTART_COUNTER_THRESHOLD_MAX) {
+    if (count >= RESTART_COUNTER_THRESHOLD) {
         ESP_LOGW(TAG,
-                "Detected %" PRIu32 " consecutive power cycles; exceeding maximum window %" PRIu32 ", resetting counter",
-                count, RESTART_COUNTER_THRESHOLD_MAX);
-        restart_counter_reset();
-        restart_counter_schedule_reset();
-        return false;
-    }
+                "Detected %" PRIu32 " consecutive power cycles; starting countdown",
+                count);
 
-    if (count >= RESTART_COUNTER_THRESHOLD_MIN) {
-        ESP_LOGW(TAG,
-                "Detected %" PRIu32 " consecutive power cycles within factory reset window (%" PRIu32 "-%" PRIu32 "); starting countdown",
-                count, RESTART_COUNTER_THRESHOLD_MIN, RESTART_COUNTER_THRESHOLD_MAX);
-
-        for (int i = (int)RESTART_COUNTER_THRESHOLD_MIN; i >= 0; --i) {
+        for (int i = (int)RESTART_COUNTER_THRESHOLD; i >= 0; --i) {
             ESP_LOGW(TAG, "Factory reset in %d", i);
             vTaskDelay(pdMS_TO_TICKS(1000));
         }
