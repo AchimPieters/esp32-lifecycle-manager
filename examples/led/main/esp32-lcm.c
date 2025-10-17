@@ -71,6 +71,10 @@ static const uint32_t k_post_reset_magic = 0xC0DEC0DE;
 #define CONFIG_LCM_RESTART_COUNTER_TIMEOUT_MS 5000
 #endif
 
+#ifndef CONFIG_LCM_RESTART_THRESHOLD
+#define CONFIG_LCM_RESTART_THRESHOLD 10
+#endif
+
 #if CONFIG_LCM_RESTART_COUNTER_TIMEOUT_MS <= 0
 #error "CONFIG_LCM_RESTART_COUNTER_TIMEOUT_MS must be a positive value"
 #endif
@@ -456,9 +460,10 @@ void lifecycle_log_post_reset_state(const char *log_tag) {
 
     lifecycle_schedule_restart_counter_timeout(tag);
 
-    if (restart_count >= 10U) {
-        ESP_LOGW(tag, "[lifecycle] Detected 10 consecutive restarts; performing factory reset countdown");
-        for (int i = 10; i >= 0; --i) {
+    if (restart_count >= CONFIG_LCM_RESTART_THRESHOLD) {
+        ESP_LOGW(tag, "[lifecycle] Detected %d consecutive restarts; performing factory reset countdown",
+                 CONFIG_LCM_RESTART_THRESHOLD);
+        for (int i = CONFIG_LCM_RESTART_THRESHOLD; i >= 0; --i) {
             ESP_LOGW(tag, "[lifecycle] Factory reset in %d", i);
             vTaskDelay(pdMS_TO_TICKS(1000));
         }
