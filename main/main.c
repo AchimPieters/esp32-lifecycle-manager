@@ -136,7 +136,6 @@ void gpio_init() {
 static bool factory_reset_requested = false;
 
 static esp_err_t restart_counter_store(uint32_t value) {
-    restart_counter_value = value;
     nvs_handle_t handle;
     esp_err_t err = nvs_open(RESTART_COUNTER_NAMESPACE, NVS_READWRITE, &handle);
     if (err != ESP_OK) {
@@ -144,13 +143,30 @@ static esp_err_t restart_counter_store(uint32_t value) {
         return err;
     }
 
+    ESP_LOGI(TAG, "Saving restart counter: %" PRIu32, value);
+
     err = nvs_set_u32(handle, RESTART_COUNTER_KEY, value);
-    if (err == ESP_OK) {
-        err = nvs_commit(handle);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Failed to set restart counter: %s", esp_err_to_name(err));
+        nvs_close(handle);
+        return err;
     }
 
+    err = nvs_commit(handle);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "Failed to persist restart counter: %s", esp_err_to_name(err));
+        nvs_close(handle);
+        return err;
+    }
+
+    restart_counter_value = value;
+
+    uint32_t verify_value = 0;
+    esp_err_t verify_err = nvs_get_u32(handle, RESTART_COUNTER_KEY, &verify_value);
+    if (verify_err == ESP_OK) {
+        ESP_LOGI(TAG, "Read restart counter after save: %" PRIu32, verify_value);
+    } else {
+        ESP_LOGW(TAG, "Failed to read restart counter after save: %s", esp_err_to_name(verify_err));
     }
 
     nvs_close(handle);
@@ -183,6 +199,7 @@ static uint32_t restart_counter_load(void) {
 
     nvs_close(handle);
     restart_counter_value = value;
+    ESP_LOGI(TAG, "Loaded restart counter: %" PRIu32, value);
     return value;
 }
 
