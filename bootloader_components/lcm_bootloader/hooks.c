@@ -33,17 +33,23 @@ static wdt_hal_context_t s_rwdt_ctx = RWDT_HAL_CONTEXT_DEFAULT();
 #define OTA1_OFFSET      0x220000
 #define OTA_PART_SIZE    0x100000
 
+enum {
+    LCM_STATE_FLASH_BYTES = 32,
+    LCM_STATE_RESERVED_BYTES = LCM_STATE_FLASH_BYTES - (3 * sizeof(uint32_t) + sizeof(uint64_t)),
+};
+
 typedef struct {
     uint32_t magic;
     uint32_t restart_count;
     uint64_t last_timestamp_us;
     uint32_t checksum;
+    uint8_t reserved[LCM_STATE_RESERVED_BYTES];
 } lcm_restart_state_t;
 
 #if __STDC_VERSION__ >= 201112L
-_Static_assert(sizeof(lcm_restart_state_t) <= 32, "restart state must fit in flash buffer");
+_Static_assert(sizeof(lcm_restart_state_t) == LCM_STATE_FLASH_BYTES, "restart state must match flash write size");
 #else
-typedef char lcm_restart_state_t_buffer_too_large[(sizeof(lcm_restart_state_t) <= 32) ? 1 : -1];
+typedef char lcm_restart_state_t_buffer_wrong_size[(sizeof(lcm_restart_state_t) == LCM_STATE_FLASH_BYTES) ? 1 : -1];
 #endif
 
 void bootloader_hooks_include(void) {}
@@ -88,11 +94,9 @@ static bool load_restart_state_from_flash(lcm_restart_state_t *out)
 static esp_err_t store_restart_state_to_flash(const lcm_restart_state_t *state)
 {
     lcm_restart_state_t snapshot = *state;
+    memset(snapshot.reserved, 0, sizeof(snapshot.reserved));
     snapshot.magic = LCM_STATE_MAGIC;
     snapshot.checksum = compute_state_checksum(&snapshot);
-
-    uint8_t buffer[32] = {0};
-    memcpy(buffer, &snapshot, sizeof(snapshot));
 
     esp_err_t err = bootloader_flash_erase_range(LCM_STATE_OFFSET, LCM_STATE_SIZE);
     if (err != ESP_OK) {
@@ -100,7 +104,7 @@ static esp_err_t store_restart_state_to_flash(const lcm_restart_state_t *state)
         return err;
     }
 
-    err = bootloader_flash_write(LCM_STATE_OFFSET, buffer, sizeof(buffer), true);
+    err = bootloader_flash_write(LCM_STATE_OFFSET, &snapshot, sizeof(snapshot), true);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "write restart state failed (%d)", (int)err);
     }
