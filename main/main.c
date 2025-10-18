@@ -22,6 +22,7 @@
  **/
 
 #include <stdio.h>
+#include <esp_attr.h>
 #include <esp_log.h>
 #include <nvs_flash.h>
 #include <freertos/FreeRTOS.h>
@@ -33,8 +34,11 @@
 #include <esp_timer.h>
 #include <esp_wifi.h>
 #include <esp_partition.h>
+#include <esp_ota_ops.h>
+#include <string.h>
 #include <inttypes.h>
 #include <nvs.h>
+#include <stdlib.h>
 #include "github_update.h"
 #include "led_indicator.h"
 
@@ -49,7 +53,12 @@ static const uint32_t RESTART_COUNTER_RESET_TIMEOUT_MS = 5000U;
 static esp_timer_handle_t restart_counter_timer = NULL;
 static uint32_t restart_counter_value = 0U;
 
+RTC_DATA_ATTR static int8_t factory_reset_pending_ota_subtype = -1;
+RTC_DATA_ATTR static bool factory_reset_verification_pending = false;
+
 static void sntp_start_and_wait(void);
+static void finalize_deferred_factory_reset(void);
+static void verify_factory_reset_cleanup(void);
 void wifi_ready(void);
 
 static int led_gpio = CONFIG_ESP_LED_GPIO;
@@ -297,6 +306,8 @@ static void clear_nvs_storage(void) {
     }
 }
 
+static bool verify_partition_erased(const esp_partition_t *part, const char *phase);
+
 static void erase_otadata_partition(void) {
     const esp_partition_t *otadata = esp_partition_find_first(
             ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_OTA, NULL);
@@ -310,11 +321,78 @@ static void erase_otadata_partition(void) {
     esp_err_t err = esp_partition_erase_range(otadata, 0, otadata->size);
     if (err != ESP_OK) {
         ESP_LOGE("RESET", "Failed to erase OTA data partition: %s", esp_err_to_name(err));
+        return;
     }
+
+    verify_partition_erased(otadata, "immediate-otadata");
+}
+
+static bool verify_partition_erased(const esp_partition_t *part, const char *phase) {
+    if (part == NULL) {
+        return false;
+    }
+
+    const size_t chunk_size = 4096;
+    uint8_t *buffer = (uint8_t *)malloc(chunk_size);
+    if (buffer == NULL) {
+        ESP_LOGE("RESET", "[%s] Unable to allocate buffer to verify partition '%s'", phase, part->label);
+        return false;
+    }
+
+    bool all_ff = true;
+    size_t first_bad_offset = SIZE_MAX;
+
+    for (size_t offset = 0; offset < part->size; offset += chunk_size) {
+        size_t to_read = part->size - offset;
+        if (to_read > chunk_size) {
+            to_read = chunk_size;
+        }
+
+        esp_err_t read_err = esp_partition_read(part, offset, buffer, to_read);
+        if (read_err != ESP_OK) {
+            ESP_LOGE("RESET", "[%s] Failed to read partition '%s' at offset 0x%08x: %s",
+                    phase, part->label, (unsigned int)(part->address + offset), esp_err_to_name(read_err));
+            all_ff = false;
+            break;
+        }
+
+        for (size_t i = 0; i < to_read; ++i) {
+            if (buffer[i] != 0xFF) {
+                all_ff = false;
+                first_bad_offset = offset + i;
+                break;
+            }
+        }
+
+        if (!all_ff) {
+            break;
+        }
+    }
+
+    free(buffer);
+
+    if (all_ff) {
+        ESP_LOGI("RESET", "[%s] Verified partition '%s' erased (size=%" PRIu32 ")",
+                phase, part->label, (uint32_t)part->size);
+    } else if (first_bad_offset != SIZE_MAX) {
+        ESP_LOGE("RESET", "[%s] Partition '%s' not erased (first non-0xFF byte at offset %" PRIu32 ")",
+                phase, part->label, (uint32_t)first_bad_offset);
+    }
+
+    return all_ff;
 }
 
 static void erase_ota_app_partitions(void) {
     ESP_LOGI("RESET", "Erasing OTA firmware partitions");
+
+    const esp_partition_t *running = esp_ota_get_running_partition();
+    bool running_is_ota = running != NULL &&
+            running->subtype >= ESP_PARTITION_SUBTYPE_APP_OTA_MIN &&
+            running->subtype <= ESP_PARTITION_SUBTYPE_APP_OTA_MAX;
+
+    if (!running_is_ota) {
+        factory_reset_pending_ota_subtype = -1;
+    }
 
     esp_partition_iterator_t it = esp_partition_find(
             ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_ANY, NULL);
@@ -324,18 +402,125 @@ static void erase_ota_app_partitions(void) {
 
         if (part->subtype >= ESP_PARTITION_SUBTYPE_APP_OTA_MIN &&
                 part->subtype <= ESP_PARTITION_SUBTYPE_APP_OTA_MAX) {
-            ESP_LOGI("RESET",
-                    "Erasing partition '%s' (subtype=%d) at offset=0x%08x size=%" PRIu32 ")",
-                    part->label, part->subtype, (unsigned int)part->address, (uint32_t)part->size);
-            esp_err_t err = esp_partition_erase_range(part, 0, part->size);
-            if (err != ESP_OK) {
-                ESP_LOGE("RESET", "Failed to erase partition '%s': %s",
-                        part->label, esp_err_to_name(err));
+            bool is_running_partition = running_is_ota &&
+                    part->address == running->address;
+
+            if (is_running_partition) {
+                factory_reset_pending_ota_subtype = part->subtype;
+                ESP_LOGW("RESET",
+                        "Partition '%s' (subtype=%d) is currently running; deferring erase until after reboot",
+                        part->label, part->subtype);
+            } else {
+                ESP_LOGI("RESET",
+                        "Erasing partition '%s' (subtype=%d) at offset=0x%08x size=%" PRIu32 ")",
+                        part->label, part->subtype, (unsigned int)part->address, (uint32_t)part->size);
+                esp_err_t err = esp_partition_erase_range(part, 0, part->size);
+                if (err != ESP_OK) {
+                    ESP_LOGE("RESET", "Failed to erase partition '%s': %s",
+                            part->label, esp_err_to_name(err));
+                } else {
+                    verify_partition_erased(part, "immediate");
+                }
             }
         }
 
         esp_partition_iterator_release(it);
         it = next;
+    }
+}
+
+static void finalize_deferred_factory_reset(void) {
+    int8_t subtype = factory_reset_pending_ota_subtype;
+    if (subtype < ESP_PARTITION_SUBTYPE_APP_OTA_MIN ||
+            subtype > ESP_PARTITION_SUBTYPE_APP_OTA_MAX) {
+        return;
+    }
+
+    const esp_partition_t *running = esp_ota_get_running_partition();
+    if (running != NULL && running->subtype == subtype) {
+        ESP_LOGW("RESET",
+                "Deferred OTA partition erase still running (subtype=%d); postponing until next reboot",
+                subtype);
+        return;
+    }
+
+    const esp_partition_t *part = esp_partition_find_first(
+            ESP_PARTITION_TYPE_APP, (esp_partition_subtype_t)subtype, NULL);
+    if (part == NULL) {
+        ESP_LOGW("RESET", "Deferred OTA partition with subtype=%d not found", subtype);
+        factory_reset_pending_ota_subtype = -1;
+        return;
+    }
+
+    ESP_LOGI("RESET",
+            "Completing deferred erase of partition '%s' (subtype=%d) at offset=0x%08x size=%" PRIu32 ")",
+            part->label, part->subtype, (unsigned int)part->address, (uint32_t)part->size);
+    esp_err_t err = esp_partition_erase_range(part, 0, part->size);
+    if (err != ESP_OK) {
+        ESP_LOGE("RESET", "Failed to erase deferred partition '%s': %s",
+                part->label, esp_err_to_name(err));
+        return;
+    }
+
+    ESP_LOGI("RESET", "Deferred OTA partition erase complete");
+    verify_partition_erased(part, "deferred");
+    factory_reset_pending_ota_subtype = -1;
+}
+
+static bool verify_all_ota_partitions(const char *phase) {
+    bool all_ok = true;
+
+    esp_partition_iterator_t it = esp_partition_find(
+            ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_ANY, NULL);
+    while (it != NULL) {
+        const esp_partition_t *part = esp_partition_get(it);
+        esp_partition_iterator_t next = esp_partition_next(it);
+
+        if (part->subtype >= ESP_PARTITION_SUBTYPE_APP_OTA_MIN &&
+                part->subtype <= ESP_PARTITION_SUBTYPE_APP_OTA_MAX) {
+            if (!verify_partition_erased(part, phase)) {
+                all_ok = false;
+            }
+        }
+
+        esp_partition_iterator_release(it);
+        it = next;
+    }
+
+    return all_ok;
+}
+
+static bool verify_otadata_partition(const char *phase) {
+    const esp_partition_t *otadata = esp_partition_find_first(
+            ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_OTA, NULL);
+    if (otadata == NULL) {
+        ESP_LOGW("RESET", "[%s] OTA data partition not found for verification", phase);
+        return false;
+    }
+
+    return verify_partition_erased(otadata, phase);
+}
+
+static void verify_factory_reset_cleanup(void) {
+    if (!factory_reset_verification_pending) {
+        return;
+    }
+
+    if (factory_reset_pending_ota_subtype >= ESP_PARTITION_SUBTYPE_APP_OTA_MIN &&
+            factory_reset_pending_ota_subtype <= ESP_PARTITION_SUBTYPE_APP_OTA_MAX) {
+        ESP_LOGW("RESET", "Post-reset verification postponed; OTA subtype %d still pending",
+                factory_reset_pending_ota_subtype);
+        return;
+    }
+
+    bool otadata_ok = verify_otadata_partition("post-reset-otadata");
+    bool ota_ok = verify_all_ota_partitions("post-reset-ota");
+
+    if (otadata_ok && ota_ok) {
+        ESP_LOGI("RESET", "Factory reset verification succeeded; device is back to factory defaults");
+        factory_reset_verification_pending = false;
+    } else {
+        ESP_LOGE("RESET", "Factory reset verification detected residual data; will retry on next boot");
     }
 }
 
@@ -358,6 +543,7 @@ void factory_reset_task(void *pvParameter) {
     vTaskDelay(pdMS_TO_TICKS(1000));
 
     ESP_LOGI("RESTART", "Restarting system");
+    factory_reset_verification_pending = true;
     esp_restart();
 
     factory_reset_requested = false;
@@ -387,11 +573,19 @@ static void lifecycle_factory_reset_and_reboot(void) {
 void app_main(void) {
     ESP_LOGI(TAG, "Application start");
     esp_err_t err = nvs_flash_init();
+    if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_LOGW(TAG, "NVS init reported %s; erasing and reinitializing", esp_err_to_name(err));
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        err = nvs_flash_init();
+    }
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "NVS init failed: %s", esp_err_to_name(err));
     }
 
+    finalize_deferred_factory_reset();
+
     restart_counter_load();
+    verify_factory_reset_cleanup();
     if (handle_power_cycle_sequence()) {
         return;
     }
