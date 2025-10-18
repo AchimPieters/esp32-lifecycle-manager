@@ -6,10 +6,19 @@
 #include "esp_log.h"
 #include "esp_rom_sys.h"
 #include "bootloader_flash_priv.h"
+#include "esp_flash_encrypt.h"
 #include "soc/rtc.h"
 #include "soc/reset_reasons.h"
 #include "hal/wdt_hal.h"
 #include "sdkconfig.h"
+
+#if defined(__GNUC__)
+#define LCM_ALIGNED32 __attribute__((aligned(32)))
+#elif defined(_MSC_VER)
+#define LCM_ALIGNED32 __declspec(align(32))
+#else
+#define LCM_ALIGNED32
+#endif
 
 #ifndef CONFIG_LCM_RESTART_THRESHOLD
 #define CONFIG_LCM_RESTART_THRESHOLD 10
@@ -75,7 +84,8 @@ static uint32_t compute_state_checksum(const lcm_restart_state_t *state)
 static bool load_restart_state_from_flash(lcm_restart_state_t *out)
 {
     lcm_restart_state_t state = {0};
-    const esp_err_t read_err = bootloader_flash_read(LCM_STATE_OFFSET, &state, sizeof(state), true);
+    const bool allow_decrypt = esp_flash_encryption_enabled();
+    const esp_err_t read_err = bootloader_flash_read(LCM_STATE_OFFSET, &state, sizeof(state), allow_decrypt);
     if (read_err != ESP_OK) {
         ESP_LOGW(TAG, "read restart state failed (%d)", (int)read_err);
         return false;
@@ -107,14 +117,19 @@ static esp_err_t store_restart_state_to_flash(const lcm_restart_state_t *state)
         return err;
     }
 
-    err = bootloader_flash_write(LCM_STATE_OFFSET, &snapshot, sizeof(snapshot), true);
+    const bool write_encrypted = esp_flash_encryption_enabled();
+
+    LCM_ALIGNED32 uint8_t write_buf[LCM_STATE_FLASH_BYTES] = {0};
+    memcpy(write_buf, &snapshot, sizeof(snapshot));
+
+    err = bootloader_flash_write(LCM_STATE_OFFSET, write_buf, sizeof(write_buf), write_encrypted);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "write restart state failed (%d)", (int)err);
         return err;
     }
 
     lcm_restart_state_t verify = {0};
-    err = bootloader_flash_read(LCM_STATE_OFFSET, &verify, sizeof(verify), true);
+    err = bootloader_flash_read(LCM_STATE_OFFSET, &verify, sizeof(verify), write_encrypted);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "verify restart state read failed (%d)", (int)err);
         return err;
