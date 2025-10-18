@@ -11,6 +11,14 @@
 #include "hal/wdt_hal.h"
 #include "sdkconfig.h"
 
+#if defined(__GNUC__)
+#define LCM_ALIGNED32 __attribute__((aligned(32)))
+#elif defined(_MSC_VER)
+#define LCM_ALIGNED32 __declspec(align(32))
+#else
+#define LCM_ALIGNED32
+#endif
+
 #ifndef CONFIG_LCM_RESTART_THRESHOLD
 #define CONFIG_LCM_RESTART_THRESHOLD 10
 #endif
@@ -38,7 +46,7 @@ enum {
     LCM_STATE_RESERVED_BYTES = LCM_STATE_FLASH_BYTES - (3 * sizeof(uint32_t) + sizeof(uint64_t)),
 };
 
-typedef struct {
+typedef struct LCM_ALIGNED32 {
     uint32_t magic;
     uint32_t restart_count;
     uint64_t last_timestamp_us;
@@ -107,9 +115,18 @@ static esp_err_t store_restart_state_to_flash(const lcm_restart_state_t *state)
         return err;
     }
 
-    err = bootloader_flash_write(LCM_STATE_OFFSET, &snapshot, sizeof(snapshot), true);
+    LCM_ALIGNED32 uint8_t write_buf[LCM_STATE_FLASH_BYTES] = {0};
+    memcpy(write_buf, &snapshot, sizeof(snapshot));
+
+    err = bootloader_flash_write(LCM_STATE_OFFSET, write_buf, sizeof(write_buf), true);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "write restart state failed (%d)", (int)err);
+        return err;
+    }
+
+    err = bootloader_flash_flush();
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "flush restart state failed (%d)", (int)err);
         return err;
     }
 
