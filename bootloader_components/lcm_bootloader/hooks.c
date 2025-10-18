@@ -81,10 +81,19 @@ static uint32_t compute_state_checksum(const lcm_restart_state_t *state)
     return sum;
 }
 
+static bool lcm_state_flash_encryption_active(void)
+{
+#if defined(CONFIG_SECURE_FLASH_ENC_ENABLED) && CONFIG_SECURE_FLASH_ENC_ENABLED
+    return esp_flash_encryption_enabled();
+#else
+    return false;
+#endif
+}
+
 static bool load_restart_state_from_flash(lcm_restart_state_t *out)
 {
     lcm_restart_state_t state = {0};
-    const bool allow_decrypt = esp_flash_encryption_enabled();
+    const bool allow_decrypt = lcm_state_flash_encryption_active();
     const esp_err_t read_err = bootloader_flash_read(LCM_STATE_OFFSET, &state, sizeof(state), allow_decrypt);
     if (read_err != ESP_OK) {
         ESP_LOGW(TAG, "read restart state failed (%d)", (int)read_err);
@@ -117,7 +126,7 @@ static esp_err_t store_restart_state_to_flash(const lcm_restart_state_t *state)
         return err;
     }
 
-    const bool write_encrypted = esp_flash_encryption_enabled();
+    const bool write_encrypted = lcm_state_flash_encryption_active();
 
     LCM_ALIGNED32 uint8_t write_buf[LCM_STATE_FLASH_BYTES] = {0};
     memcpy(write_buf, &snapshot, sizeof(snapshot));
