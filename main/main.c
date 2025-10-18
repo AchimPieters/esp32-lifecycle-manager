@@ -40,18 +40,11 @@
 
 static const char *TAG = "main";
 
-#ifndef CONFIG_LCM_RESTART_THRESHOLD
-#define CONFIG_LCM_RESTART_THRESHOLD 10
-#endif
-
-#ifndef CONFIG_LCM_RESTART_COUNTER_TIMEOUT_MS
-#define CONFIG_LCM_RESTART_COUNTER_TIMEOUT_MS 5000
-#endif
-
 static const char *RESTART_COUNTER_NAMESPACE = "lcm";
 static const char *RESTART_COUNTER_KEY = "restart_count";
-static const uint32_t RESTART_COUNTER_THRESHOLD = CONFIG_LCM_RESTART_THRESHOLD;
-static const uint32_t RESTART_COUNTER_RESET_TIMEOUT_MS = CONFIG_LCM_RESTART_COUNTER_TIMEOUT_MS;
+static const uint32_t RESTART_COUNTER_THRESHOLD_MIN = 10U;
+static const uint32_t RESTART_COUNTER_THRESHOLD_MAX = 12U;
+static const uint32_t RESTART_COUNTER_RESET_TIMEOUT_MS = 5000U;
 
 static esp_timer_handle_t restart_counter_timer = NULL;
 static uint32_t restart_counter_value = 0U;
@@ -136,6 +129,7 @@ void gpio_init() {
 static bool factory_reset_requested = false;
 
 static esp_err_t restart_counter_store(uint32_t value) {
+    restart_counter_value = value;
     nvs_handle_t handle;
     esp_err_t err = nvs_open(RESTART_COUNTER_NAMESPACE, NVS_READWRITE, &handle);
     if (err != ESP_OK) {
@@ -143,30 +137,13 @@ static esp_err_t restart_counter_store(uint32_t value) {
         return err;
     }
 
-    ESP_LOGI(TAG, "Saving restart counter: %" PRIu32, value);
-
     err = nvs_set_u32(handle, RESTART_COUNTER_KEY, value);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "Failed to set restart counter: %s", esp_err_to_name(err));
-        nvs_close(handle);
-        return err;
+    if (err == ESP_OK) {
+        err = nvs_commit(handle);
     }
 
-    err = nvs_commit(handle);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "Failed to persist restart counter: %s", esp_err_to_name(err));
-        nvs_close(handle);
-        return err;
-    }
-
-    restart_counter_value = value;
-
-    uint32_t verify_value = 0;
-    esp_err_t verify_err = nvs_get_u32(handle, RESTART_COUNTER_KEY, &verify_value);
-    if (verify_err == ESP_OK) {
-        ESP_LOGI(TAG, "Read restart counter after save: %" PRIu32, verify_value);
-    } else {
-        ESP_LOGW(TAG, "Failed to read restart counter after save: %s", esp_err_to_name(verify_err));
     }
 
     nvs_close(handle);
@@ -199,7 +176,6 @@ static uint32_t restart_counter_load(void) {
 
     nvs_close(handle);
     restart_counter_value = value;
-    ESP_LOGI(TAG, "Loaded restart counter: %" PRIu32, value);
     return value;
 }
 
@@ -273,12 +249,21 @@ static bool handle_power_cycle_sequence(void) {
     ESP_LOGI(TAG, "Consecutive power cycles: %" PRIu32, count);
     restart_counter_store(count);
 
-    if (count >= RESTART_COUNTER_THRESHOLD) {
+    if (count > RESTART_COUNTER_THRESHOLD_MAX) {
         ESP_LOGW(TAG,
-                "Detected %" PRIu32 " consecutive power cycles; starting countdown",
-                count);
+                "Detected %" PRIu32 " consecutive power cycles; exceeding maximum window %" PRIu32 ", resetting counter",
+                count, RESTART_COUNTER_THRESHOLD_MAX);
+        restart_counter_reset();
+        restart_counter_schedule_reset();
+        return false;
+    }
 
-        for (int i = (int)RESTART_COUNTER_THRESHOLD; i >= 0; --i) {
+    if (count >= RESTART_COUNTER_THRESHOLD_MIN) {
+        ESP_LOGW(TAG,
+                "Detected %" PRIu32 " consecutive power cycles within factory reset window (%" PRIu32 "-%" PRIu32 "); starting countdown",
+                count, RESTART_COUNTER_THRESHOLD_MIN, RESTART_COUNTER_THRESHOLD_MAX);
+
+        for (int i = (int)RESTART_COUNTER_THRESHOLD_MIN; i >= 0; --i) {
             ESP_LOGW(TAG, "Factory reset in %d", i);
             vTaskDelay(pdMS_TO_TICKS(1000));
         }
