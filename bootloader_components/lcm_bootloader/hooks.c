@@ -126,19 +126,19 @@ static esp_err_t store_restart_state_to_flash(const lcm_restart_state_t *state)
         return err;
     }
 
-    const bool write_encrypted = lcm_state_flash_encryption_active();
+    const bool flash_encryption_active = lcm_state_flash_encryption_active();
 
     LCM_ALIGNED32 uint8_t write_buf[LCM_STATE_FLASH_BYTES] = {0};
     memcpy(write_buf, &snapshot, sizeof(snapshot));
 
-    err = bootloader_flash_write(LCM_STATE_OFFSET, write_buf, sizeof(write_buf), write_encrypted);
+    err = bootloader_flash_write(LCM_STATE_OFFSET, write_buf, sizeof(write_buf), flash_encryption_active);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "write restart state failed (%d)", (int)err);
         return err;
     }
 
     lcm_restart_state_t verify = {0};
-    err = bootloader_flash_read(LCM_STATE_OFFSET, &verify, sizeof(verify), write_encrypted);
+    err = bootloader_flash_read(LCM_STATE_OFFSET, &verify, sizeof(verify), flash_encryption_active);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "verify restart state read failed (%d)", (int)err);
         return err;
