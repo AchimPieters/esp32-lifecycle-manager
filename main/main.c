@@ -33,7 +33,6 @@
 #include <esp_timer.h>
 #include <esp_wifi.h>
 #include <esp_partition.h>
-#include "lcm_fast_reset.h"
 #include <inttypes.h>
 #include <nvs.h>
 #include "github_update.h"
@@ -442,7 +441,6 @@ static void lifecycle_factory_reset_and_reboot(void) {
 }
 
 void app_main(void) {
-    lcm_fast_reset_init();
     ESP_LOGI(TAG, "Application start");
     esp_err_t err = nvs_flash_init();
     if (err != ESP_OK) {
