@@ -37,6 +37,8 @@
 #include <esp_wifi.h>
 #include <esp_log.h>
 #include <esp_system.h>
+#include <esp_bit_defs.h>
+#include <sdkconfig.h>
 #include <esp_ota_ops.h>
 #include <esp_app_desc.h>
 #include <esp_partition.h>
@@ -92,6 +94,8 @@ static char s_fw_revision[LIFECYCLE_FW_REVISION_MAX_LEN];
 static bool s_fw_revision_initialized = false;
 static esp_timer_handle_t s_restart_counter_timer = NULL;
 static bool s_nvs_initialized = false;
+static bool s_post_reset_logged = false;
+static TaskHandle_t s_bootstrap_task_handle = NULL;
 
 void wifi_config_shutdown(void) __attribute__((weak));
 
@@ -431,6 +435,13 @@ static void lifecycle_schedule_restart_counter_timeout(const char *log_tag) {
 
 void lifecycle_log_post_reset_state(const char *log_tag) {
     const char *tag = (log_tag != NULL) ? log_tag : LIFECYCLE_TAG;
+
+    if (s_post_reset_logged) {
+        ESP_LOGD(tag, "[lifecycle] post-reset state already processed");
+        return;
+    }
+
+    s_post_reset_logged = true;
     uint32_t persisted_count = 0;
     esp_err_t load_err = load_restart_counter_from_nvs(&persisted_count, tag);
     if (load_err == ESP_OK) {
@@ -492,6 +503,54 @@ void lifecycle_log_post_reset_state(const char *log_tag) {
     ESP_LOGI(tag, "[lifecycle] post_reset_flag=%s", reason_str);
     lifecycle_clear_post_reset_state();
 }
+
+#ifndef CONFIG_LCM_BOOTSTRAP_TASK_STACK_SIZE
+#define CONFIG_LCM_BOOTSTRAP_TASK_STACK_SIZE 4096
+#endif
+
+#ifndef CONFIG_LCM_BOOTSTRAP_TASK_PRIORITY
+#define CONFIG_LCM_BOOTSTRAP_TASK_PRIORITY 5
+#endif
+
+static void lifecycle_bootstrap_task(void *arg) {
+    ESP_LOGD(LIFECYCLE_TAG, "[lifecycle] bootstrap task started");
+
+    esp_err_t nvs_err = lifecycle_nvs_init();
+    if (nvs_err != ESP_OK) {
+        ESP_LOGW(LIFECYCLE_TAG,
+                 "[lifecycle] Failed to initialise NVS during bootstrap: %s",
+                 esp_err_to_name(nvs_err));
+    } else {
+        lifecycle_log_post_reset_state(LIFECYCLE_TAG);
+    }
+
+    s_bootstrap_task_handle = NULL;
+    vTaskDelete(NULL);
+}
+
+static void lifecycle_schedule_bootstrap(void) {
+    if (s_bootstrap_task_handle != NULL) {
+        return;
+    }
+
+    BaseType_t res = xTaskCreatePinnedToCore(
+            lifecycle_bootstrap_task,
+            "lcm_bootstrap",
+            CONFIG_LCM_BOOTSTRAP_TASK_STACK_SIZE,
+            NULL,
+            CONFIG_LCM_BOOTSTRAP_TASK_PRIORITY,
+            &s_bootstrap_task_handle,
+            tskNO_AFFINITY);
+
+    if (res != pdPASS) {
+        ESP_LOGE(LIFECYCLE_TAG,
+                 "[lifecycle] Failed to create bootstrap task (err=%ld)",
+                 (long)res);
+        s_bootstrap_task_handle = NULL;
+    }
+}
+
+ESP_SYSTEM_INIT_FN(lifecycle_schedule_bootstrap, ESP_SYSTEM_INIT_ALL_CORES);
 
 static void lifecycle_shutdown_homekit(bool reset_store) {
     lifecycle_log_step("stop_homekit");

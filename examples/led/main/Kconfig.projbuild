@@ -24,4 +24,16 @@ menu "StudioPieters"
               help
                    If you want to change the HomeKit Setup ID, you can do that here (Note: you need to make a new QR-CODE To make it work)
 
+      config LCM_BOOTSTRAP_TASK_STACK_SIZE
+              int "LCM bootstrap task stack size"
+              default 4096
+              help
+                  Stackgrootte voor de taak die tijdens het opstarten de Lifecycle Manager initialiseert.
+
+      config LCM_BOOTSTRAP_TASK_PRIORITY
+              int "LCM bootstrap task priority"
+              default 5
+              help
+                  Taakprioriteit voor de automatische Lifecycle Manager bootstrap taak.
+
 endmenu
