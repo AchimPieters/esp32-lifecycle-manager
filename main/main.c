@@ -33,6 +33,7 @@
 #include <esp_timer.h>
 #include <esp_wifi.h>
 #include <esp_partition.h>
+#include <esp_ota_ops.h>
 #include <inttypes.h>
 #include "github_update.h"
 #include "led_indicator.h"
@@ -262,8 +263,15 @@ static void restart_counter_schedule_reset(void) {
 static void lifecycle_factory_reset_and_reboot(void);
 
 static bool handle_power_cycle_sequence(void) {
+    const esp_partition_t *running = esp_ota_get_running_partition();
+    if (running != NULL) {
+        ESP_LOGD(TAG,
+                "Power-cycle detector running from partition '%s' (subtype=%d)",
+                running->label, running->subtype);
+    }
+
     esp_reset_reason_t reason = esp_reset_reason();
-    if (reason != ESP_RST_POWERON && reason != ESP_RST_EXT) {
+    if (reason != ESP_RST_POWERON && reason != ESP_RST_EXT && reason != ESP_RST_BROWNOUT) {
         if (restart_counter_value != 0) {
             ESP_LOGI(TAG, "Reset reason %d detected; clearing restart counter", reason);
             restart_counter_reset();
