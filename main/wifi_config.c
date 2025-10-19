@@ -47,6 +47,7 @@
 #include "wifi_config.h"
 #include "form_urlencoded.h"
 #include "github_update.h"
+#include "led_indicator.h"
 
 enum {
         STATION_MODE = 1,
@@ -565,6 +566,7 @@ static void wifi_config_server_on_settings_update(client_t *client) {
     }
     DEBUG("Persisting led_indicator=%d gpio=%d active_high=%d", led, gpio, active_high);
     save_led_config(led, gpio, active_high);
+    led_indicator_reload();
 
     form_params_free(form);
 
