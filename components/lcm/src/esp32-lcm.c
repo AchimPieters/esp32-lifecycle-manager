@@ -1150,3 +1150,7 @@ void lifecycle_factory_reset_and_reboot(void) {
     }
     esp_restart();
 }
+
+__attribute__((used)) void lcm_reset_component_anchor_symbol(void) {
+}
+
