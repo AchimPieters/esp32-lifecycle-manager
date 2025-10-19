@@ -10,4 +10,23 @@ config LCM_RESTART_COUNTER_TIMEOUT_MS
         shorter window to trigger the automatic factory reset, or increase it
         to make the sequence easier to perform.
 
+config LCM_HW_RESET_WINDOW_MS
+    int "Hardware reset detection window (ms)"
+    range 1000 60000
+    default 12000
+    help
+        Number of milliseconds the Lifecycle Manager tracks consecutive
+        hardware resets. Power-cycle the device this many times within the
+        window to trigger the automatic factory rollback to the factory
+        partition.
+
+config LCM_HW_RESET_TARGET
+    int "Hardware reset trigger count"
+    range 2 50
+    default 10
+    help
+        Number of hardware resets within the configured window required to
+        perform a factory rollback. After reaching this count the device boots
+        the factory partition and clears OTA metadata.
+
 endmenu
