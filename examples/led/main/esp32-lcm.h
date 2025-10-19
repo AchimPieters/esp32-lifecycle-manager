@@ -49,6 +49,8 @@ typedef enum {
     LIFECYCLE_POST_RESET_REASON_UPDATE = 3,
 } lifecycle_post_reset_reason_t;
 
+// Wordt automatisch aangeroepen tijdens het opstarten. Aanroepen na de
+// bootstrap levert geen extra acties meer op.
 void lifecycle_log_post_reset_state(const char *log_tag);
 
 // Initialiseer NVS en voer automatische herstelactie uit wanneer er geen ruimte is of versie verandert.
