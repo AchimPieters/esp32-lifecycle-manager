@@ -34,20 +34,33 @@
 #include <esp_wifi.h>
 #include <esp_partition.h>
 #include <inttypes.h>
-#include <nvs.h>
 #include "github_update.h"
 #include "led_indicator.h"
 
 static const char *TAG = "main";
 
-static const char *RESTART_COUNTER_NAMESPACE = "lcm";
-static const char *RESTART_COUNTER_KEY = "restart_count";
 static const uint32_t RESTART_COUNTER_THRESHOLD_MIN = 10U;
 static const uint32_t RESTART_COUNTER_THRESHOLD_MAX = 12U;
 static const uint32_t RESTART_COUNTER_RESET_TIMEOUT_MS = 5000U;
 
 static esp_timer_handle_t restart_counter_timer = NULL;
 static uint32_t restart_counter_value = 0U;
+static const uint32_t RESTART_COUNTER_MAGIC = 0xC04AC17BU;
+
+RTC_DATA_ATTR static struct {
+    uint32_t magic;
+    uint32_t value;
+} restart_counter_rtc = {
+    .magic = RESTART_COUNTER_MAGIC,
+    .value = 0,
+};
+
+static void restart_counter_rtc_validate(void) {
+    if (restart_counter_rtc.magic != RESTART_COUNTER_MAGIC) {
+        restart_counter_rtc.magic = RESTART_COUNTER_MAGIC;
+        restart_counter_rtc.value = 0;
+    }
+}
 
 static void sntp_start_and_wait(void);
 void wifi_ready(void);
@@ -185,54 +198,16 @@ void led_indicator_reload(void) {
 static bool factory_reset_requested = false;
 
 static esp_err_t restart_counter_store(uint32_t value) {
+    restart_counter_rtc_validate();
     restart_counter_value = value;
-    nvs_handle_t handle;
-    esp_err_t err = nvs_open(RESTART_COUNTER_NAMESPACE, NVS_READWRITE, &handle);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "Failed to open restart counter namespace: %s", esp_err_to_name(err));
-        return err;
-    }
-
-    err = nvs_set_u32(handle, RESTART_COUNTER_KEY, value);
-    if (err == ESP_OK) {
-        err = nvs_commit(handle);
-    }
-
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "Failed to persist restart counter: %s", esp_err_to_name(err));
-    }
-
-    nvs_close(handle);
-    return err;
+    restart_counter_rtc.value = value;
+    return ESP_OK;
 }
 
 static uint32_t restart_counter_load(void) {
-    nvs_handle_t handle;
-    uint32_t value = 0;
-
-    esp_err_t err = nvs_open(RESTART_COUNTER_NAMESPACE, NVS_READWRITE, &handle);
-    if (err != ESP_OK) {
-        if (err != ESP_ERR_NVS_NOT_FOUND) {
-            ESP_LOGW(TAG, "Failed to open restart counter namespace: %s", esp_err_to_name(err));
-        }
-        restart_counter_value = 0;
-        return 0;
-    }
-
-    err = nvs_get_u32(handle, RESTART_COUNTER_KEY, &value);
-    if (err == ESP_ERR_NVS_NOT_FOUND) {
-        value = 0;
-        err = ESP_OK;
-    }
-
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "Failed to read restart counter: %s", esp_err_to_name(err));
-        value = 0;
-    }
-
-    nvs_close(handle);
-    restart_counter_value = value;
-    return value;
+    restart_counter_rtc_validate();
+    restart_counter_value = restart_counter_rtc.value;
+    return restart_counter_value;
 }
 
 static void restart_counter_reset(void) {
