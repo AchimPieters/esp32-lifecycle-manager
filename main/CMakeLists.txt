@@ -5,6 +5,7 @@ idf_component_register(
         "wifi_config_util.c"
         "form_urlencoded.c"
         "github_update.c"
+        "esp32-lcm.c"
     INCLUDE_DIRS
         "."
         "include"
@@ -21,6 +22,7 @@ idf_component_register(
         esp_http_client
         esp_https_ota
         app_update
+        esp_partition
         mbedtls
         json
         EMBED_TXTFILES
