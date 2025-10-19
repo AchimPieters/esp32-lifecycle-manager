@@ -22,12 +22,15 @@
  **/
 
 #include <stdio.h>
+#include <stdbool.h>
+#include <esp_attr.h>
 #include <esp_log.h>
 #include <nvs_flash.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <driver/gpio.h>
 #include <wifi_config.h>
+#include <esp_ota_ops.h>
 #include <esp_sntp.h>
 #include <esp_system.h>
 #include <esp_timer.h>
@@ -48,6 +51,7 @@ static const uint32_t RESTART_COUNTER_RESET_TIMEOUT_MS = 5000U;
 
 static esp_timer_handle_t restart_counter_timer = NULL;
 static uint32_t restart_counter_value = 0U;
+RTC_DATA_ATTR static uint32_t restart_counter_rtc = 0U;
 
 static void sntp_start_and_wait(void);
 void wifi_ready(void);
@@ -186,6 +190,7 @@ static bool factory_reset_requested = false;
 
 static esp_err_t restart_counter_store(uint32_t value) {
     restart_counter_value = value;
+    restart_counter_rtc = value;
     nvs_handle_t handle;
     esp_err_t err = nvs_open(RESTART_COUNTER_NAMESPACE, NVS_READWRITE, &handle);
     if (err != ESP_OK) {
@@ -209,29 +214,38 @@ static esp_err_t restart_counter_store(uint32_t value) {
 static uint32_t restart_counter_load(void) {
     nvs_handle_t handle;
     uint32_t value = 0;
+    bool nvs_value_valid = false;
 
     esp_err_t err = nvs_open(RESTART_COUNTER_NAMESPACE, NVS_READWRITE, &handle);
     if (err != ESP_OK) {
         if (err != ESP_ERR_NVS_NOT_FOUND) {
             ESP_LOGW(TAG, "Failed to open restart counter namespace: %s", esp_err_to_name(err));
         }
-        restart_counter_value = 0;
-        return 0;
+        value = restart_counter_rtc;
+        restart_counter_value = value;
+        return value;
     }
 
     err = nvs_get_u32(handle, RESTART_COUNTER_KEY, &value);
     if (err == ESP_ERR_NVS_NOT_FOUND) {
         value = 0;
         err = ESP_OK;
+    } else if (err == ESP_OK) {
+        nvs_value_valid = true;
     }
 
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "Failed to read restart counter: %s", esp_err_to_name(err));
-        value = 0;
+        value = restart_counter_rtc;
     }
 
     nvs_close(handle);
+    if (nvs_value_valid && restart_counter_rtc > value) {
+        value = restart_counter_rtc;
+    }
+
     restart_counter_value = value;
+    restart_counter_rtc = value;
     return value;
 }
 
@@ -244,6 +258,7 @@ static void restart_counter_reset(void) {
     }
 
     restart_counter_value = 0;
+    restart_counter_rtc = 0;
     if (restart_counter_store(0) == ESP_OK) {
         ESP_LOGI(TAG, "Restart counter reset");
     }
@@ -399,6 +414,21 @@ static void erase_ota_app_partitions(void) {
 void factory_reset_task(void *pvParameter) {
     ESP_LOGI("RESET", "Performing factory reset (clearing WiFi and NVS)");
 
+    bool factory_boot_selected = false;
+    const esp_partition_t *factory = esp_partition_find_first(
+            ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_FACTORY, NULL);
+    if (factory == NULL) {
+        ESP_LOGW("RESET", "Factory partition not found; continuing without selecting boot partition");
+    } else {
+        esp_err_t boot_err = esp_ota_set_boot_partition(factory);
+        if (boot_err != ESP_OK) {
+            ESP_LOGE("RESET", "Failed to select factory partition for boot: %s", esp_err_to_name(boot_err));
+        } else {
+            factory_boot_selected = true;
+            ESP_LOGI("RESET", "Factory partition selected for next boot");
+        }
+    }
+
     esp_err_t wifi_err = esp_wifi_restore();
     if (wifi_err != ESP_OK) {
         ESP_LOGW("RESET", "esp_wifi_restore failed: %s", esp_err_to_name(wifi_err));
@@ -414,6 +444,9 @@ void factory_reset_task(void *pvParameter) {
     vTaskDelay(pdMS_TO_TICKS(1000));
 
     ESP_LOGI("RESTART", "Restarting system");
+    if (factory_boot_selected) {
+        ESP_LOGI("RESET", "Rebooting into factory firmware after reset");
+    }
     esp_restart();
 
     factory_reset_requested = false;
