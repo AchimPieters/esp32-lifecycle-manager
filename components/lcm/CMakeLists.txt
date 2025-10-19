@@ -1,7 +1,19 @@
 idf_component_register(
     SRCS "src/esp32-lcm.c"
     INCLUDE_DIRS "include"
-    REQUIRES freertos esp_wifi esp_event esp_netif nvs_flash esp32-homekit esp_timer app_update esp_partition mdns
+    REQUIRES
+        freertos
+        esp_wifi
+        esp_event
+        esp_netif
+        nvs_flash
+        esp32-homekit
+        esp_timer
+        app_update
+        esp_partition
+        esp_app_format
+        esp_hw_support
+        mdns
     PRIV_REQUIRES esp_system
 )
 

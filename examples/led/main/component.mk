@@ -1,1 +1,1 @@
-COMPONENT_DEPENDS = homekit
+COMPONENT_DEPENDS = homekit lcm
