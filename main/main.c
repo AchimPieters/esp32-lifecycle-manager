@@ -440,17 +440,22 @@ static void lifecycle_factory_reset_and_reboot(void) {
     factory_reset();
 }
 
-void app_main(void) {
-    ESP_LOGI(TAG, "Application start");
+static bool initialize_power_cycle_detection(void) {
     esp_err_t err = nvs_flash_init();
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "NVS init failed: %s", esp_err_to_name(err));
     }
 
     restart_counter_load();
-    if (handle_power_cycle_sequence()) {
+    return handle_power_cycle_sequence();
+}
+
+void app_main(void) {
+    if (initialize_power_cycle_detection()) {
         return;
     }
+
+    ESP_LOGI(TAG, "Application start");
     led_indicator_reload();
     wifi_config_init("LCM", NULL, wifi_ready);
 }
