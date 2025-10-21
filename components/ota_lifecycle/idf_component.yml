@@ -1,9 +1,9 @@
 name: "esp32-lifecycle-manager"
 version: "0.0.0"
-description: "ESP32 Lifecycle Manager firmware and reusable OTA helper component."
+description: "Rapid restart detection helpers used to trigger factory resets from OTA firmware."
 url: "https://www.studiopieters.nl"
 maintainers:
-   - "Achim Pieters <https://www.studiopieters.nl>"
+  - "Achim Pieters <https://www.studiopieters.nl>"
 repository: "https://github.com/AchimPieters/esp32-lifecycle-manager"
 issues: "https://github.com/AchimPieters/esp32-lifecycle-manager/issues"
 license: "MIT"

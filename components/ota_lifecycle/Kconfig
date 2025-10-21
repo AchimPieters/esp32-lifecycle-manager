@@ -1,0 +1,45 @@
+menu "Lifecycle Manager component"
+
+config LCM_LOG_TAG
+    string "Log tag used by lifecycle manager"
+    default "LCM"
+    help
+        Defines the tag used for ESP_LOG output.
+
+config LCM_FACTORY_RESET_TRIGGER_COUNT
+    int "Rapid restart threshold"
+    range 1 100
+    default 10
+    help
+        Number of consecutive rapid restarts that triggers the factory reset
+        callback.
+
+config LCM_FACTORY_RESET_COUNTDOWN_SECONDS
+    int "Factory reset countdown seconds"
+    range 0 60
+    default 11
+    help
+        Optional countdown that runs once the rapid restart threshold is
+        reached. A value of 0 disables the countdown.
+
+config LCM_RESTART_COUNTER_TIMEOUT_MS
+    int "Restart counter timeout window (ms)"
+    range 1000 3600000
+    default 5000
+    help
+        Duration without a reset after which the consecutive restart counter is
+        cleared automatically.
+
+config LCM_RESTART_COUNTER_NAMESPACE
+    string "NVS namespace for lifecycle data"
+    default "lcm"
+    help
+        Namespace in NVS where the restart counter is stored.
+
+config LCM_RESTART_COUNTER_KEY
+    string "NVS key for restart counter"
+    default "restart_count"
+    help
+        Key used inside the lifecycle namespace to persist the restart counter.
+
+endmenu

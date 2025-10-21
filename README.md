@@ -79,6 +79,71 @@ is running.
 4. **Normal operation** – Your application firmware now runs while LCM remains on
    standby to handle OTA updates and recovery tasks.
 
+## Using LCM inside your OTA application
+
+LCM can be compiled directly alongside your own ESP-IDF firmware. You can either
+consume the component from the [Espressif component registry](https://components.espressif.com/components/achimpieters/esp32-lifecycle-manager)
+or vendor it locally. The reusable component itself lives under
+`components/ota_lifecycle` in this repository.
+
+```yaml
+# idf_component.yml in the root of your application
+dependencies:
+  achimpieters/esp32-lifecycle-manager: "*"
+```
+
+If you prefer to ship the source with your project, add it as a submodule inside
+your app’s `components/` directory:
+
+```bash
+git submodule add https://github.com/AchimPieters/esp32-lifecycle-manager \
+  components/esp32-lifecycle-manager
+```
+
+Point `EXTRA_COMPONENT_DIRS` (for example in your project `CMakeLists.txt`) to
+`components/esp32-lifecycle-manager/components/ota_lifecycle` so the helper API
+is picked up during the build.
+
+Once the component is available, initialize it early in your `app_main` (or the
+equivalent entry point of your firmware):
+
+```c
+#include "esp32_lifecycle_manager.h"
+
+static void perform_factory_reset(void *ctx) {
+    // Wipe your application state and reboot.
+}
+
+void app_main(void) {
+    ESP_ERROR_CHECK(lifecycle_nvs_init());
+    lifecycle_register_factory_reset_callback(perform_factory_reset, NULL);
+    lifecycle_log_post_reset_state();
+
+    // Continue with the rest of your application boot sequence.
+}
+```
+
+`lifecycle_log_post_reset_state()` persists the rapid restart counter in NVS and
+executes your callback once the threshold is reached (10 power cycles inside the
+configured window by default). Adjust the behaviour through the Kconfig options
+provided by the component:
+
+- **Rapid restart threshold** – `CONFIG_LCM_FACTORY_RESET_TRIGGER_COUNT`
+- **Countdown before invoking the callback** – `CONFIG_LCM_FACTORY_RESET_COUNTDOWN_SECONDS`
+- **Time window that qualifies as a "rapid" restart** – `CONFIG_LCM_RESTART_COUNTER_TIMEOUT_MS`
+- **NVS storage location** – `CONFIG_LCM_RESTART_COUNTER_NAMESPACE` and
+  `CONFIG_LCM_RESTART_COUNTER_KEY`
+- **Logging tag** – `CONFIG_LCM_LOG_TAG`
+
+Set the values via `idf.py menuconfig` or pin them in your
+`sdkconfig.defaults`. With these hooks in place you can build and flash your
+firmware as usual. Rapid resets should increment the counter and trigger the
+factory reset countdown exactly as documented in the LCM README.
+
+With these hooks in place you can build and flash your firmware as usual. Rapid
+resets should increment the counter and trigger the factory reset countdown
+exactly as documented in the LCM README.
+
 ## Building LCM with ESP-IDF
 
 1. Install ESP-IDF by following the official Espressif documentation.
