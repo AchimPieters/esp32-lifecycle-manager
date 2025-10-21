@@ -1,0 +1,13 @@
+menu "Lifecycle Manager"
+
+config LCM_RESTART_COUNTER_TIMEOUT_MS
+    int "Restart counter timeout window (ms)"
+    range 1000 3600000
+    default 5000
+    help
+        Defines how long the device waits for another restart before the
+        consecutive restart counter is reset. Reduce the value if you want a
+        shorter window to trigger the automatic factory reset, or increase it
+        to make the sequence easier to perform.
+
+endmenu
