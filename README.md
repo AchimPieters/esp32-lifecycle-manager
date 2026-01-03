@@ -125,10 +125,10 @@ filenames with the artifacts produced by your build.
 ```bash
 python -m esptool --chip esp32 -b 460800 --before default_reset --after hard_reset \
   write_flash --flash_mode dio --flash_size 4MB --flash_freq 40m \
-  0x1000 esp32-bootloader.bin \
-  0x8000 esp32-partition-table.bin \
-  0xe000 esp32-ota_data_initial.bin \
-  0x20000 esp32-lifecycle-manager.bin
+  0x1000 bootloader.bin \
+  0x8000 partition-table.bin \
+  0xe000 ota_data_initial.bin \
+  0x20000 lifecycle-manager.bin
 ```
 
 ### ESP32-S2
@@ -136,10 +136,10 @@ python -m esptool --chip esp32 -b 460800 --before default_reset --after hard_res
 ```bash
 python -m esptool --chip esp32s2 -b 460800 --before default_reset --after hard_reset \
   write_flash --flash_mode dio --flash_size 4MB --flash_freq 80m \
-  0x1000 esp32s2-bootloader.bin \
-  0x8000 esp32s2-partition-table.bin \
-  0xe000 esp32s2-ota_data_initial.bin \
-  0x20000 esp32s2-lifecycle-manager.bin
+  0x1000 bootloader.bin \
+  0x8000 partition-table.bin \
+  0xe000 ota_data_initial.bin \
+  0x20000 lifecycle-manager.bin
 ```
 
 ### ESP32-S3
@@ -147,10 +147,10 @@ python -m esptool --chip esp32s2 -b 460800 --before default_reset --after hard_r
 ```bash
 python -m esptool --chip esp32s3 -b 460800 --before default_reset --after hard_reset \
   write_flash --flash_mode dio --flash_size 4MB --flash_freq 80m \
-  0x0    esp32s3-bootloader.bin \
-  0x8000 esp32s3-partition-table.bin \
-  0xe000 esp32s3-ota_data_initial.bin \
-  0x20000 esp32s3-lifecycle-manager.bin
+  0x1000 bootloader.bin \
+  0x8000 partition-table.bin \
+  0xe000 ota_data_initial.bin \
+  0x20000 lifecycle-manager.bin
 ```
 
 ### ESP32-C2
@@ -158,10 +158,10 @@ python -m esptool --chip esp32s3 -b 460800 --before default_reset --after hard_r
 ```bash
 python -m esptool --chip esp32c2 -b 460800 --before default_reset --after hard_reset \
   write_flash --flash_mode dio --flash_size 4MB --flash_freq 60m \
-  0x0    esp32c2-bootloader.bin \
-  0x8000 esp32c2-partition_table/partition-table.bin \
-  0xe000 esp32c2-ota_data_initial.bin \
-  0x20000 esp32c2-lifecycle-manager.bin
+  0x1000 bootloader.bin \
+  0x8000 partition-table.bin \
+  0xe000 ota_data_initial.bin \
+  0x20000 lifecycle-manager.bin
 ```
 
 ### ESP32-C3
@@ -169,10 +169,10 @@ python -m esptool --chip esp32c2 -b 460800 --before default_reset --after hard_r
 ```bash
 python -m esptool --chip esp32c3 -b 460800 --before default_reset --after hard_reset \
   write_flash --flash_mode dio --flash_size 4MB --flash_freq 80m \
-  0x0    esp32c3-bootloader.bin \
-  0x8000 esp32c3-partition-table.bin \
-  0xe000 esp32c3-ota_data_initial.bin \
-  0x20000 esp32c3-lifecycle-manager.bin
+  0x1000 bootloader.bin \
+  0x8000 partition-table.bin \
+  0xe000 ota_data_initial.bin \
+  0x20000 lifecycle-manager.binn
 ```
 
 ### ESP32-C5
@@ -180,10 +180,10 @@ python -m esptool --chip esp32c3 -b 460800 --before default_reset --after hard_r
 ```bash
 python -m esptool --chip esp32c5 -b 460800 --before default_reset --after hard_reset \
   write_flash --flash_mode dio --flash_size 4MB --flash_freq 80m \
-  0x2000 esp32c5-bootloader.bin \
-  0x8000 esp32c5-partition-table.bin \
-  0xe000 esp32c5-ota_data_initial.bin \
-  0x20000 esp32c5-lifecycle-manager.bin
+  0x1000 bootloader.bin \
+  0x8000 partition-table.bin \
+  0xe000 ota_data_initial.bin \
+  0x20000 lifecycle-manager.bin
 ```
 
 ### ESP32-C6 / ESP32-C61
@@ -191,10 +191,10 @@ python -m esptool --chip esp32c5 -b 460800 --before default_reset --after hard_r
 ```bash
 python -m esptool --chip esp32c6 -b 460800 --before default_reset --after hard_reset \
   write_flash --flash_mode dio --flash_size 4MB --flash_freq 80m \
-  0x0    esp32c6-bootloader.bin \
-  0x8000 esp32c6-partition-table.bin \
-  0xe000 esp32c6-ota_data_initial.bin \
-  0x20000 esp32c6-lifecycle-manager.bin
+  0x1000 bootloader.bin \
+  0x8000 partition-table.bin \
+  0xe000 ota_data_initial.bin \
+  0x20000 lifecycle-manager.bin
 ```
 
 > For ESP32-C61 use the same offsets and swap only the filenames.
