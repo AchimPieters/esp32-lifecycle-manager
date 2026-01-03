@@ -128,7 +128,7 @@ python -m esptool --chip esp32 -b 460800 --before default_reset --after hard_res
   0x1000 bootloader.bin \
   0x8000 partition-table.bin \
   0xe000 ota_data_initial.bin \
-  0x20000 lifecycle-manager.bin
+  0x20000 esp32-lifecycle-manager.bin
 ```
 
 ### ESP32-S2
@@ -139,7 +139,7 @@ python -m esptool --chip esp32s2 -b 460800 --before default_reset --after hard_r
   0x1000 bootloader.bin \
   0x8000 partition-table.bin \
   0xe000 ota_data_initial.bin \
-  0x20000 lifecycle-manager.bin
+  0x20000 esp32-lifecycle-manager.bin
 ```
 
 ### ESP32-S3
@@ -150,7 +150,7 @@ python -m esptool --chip esp32s3 -b 460800 --before default_reset --after hard_r
   0x1000 bootloader.bin \
   0x8000 partition-table.bin \
   0xe000 ota_data_initial.bin \
-  0x20000 lifecycle-manager.bin
+  0x20000 esp32-lifecycle-manager.bin
 ```
 
 ### ESP32-C2
@@ -161,7 +161,7 @@ python -m esptool --chip esp32c2 -b 460800 --before default_reset --after hard_r
   0x1000 bootloader.bin \
   0x8000 partition-table.bin \
   0xe000 ota_data_initial.bin \
-  0x20000 lifecycle-manager.bin
+  0x20000 esp32-lifecycle-manager.bin
 ```
 
 ### ESP32-C3
@@ -172,7 +172,7 @@ python -m esptool --chip esp32c3 -b 460800 --before default_reset --after hard_r
   0x1000 bootloader.bin \
   0x8000 partition-table.bin \
   0xe000 ota_data_initial.bin \
-  0x20000 lifecycle-manager.binn
+  0x20000 esp32-lifecycle-manager.bin
 ```
 
 ### ESP32-C5
@@ -183,7 +183,7 @@ python -m esptool --chip esp32c5 -b 460800 --before default_reset --after hard_r
   0x1000 bootloader.bin \
   0x8000 partition-table.bin \
   0xe000 ota_data_initial.bin \
-  0x20000 lifecycle-manager.bin
+  0x20000 esp32-lifecycle-manager.bin
 ```
 
 ### ESP32-C6 / ESP32-C61
@@ -194,7 +194,7 @@ python -m esptool --chip esp32c6 -b 460800 --before default_reset --after hard_r
   0x1000 bootloader.bin \
   0x8000 partition-table.bin \
   0xe000 ota_data_initial.bin \
-  0x20000 lifecycle-manager.bin
+  0x20000 esp32-lifecycle-manager.bin
 ```
 
 > For ESP32-C61 use the same offsets and swap only the filenames.
