@@ -48,6 +48,7 @@
 #include "form_urlencoded.h"
 #include "github_update.h"
 #include "led_indicator.h"
+#include "nvs_keys.h"
 
 enum {
         STATION_MODE = 1,
@@ -189,24 +190,31 @@ static void wifi_config_init_wifi(void) {
         if (wifi_inited) return;
 
         ESP_LOGD("wifi_config", "Initializing esp_netif");
-        esp_netif_init();
-        esp_event_loop_create_default();
-        esp_netif_create_default_wifi_ap();
-        esp_netif_create_default_wifi_sta();
+        ESP_ERROR_CHECK(esp_netif_init());
+        ESP_ERROR_CHECK(esp_event_loop_create_default());
+        esp_netif_t *ap_if = esp_netif_create_default_wifi_ap();
+        esp_netif_t *sta_if = esp_netif_create_default_wifi_sta();
+        if (!ap_if || !sta_if) {
+                ESP_LOGE("wifi_config", "Failed to create default netifs");
+                return;
+        }
 
         ESP_LOGD("wifi_config", "Initializing WiFi driver");
         wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-        esp_wifi_init(&cfg);
-        esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, wifi_event_handler, NULL);
-        esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, wifi_event_handler, NULL);
+        ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+        ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, wifi_event_handler, NULL));
+        ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, wifi_event_handler, NULL));
         ESP_LOGI("wifi_config", "Starting WiFi...");
-        esp_wifi_start();
+        ESP_ERROR_CHECK(esp_wifi_start());
 
         wifi_inited = true;
         ESP_LOGD("wifi_config", "WiFi initialization complete");
 }
 
 #define WIFI_CONFIG_SERVER_PORT 80
+#define WIFI_CONFIG_HTTP_MAX_BODY_SIZE 4096
+#define WIFI_CONFIG_MAX_REPO_LEN 95
+#define WIFI_CONFIG_MIN_CONFIG_UPDATE_INTERVAL_MS 1000
 
 #ifndef WIFI_CONFIG_CONNECT_TIMEOUT
 #define WIFI_CONFIG_CONNECT_TIMEOUT 15000
@@ -218,11 +226,11 @@ static void wifi_config_init_wifi(void) {
 #define WIFI_CONFIG_DISCONNECTED_MONITOR_INTERVAL 10000
 #endif
 
-#define INFO(message, ...) printf(">>> wifi_config: " message "\n", ## __VA_ARGS__);
-#define ERROR(message, ...) printf("!!! wifi_config: " message "\n", ## __VA_ARGS__);
+#define INFO(message, ...) ESP_LOGI("wifi_config", message, ## __VA_ARGS__)
+#define ERROR(message, ...) ESP_LOGE("wifi_config", message, ## __VA_ARGS__)
 
 #ifdef WIFI_CONFIG_DEBUG
-#define DEBUG(message, ...) printf("*** wifi_config: " message "\n", ## __VA_ARGS__);
+#define DEBUG(message, ...) ESP_LOGD("wifi_config", message, ## __VA_ARGS__)
 #else
 #define DEBUG(message, ...)
 #endif
@@ -248,6 +256,7 @@ typedef struct {
         TaskHandle_t monitor_task_handle;
         TaskHandle_t http_task_handle;
         TaskHandle_t dns_task_handle;
+        int64_t last_settings_update_us;
 } wifi_config_context_t;
 
 
@@ -493,6 +502,42 @@ static void wifi_config_server_on_settings(client_t *client) {
 }
 
 
+
+static bool is_valid_repo_format(const char *repo) {
+    if (!repo || repo[0] == '\0') {
+        return false;
+    }
+
+    size_t len = strlen(repo);
+    if (len > WIFI_CONFIG_MAX_REPO_LEN) {
+        return false;
+    }
+
+    const char *slash = strchr(repo, '/');
+    if (!slash || slash == repo || slash[1] == '\0' || strchr(slash + 1, '/')) {
+        return false;
+    }
+
+    for (const char *p = repo; *p; ++p) {
+        if ((*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') ||
+            (*p >= '0' && *p <= '9') || *p == '-' || *p == '_' || *p == '.' || *p == '/') {
+            continue;
+        }
+        return false;
+    }
+    return true;
+}
+
+static bool is_rate_limited(void) {
+    int64_t now = esp_timer_get_time();
+    if (context->last_settings_update_us != 0 &&
+        (now - context->last_settings_update_us) < ((int64_t)WIFI_CONFIG_MIN_CONFIG_UPDATE_INTERVAL_MS * 1000LL)) {
+        return true;
+    }
+    context->last_settings_update_us = now;
+    return false;
+}
+
 static void wifi_config_server_on_settings_update(client_t *client) {
     DEBUG("Update settings, body = %s", client->body);
 
@@ -500,6 +545,20 @@ static void wifi_config_server_on_settings_update(client_t *client) {
     if (!form) {
         DEBUG("Couldn't parse form data, redirecting to /settings");
         client_send_redirect(client, 302, "/settings");
+        return;
+    }
+
+    if (sdk_wifi_get_opmode() != STATIONAP_MODE) {
+        ESP_LOGW("wifi_config", "Rejecting settings update outside provisioning mode");
+        form_params_free(form);
+        client_send_redirect(client, 403, "/settings");
+        return;
+    }
+
+    if (is_rate_limited()) {
+        ESP_LOGW("wifi_config", "Rate limiting settings update");
+        form_params_free(form);
+        client_send_redirect(client, 429, "/settings");
         return;
     }
 
@@ -511,10 +570,26 @@ static void wifi_config_server_on_settings_update(client_t *client) {
     form_param_t *gpio_param = form_params_find(form, "led_gpio");
     form_param_t *level_param = form_params_find(form, "led_level");
 
-    if (!ssid_param) {
+    if (!ssid_param || !ssid_param->value) {
         DEBUG("Invalid form data, redirecting to /settings");
         form_params_free(form);
         client_send_redirect(client, 302, "/settings");
+        return;
+    }
+
+    size_t ssid_len = strlen(ssid_param->value);
+    size_t password_len = (password_param && password_param->value) ? strlen(password_param->value) : 0;
+    if (ssid_len == 0 || ssid_len > 32 || password_len > 63) {
+        ESP_LOGW("wifi_config", "Rejecting invalid SSID/password length ssid=%u pass=%u", (unsigned)ssid_len, (unsigned)password_len);
+        form_params_free(form);
+        client_send_redirect(client, 400, "/settings");
+        return;
+    }
+
+    if (repo_param && repo_param->value && !is_valid_repo_format(repo_param->value)) {
+        ESP_LOGW("wifi_config", "Rejecting invalid repo format: %s", repo_param->value);
+        form_params_free(form);
+        client_send_redirect(client, 400, "/settings");
         return;
     }
 
@@ -529,12 +604,12 @@ static void wifi_config_server_on_settings_update(client_t *client) {
     DEBUG("Setting led_gpio param = %s", gpio_param ? gpio_param->value : "(none)");
     DEBUG("Setting led_level param = %s", level_param ? level_param->value : "(none)");
 
-    sysparam_set_string("wifi_ssid", ssid_param->value);
+    sysparam_set_string(NVS_KEY_WIFI_SSID, ssid_param->value);
 
     if (password_param) {
-        sysparam_set_string("wifi_password", password_param->value);
+        sysparam_set_string(NVS_KEY_WIFI_PASSWORD, password_param->value);
     } else {
-        sysparam_set_string("wifi_password", "");
+        sysparam_set_string(NVS_KEY_WIFI_PASSWORD, "");
     }
 
     if (repo_param) {
@@ -604,7 +679,20 @@ static int wifi_config_server_on_url(http_parser *parser, const char *data, size
 
 static int wifi_config_server_on_body(http_parser *parser, const char *data, size_t length) {
         client_t *client = parser->data;
-        client->body = realloc(client->body, client->body_length + length + 1);
+        if (client->body_length + length > WIFI_CONFIG_HTTP_MAX_BODY_SIZE) {
+                ESP_LOGW("wifi_config", "HTTP body exceeds limit (%u bytes)", WIFI_CONFIG_HTTP_MAX_BODY_SIZE);
+                client->disconnected = true;
+                return -1;
+        }
+
+        uint8_t *new_body = realloc(client->body, client->body_length + length + 1);
+        if (!new_body) {
+                ESP_LOGE("wifi_config", "Failed to grow HTTP body buffer");
+                client->disconnected = true;
+                return -1;
+        }
+
+        client->body = new_body;
         memcpy(client->body + client->body_length, data, length);
         client->body_length += length;
         client->body[client->body_length] = 0;
@@ -678,8 +766,18 @@ static void http_task(void *arg) {
                 vTaskDelete(NULL);
                 return;
         }
-        bind(listenfd, (struct sockaddr*)&serv_addr, sizeof(serv_addr));
-        listen(listenfd, 2);
+        if (bind(listenfd, (struct sockaddr*)&serv_addr, sizeof(serv_addr)) != 0) {
+                ERROR("HTTP bind failed");
+                lwip_close(listenfd);
+                vTaskDelete(NULL);
+                return;
+        }
+        if (listen(listenfd, 2) != 0) {
+                ERROR("HTTP listen failed");
+                lwip_close(listenfd);
+                vTaskDelete(NULL);
+                return;
+        }
 
         client_t *clients = NULL;
 
@@ -716,16 +814,16 @@ static void http_task(void *arg) {
                         if (fd > 0) {
                                 ESP_LOGD("wifi_config", "Accepted new client fd=%d", fd);
                                 const struct timeval timeout = { 2, 0 }; /* 2 second timeout */
-                                setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+                                (void)setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
 
                                 const int yes = 1; /* enable sending keepalive probes for socket */
-                                setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &yes, sizeof(yes));
+                                (void)setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &yes, sizeof(yes));
 
-                                const int interval = 5; /* 30 sec between probes */
-                                setsockopt(fd, IPPROTO_TCP, TCP_KEEPINTVL, &interval, sizeof(interval));
+                                const int interval = 5;
+                                (void)setsockopt(fd, IPPROTO_TCP, TCP_KEEPINTVL, &interval, sizeof(interval));
 
-                                const int maxpkt = 4; /* Drop connection after 4 probes without response */
-                                setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT, &maxpkt, sizeof(maxpkt));
+                                const int maxpkt = 4;
+                                (void)setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT, &maxpkt, sizeof(maxpkt));
 
                                 client_t *client = client_new();
                                 client->fd = fd;
@@ -840,7 +938,13 @@ static void dns_task(void *arg)
         serv_addr.sin_family = AF_INET;
         serv_addr.sin_addr.s_addr = htonl(INADDR_ANY);
         serv_addr.sin_port = htons(53);
-        bind(fd, (struct sockaddr*)&serv_addr, sizeof(serv_addr));
+        if (bind(fd, (struct sockaddr*)&serv_addr, sizeof(serv_addr)) != 0) {
+                ERROR("DNS bind failed");
+                lwip_close(fd);
+                context->dns_task_handle = NULL;
+                vTaskDelete(NULL);
+                return;
+        }
 
         const struct timeval timeout = { 2, 0 }; /* 2 second timeout */
         setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
@@ -1056,7 +1160,7 @@ static void wifi_config_monitor_task(void *arg) {
 
 static int wifi_config_has_configuration() {
         char *wifi_ssid = NULL;
-        sysparam_get_string("wifi_ssid", &wifi_ssid);
+        sysparam_get_string(NVS_KEY_WIFI_SSID, &wifi_ssid);
 
         if (!wifi_ssid) {
                 return 0;
@@ -1072,8 +1176,8 @@ static int wifi_config_station_connect() {
         ESP_LOGD("wifi_config", "wifi_config_station_connect called");
         char *wifi_ssid = NULL;
         char *wifi_password = NULL;
-        sysparam_get_string("wifi_ssid", &wifi_ssid);
-        sysparam_get_string("wifi_password", &wifi_password);
+        sysparam_get_string(NVS_KEY_WIFI_SSID, &wifi_ssid);
+        sysparam_get_string(NVS_KEY_WIFI_PASSWORD, &wifi_password);
 
         if (!wifi_ssid) {
                 ERROR("No configuration found");
@@ -1249,19 +1353,19 @@ void wifi_config_init2(const char *ssid_prefix, const char *password,
 
 void wifi_config_reset() {
         ESP_LOGI("wifi_config", "Resetting stored WiFi credentials");
-        sysparam_set_string("wifi_ssid", "");
-        sysparam_set_string("wifi_password", "");
+        sysparam_set_string(NVS_KEY_WIFI_SSID, "");
+        sysparam_set_string(NVS_KEY_WIFI_PASSWORD, "");
 }
 
 
 void wifi_config_get(char **ssid, char **password) {
         if (ssid) {
-                sysparam_get_string("wifi_ssid", ssid);
+                sysparam_get_string(NVS_KEY_WIFI_SSID, ssid);
                 ESP_LOGD("wifi_config", "wifi_config_get ssid=%s", *ssid ? *ssid : "(null)");
         }
 
         if (password) {
-                sysparam_get_string("wifi_password", password);
+                sysparam_get_string(NVS_KEY_WIFI_PASSWORD, password);
                 ESP_LOGD("wifi_config", "wifi_config_get password length=%d", *password ? (int)strlen(*password) : 0);
         }
 }
@@ -1269,8 +1373,8 @@ void wifi_config_get(char **ssid, char **password) {
 
 void wifi_config_set(const char *ssid, const char *password) {
         ESP_LOGI("wifi_config", "Saving WiFi credentials ssid=%s", ssid ? ssid : "(null)");
-        sysparam_set_string("wifi_ssid", ssid);
-        sysparam_set_string("wifi_password", password);
+        sysparam_set_string(NVS_KEY_WIFI_SSID, ssid);
+        sysparam_set_string(NVS_KEY_WIFI_PASSWORD, password);
 }
 
 void wifi_config_set_custom_html(char *html) {

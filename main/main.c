@@ -37,14 +37,14 @@
 #include <nvs.h>
 #include "github_update.h"
 #include "led_indicator.h"
+#include "lifecycle_manager.h"
+#include "nvs_keys.h"
 
 static const char *TAG = "main";
 
-static const char *RESTART_COUNTER_NAMESPACE = "lcm";
-static const char *RESTART_COUNTER_KEY = "restart_count";
 static const uint32_t RESTART_COUNTER_THRESHOLD_MIN = 10U;
 static const uint32_t RESTART_COUNTER_THRESHOLD_MAX = 12U;
-static const uint32_t RESTART_COUNTER_RESET_TIMEOUT_MS = 5000U;
+static const uint32_t RESTART_COUNTER_RESET_TIMEOUT_MS = 10000U;
 
 static esp_timer_handle_t restart_counter_timer = NULL;
 static uint32_t restart_counter_value = 0U;
@@ -187,13 +187,13 @@ static bool factory_reset_requested = false;
 static esp_err_t restart_counter_store(uint32_t value) {
     restart_counter_value = value;
     nvs_handle_t handle;
-    esp_err_t err = nvs_open(RESTART_COUNTER_NAMESPACE, NVS_READWRITE, &handle);
+    esp_err_t err = nvs_open(NVS_NS_LCM, NVS_READWRITE, &handle);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "Failed to open restart counter namespace: %s", esp_err_to_name(err));
         return err;
     }
 
-    err = nvs_set_u32(handle, RESTART_COUNTER_KEY, value);
+    err = nvs_set_u32(handle, NVS_KEY_RESTART_COUNT, value);
     if (err == ESP_OK) {
         err = nvs_commit(handle);
     }
@@ -210,7 +210,7 @@ static uint32_t restart_counter_load(void) {
     nvs_handle_t handle;
     uint32_t value = 0;
 
-    esp_err_t err = nvs_open(RESTART_COUNTER_NAMESPACE, NVS_READWRITE, &handle);
+    esp_err_t err = nvs_open(NVS_NS_LCM, NVS_READWRITE, &handle);
     if (err != ESP_OK) {
         if (err != ESP_ERR_NVS_NOT_FOUND) {
             ESP_LOGW(TAG, "Failed to open restart counter namespace: %s", esp_err_to_name(err));
@@ -219,7 +219,7 @@ static uint32_t restart_counter_load(void) {
         return 0;
     }
 
-    err = nvs_get_u32(handle, RESTART_COUNTER_KEY, &value);
+    err = nvs_get_u32(handle, NVS_KEY_RESTART_COUNT, &value);
     if (err == ESP_ERR_NVS_NOT_FOUND) {
         value = 0;
         err = ESP_OK;
@@ -288,7 +288,8 @@ static void lifecycle_factory_reset_and_reboot(void);
 
 static bool handle_power_cycle_sequence(void) {
     esp_reset_reason_t reason = esp_reset_reason();
-    if (reason != ESP_RST_POWERON && reason != ESP_RST_EXT) {
+    ESP_LOGI(TAG, "Reset reason: %d, current powercycle counter: %" PRIu32, reason, restart_counter_value);
+    if (reason != ESP_RST_POWERON && reason != ESP_RST_EXT && reason != ESP_RST_SW) {
         if (restart_counter_value != 0) {
             ESP_LOGI(TAG, "Reset reason %d detected; clearing restart counter", reason);
             restart_counter_reset();
@@ -326,6 +327,7 @@ static bool handle_power_cycle_sequence(void) {
 
         restart_counter_reset();
 
+        ESP_LOGW(TAG, "Factory reset threshold reached=%" PRIu32, count);
         lifecycle_factory_reset_and_reboot();
         return true;
     }
@@ -334,91 +336,15 @@ static bool handle_power_cycle_sequence(void) {
     return false;
 }
 
-static void clear_nvs_storage(void) {
-    esp_err_t err = nvs_flash_deinit();
-    if (err != ESP_OK && err != ESP_ERR_NVS_NOT_INITIALIZED) {
-        ESP_LOGW("RESET", "nvs_flash_deinit failed: %s", esp_err_to_name(err));
-    }
-
-    err = nvs_flash_erase();
-    if (err != ESP_OK) {
-        ESP_LOGE("RESET", "nvs_flash_erase failed: %s", esp_err_to_name(err));
-    } else {
-        ESP_LOGI("RESET", "NVS flash erased");
-    }
-
-    err = nvs_flash_init();
-    if (err != ESP_OK) {
-        ESP_LOGW("RESET", "nvs_flash_init after erase failed: %s", esp_err_to_name(err));
-    }
-}
-
-static void erase_otadata_partition(void) {
-    const esp_partition_t *otadata = esp_partition_find_first(
-            ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_OTA, NULL);
-    if (otadata == NULL) {
-        ESP_LOGW("RESET", "OTA data partition not found");
-        return;
-    }
-
-    ESP_LOGI("RESET", "Erasing OTA data partition '%s' (offset=0x%08x, size=%" PRIu32 ")",
-            otadata->label, (unsigned int)otadata->address, (uint32_t)otadata->size);
-    esp_err_t err = esp_partition_erase_range(otadata, 0, otadata->size);
-    if (err != ESP_OK) {
-        ESP_LOGE("RESET", "Failed to erase OTA data partition: %s", esp_err_to_name(err));
-    }
-}
-
-static void erase_ota_app_partitions(void) {
-    ESP_LOGI("RESET", "Erasing OTA firmware partitions");
-
-    esp_partition_iterator_t it = esp_partition_find(
-            ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_ANY, NULL);
-    while (it != NULL) {
-        const esp_partition_t *part = esp_partition_get(it);
-        esp_partition_iterator_t next = esp_partition_next(it);
-
-        if (part->subtype >= ESP_PARTITION_SUBTYPE_APP_OTA_MIN &&
-                part->subtype <= ESP_PARTITION_SUBTYPE_APP_OTA_MAX) {
-            ESP_LOGI("RESET",
-                    "Erasing partition '%s' (subtype=%d) at offset=0x%08x size=%" PRIu32 ")",
-                    part->label, part->subtype, (unsigned int)part->address, (uint32_t)part->size);
-            esp_err_t err = esp_partition_erase_range(part, 0, part->size);
-            if (err != ESP_OK) {
-                ESP_LOGE("RESET", "Failed to erase partition '%s': %s",
-                        part->label, esp_err_to_name(err));
-            }
-        }
-
-        esp_partition_iterator_release(it);
-        it = next;
-    }
-}
-
 // Task factory_reset
 void factory_reset_task(void *pvParameter) {
-    ESP_LOGI("RESET", "Performing factory reset (clearing WiFi and NVS)");
-
-    esp_err_t wifi_err = esp_wifi_restore();
-    if (wifi_err != ESP_OK) {
-        ESP_LOGW("RESET", "esp_wifi_restore failed: %s", esp_err_to_name(wifi_err));
-    } else {
-        ESP_LOGI("RESET", "WiFi configuration restored to defaults");
+    (void)pvParameter;
+    esp_err_t err = lifecycle_factory_reset_execute();
+    if (err != ESP_OK) {
+        ESP_LOGE("RESET", "Factory reset failed: %s", esp_err_to_name(err));
+        factory_reset_requested = false;
+        vTaskDelete(NULL);
     }
-
-    clear_nvs_storage();
-    erase_otadata_partition();
-    erase_ota_app_partitions();
-
-    ESP_LOGD("RESET", "Waiting before reboot");
-    vTaskDelay(pdMS_TO_TICKS(1000));
-
-    ESP_LOGI("RESTART", "Restarting system");
-    esp_restart();
-
-    factory_reset_requested = false;
-    ESP_LOGD("RESET", "factory_reset_task completed");
-    vTaskDelete(NULL);
 }
 
 void factory_reset() {
@@ -448,6 +374,8 @@ void app_main(void) {
     }
 
     restart_counter_load();
+    ESP_LOGI(TAG, "Powercycle threshold window: %" PRIu32 "-%" PRIu32 ", timeout=%" PRIu32 "ms",
+             RESTART_COUNTER_THRESHOLD_MIN, RESTART_COUNTER_THRESHOLD_MAX, RESTART_COUNTER_RESET_TIMEOUT_MS);
     if (handle_power_cycle_sequence()) {
         return;
     }
