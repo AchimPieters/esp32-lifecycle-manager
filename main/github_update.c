@@ -8,13 +8,15 @@
 #include "esp_partition.h"
 #include "esp_app_desc.h"
 #include "esp_crt_bundle.h"
-#include "mbedtls/sha512.h"
+#include "mbedtls/sha256.h"
+#include "mbedtls/pk.h"
 #include "esp_image_format.h"
 #include "cJSON.h"
 #include "nvs.h"
 #include "nvs_flash.h"
 #include "github_update.h"
 #include "led_indicator.h"
+#include "nvs_keys.h"
 
 static const char *TAG = "github_update";
 
@@ -23,7 +25,10 @@ static const char *TAG = "github_update";
 #endif
 
 #define INSTALLED_VER_MAX_LEN 32
-#define INSTALLED_PART_KEY "installed_part"
+#define OTA_SIG_MAGIC 0x4C434D53UL
+#define OTA_SIG_VERSION 1U
+#define OTA_SIG_ALGO_ECDSA_P256_SHA256 1U
+#define OTA_SIG_MAX_LEN 512U
 #define INSTALLED_LABEL_MAX_LEN (ESP_PARTITION_LABEL_MAX_LEN + 1)
 
 static bool parse_version(const char *str, int *maj, int *min, int *pat) {
@@ -59,7 +64,7 @@ static esp_err_t store_installed_version_if_needed(const char *version,
     strlcpy(truncated, version, sizeof(truncated));
 
     nvs_handle_t handle;
-    esp_err_t err = nvs_open("fwcfg", NVS_READWRITE, &handle);
+    esp_err_t err = nvs_open(NVS_NS_FWCFG, NVS_READWRITE, &handle);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "nvs_open(fwcfg) failed when storing version: %s", esp_err_to_name(err));
         return err;
@@ -70,10 +75,10 @@ static esp_err_t store_installed_version_if_needed(const char *version,
 
     char existing[INSTALLED_VER_MAX_LEN];
     size_t existing_len = sizeof(existing);
-    esp_err_t get_err = nvs_get_str(handle, "installed_ver", existing, &existing_len);
+    esp_err_t get_err = nvs_get_str(handle, NVS_KEY_INSTALLED_VER, existing, &existing_len);
     if (get_err == ESP_OK) {
         if (strcmp(existing, truncated) != 0) {
-            err = nvs_set_str(handle, "installed_ver", truncated);
+            err = nvs_set_str(handle, NVS_KEY_INSTALLED_VER, truncated);
             if (err != ESP_OK) {
                 ESP_LOGW(TAG, "nvs_set_str(installed_ver) failed: %s", esp_err_to_name(err));
                 nvs_close(handle);
@@ -85,7 +90,7 @@ static esp_err_t store_installed_version_if_needed(const char *version,
         if (get_err != ESP_ERR_NVS_NOT_FOUND) {
             ESP_LOGW(TAG, "nvs_get_str(installed_ver) failed: %s", esp_err_to_name(get_err));
         }
-        err = nvs_set_str(handle, "installed_ver", truncated);
+        err = nvs_set_str(handle, NVS_KEY_INSTALLED_VER, truncated);
         if (err != ESP_OK) {
             ESP_LOGW(TAG, "nvs_set_str(installed_ver) failed: %s", esp_err_to_name(err));
             nvs_close(handle);
@@ -97,12 +102,12 @@ static esp_err_t store_installed_version_if_needed(const char *version,
     if (partition_label && partition_label[0] != '\0') {
         char existing_label[INSTALLED_LABEL_MAX_LEN];
         size_t label_len = sizeof(existing_label);
-        esp_err_t label_err = nvs_get_str(handle, INSTALLED_PART_KEY, existing_label, &label_len);
+        esp_err_t label_err = nvs_get_str(handle, NVS_KEY_INSTALLED_PART, existing_label, &label_len);
         if (label_err == ESP_OK) {
             if (strcmp(existing_label, partition_label) != 0) {
-                err = nvs_set_str(handle, INSTALLED_PART_KEY, partition_label);
+                err = nvs_set_str(handle, NVS_KEY_INSTALLED_PART, partition_label);
                 if (err != ESP_OK) {
-                    ESP_LOGW(TAG, "nvs_set_str(%s) failed: %s", INSTALLED_PART_KEY, esp_err_to_name(err));
+                    ESP_LOGW(TAG, "nvs_set_str(%s) failed: %s", NVS_KEY_INSTALLED_PART, esp_err_to_name(err));
                     nvs_close(handle);
                     return err;
                 }
@@ -110,11 +115,11 @@ static esp_err_t store_installed_version_if_needed(const char *version,
             }
         } else {
             if (label_err != ESP_ERR_NVS_NOT_FOUND) {
-                ESP_LOGW(TAG, "nvs_get_str(%s) failed: %s", INSTALLED_PART_KEY, esp_err_to_name(label_err));
+                ESP_LOGW(TAG, "nvs_get_str(%s) failed: %s", NVS_KEY_INSTALLED_PART, esp_err_to_name(label_err));
             }
-            err = nvs_set_str(handle, INSTALLED_PART_KEY, partition_label);
+            err = nvs_set_str(handle, NVS_KEY_INSTALLED_PART, partition_label);
             if (err != ESP_OK) {
-                ESP_LOGW(TAG, "nvs_set_str(%s) failed: %s", INSTALLED_PART_KEY, esp_err_to_name(err));
+                ESP_LOGW(TAG, "nvs_set_str(%s) failed: %s", NVS_KEY_INSTALLED_PART, esp_err_to_name(err));
                 nvs_close(handle);
                 return err;
             }
@@ -149,7 +154,7 @@ static bool load_installed_version(char *version, size_t version_len) {
     }
 
     nvs_handle_t handle;
-    esp_err_t err = nvs_open("fwcfg", NVS_READONLY, &handle);
+    esp_err_t err = nvs_open(NVS_NS_FWCFG, NVS_READONLY, &handle);
     if (err != ESP_OK) {
         ESP_LOGD(TAG, "Unable to open fwcfg namespace for installed version: %s",
                  esp_err_to_name(err));
@@ -157,7 +162,7 @@ static bool load_installed_version(char *version, size_t version_len) {
     }
 
     size_t required = version_len;
-    err = nvs_get_str(handle, "installed_ver", version, &required);
+    err = nvs_get_str(handle, NVS_KEY_INSTALLED_VER, version, &required);
     nvs_close(handle);
     if (err == ESP_OK) {
         return true;
@@ -177,7 +182,7 @@ static bool load_installed_partition_label(char *label, size_t label_len) {
     }
 
     nvs_handle_t handle;
-    esp_err_t err = nvs_open("fwcfg", NVS_READONLY, &handle);
+    esp_err_t err = nvs_open(NVS_NS_FWCFG, NVS_READONLY, &handle);
     if (err != ESP_OK) {
         ESP_LOGD(TAG, "Unable to open fwcfg namespace for partition label: %s",
                  esp_err_to_name(err));
@@ -185,14 +190,14 @@ static bool load_installed_partition_label(char *label, size_t label_len) {
     }
 
     size_t required = label_len;
-    err = nvs_get_str(handle, INSTALLED_PART_KEY, label, &required);
+    err = nvs_get_str(handle, NVS_KEY_INSTALLED_PART, label, &required);
     nvs_close(handle);
     if (err == ESP_OK) {
         return true;
     }
 
     if (err != ESP_ERR_NVS_NOT_FOUND) {
-        ESP_LOGW(TAG, "nvs_get_str(%s) failed: %s", INSTALLED_PART_KEY, esp_err_to_name(err));
+        ESP_LOGW(TAG, "nvs_get_str(%s) failed: %s", NVS_KEY_INSTALLED_PART, esp_err_to_name(err));
     } else {
         ESP_LOGD(TAG, "Installed partition label not stored in NVS");
     }
@@ -201,14 +206,14 @@ static bool load_installed_partition_label(char *label, size_t label_len) {
 
 static bool read_update_request_flag(void) {
     nvs_handle_t handle;
-    esp_err_t err = nvs_open("lcm", NVS_READONLY, &handle);
+    esp_err_t err = nvs_open(NVS_NS_LCM, NVS_READONLY, &handle);
     if (err != ESP_OK) {
         ESP_LOGD(TAG, "No update request flag present: %s", esp_err_to_name(err));
         return false;
     }
 
     uint8_t flag = 0;
-    err = nvs_get_u8(handle, "do_update", &flag);
+    err = nvs_get_u8(handle, NVS_KEY_DO_UPDATE, &flag);
     nvs_close(handle);
     if (err == ESP_OK) {
         return flag != 0;
@@ -222,20 +227,20 @@ static bool read_update_request_flag(void) {
 
 static esp_err_t write_update_request_flag(bool value) {
     nvs_handle_t handle;
-    esp_err_t err = nvs_open("lcm", NVS_READWRITE, &handle);
+    esp_err_t err = nvs_open(NVS_NS_LCM, NVS_READWRITE, &handle);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "nvs_open(lcm) failed when updating flag: %s", esp_err_to_name(err));
         return err;
     }
 
     uint8_t current = 0;
-    esp_err_t get_err = nvs_get_u8(handle, "do_update", &current);
+    esp_err_t get_err = nvs_get_u8(handle, NVS_KEY_DO_UPDATE, &current);
     if (get_err == ESP_OK && current == (value ? 1 : 0)) {
         nvs_close(handle);
         return ESP_OK;
     }
 
-    err = nvs_set_u8(handle, "do_update", value ? 1 : 0);
+    err = nvs_set_u8(handle, NVS_KEY_DO_UPDATE, value ? 1 : 0);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "nvs_set_u8(do_update) failed: %s", esp_err_to_name(err));
         nvs_close(handle);
@@ -335,19 +340,19 @@ static esp_err_t set_boot_partition_for_installed_firmware(int maj, int min, int
 esp_err_t save_fw_config(const char *repo, bool pre) {
     ESP_LOGD(TAG, "Saving firmware config repo=%s pre=%d", repo ? repo : "(null)", pre);
     nvs_handle_t h;
-    esp_err_t err = nvs_open("fwcfg", NVS_READWRITE, &h);
+    esp_err_t err = nvs_open(NVS_NS_FWCFG, NVS_READWRITE, &h);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "nvs_open failed: %s", esp_err_to_name(err));
         return err;
     }
 
-    if ((err = nvs_set_str(h, "repo", repo ? repo : "")) != ESP_OK) {
+    if ((err = nvs_set_str(h, NVS_KEY_FW_REPO, repo ? repo : "")) != ESP_OK) {
         ESP_LOGE(TAG, "nvs_set_str failed: %s", esp_err_to_name(err));
         nvs_close(h);
         return err;
     }
 
-    if ((err = nvs_set_u8(h, "pre", pre ? 1 : 0)) != ESP_OK) {
+    if ((err = nvs_set_u8(h, NVS_KEY_FW_PRE, pre ? 1 : 0)) != ESP_OK) {
         ESP_LOGE(TAG, "nvs_set_u8 failed: %s", esp_err_to_name(err));
         nvs_close(h);
         return err;
@@ -366,7 +371,7 @@ esp_err_t save_fw_config(const char *repo, bool pre) {
 bool load_fw_config(char *repo, size_t repo_len, bool *pre) {
     ESP_LOGD(TAG, "Loading firmware config");
     nvs_handle_t h;
-    esp_err_t err = nvs_open("fwcfg", NVS_READONLY, &h);
+    esp_err_t err = nvs_open(NVS_NS_FWCFG, NVS_READONLY, &h);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "fwcfg namespace not found");
         return false;
@@ -374,7 +379,7 @@ bool load_fw_config(char *repo, size_t repo_len, bool *pre) {
 
     if (repo) {
         size_t len = repo_len;
-        err = nvs_get_str(h, "repo", repo, &len);
+        err = nvs_get_str(h, NVS_KEY_FW_REPO, repo, &len);
         if (err != ESP_OK) {
             ESP_LOGW(TAG, "nvs_get_str(repo) failed: %s", esp_err_to_name(err));
             nvs_close(h);
@@ -383,7 +388,7 @@ bool load_fw_config(char *repo, size_t repo_len, bool *pre) {
     }
 
     uint8_t pre_u8;
-    err = nvs_get_u8(h, "pre", &pre_u8);
+    err = nvs_get_u8(h, NVS_KEY_FW_PRE, &pre_u8);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "nvs_get_u8(pre) failed: %s", esp_err_to_name(err));
         nvs_close(h);
@@ -397,7 +402,7 @@ bool load_fw_config(char *repo, size_t repo_len, bool *pre) {
 
 esp_err_t save_led_config(bool enabled, int gpio, bool active_high) {
     nvs_handle_t h;
-    esp_err_t err = nvs_open("fwcfg", NVS_READWRITE, &h);
+    esp_err_t err = nvs_open(NVS_NS_FWCFG, NVS_READWRITE, &h);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "nvs_open failed: %s", esp_err_to_name(err));
         return err;
@@ -410,19 +415,19 @@ esp_err_t save_led_config(bool enabled, int gpio, bool active_high) {
         gpio = -1;
     }
 
-    if ((err = nvs_set_u8(h, "led_en", enabled ? 1 : 0)) != ESP_OK) {
+    if ((err = nvs_set_u8(h, NVS_KEY_LED_ENABLED, enabled ? 1 : 0)) != ESP_OK) {
         ESP_LOGE(TAG, "nvs_set_u8(led_en) failed: %s", esp_err_to_name(err));
         nvs_close(h);
         return err;
     }
 
-    if ((err = nvs_set_i32(h, "led_gpio", gpio)) != ESP_OK) {
+    if ((err = nvs_set_i32(h, NVS_KEY_LED_GPIO, gpio)) != ESP_OK) {
         ESP_LOGE(TAG, "nvs_set_i32(led_gpio) failed: %s", esp_err_to_name(err));
         nvs_close(h);
         return err;
     }
 
-    if ((err = nvs_set_u8(h, "led_lvl", active_high ? 1 : 0)) != ESP_OK) {
+    if ((err = nvs_set_u8(h, NVS_KEY_LED_LEVEL, active_high ? 1 : 0)) != ESP_OK) {
         ESP_LOGE(TAG, "nvs_set_u8(led_lvl) failed: %s", esp_err_to_name(err));
         nvs_close(h);
         return err;
@@ -439,7 +444,7 @@ esp_err_t save_led_config(bool enabled, int gpio, bool active_high) {
 
 bool load_led_config(bool *enabled, int *gpio, bool *active_high) {
     nvs_handle_t h;
-    esp_err_t err = nvs_open("fwcfg", NVS_READONLY, &h);
+    esp_err_t err = nvs_open(NVS_NS_FWCFG, NVS_READONLY, &h);
     if (err != ESP_OK) {
         return false;
     }
@@ -447,17 +452,17 @@ bool load_led_config(bool *enabled, int *gpio, bool *active_high) {
     uint8_t en;
     int32_t pin;
     uint8_t level = 0;
-    err = nvs_get_u8(h, "led_en", &en);
+    err = nvs_get_u8(h, NVS_KEY_LED_ENABLED, &en);
     if (err != ESP_OK) {
         nvs_close(h);
         return false;
     }
-    err = nvs_get_i32(h, "led_gpio", &pin);
+    err = nvs_get_i32(h, NVS_KEY_LED_GPIO, &pin);
     if (err != ESP_OK) {
         nvs_close(h);
         return false;
     }
-    err = nvs_get_u8(h, "led_lvl", &level);
+    err = nvs_get_u8(h, NVS_KEY_LED_LEVEL, &level);
     if (err != ESP_OK) {
         if (err == ESP_ERR_NVS_NOT_FOUND) {
             level = 0;
@@ -571,13 +576,18 @@ static esp_err_t download_signature(const char *url, uint8_t *buf, size_t buf_le
     return ESP_FAIL;
 }
 
-static esp_err_t partition_sha384(const esp_partition_t *part, uint32_t len, uint8_t *out)
+static esp_err_t partition_sha256(const esp_partition_t *part, uint32_t len, uint8_t *out)
 {
-    mbedtls_sha512_context ctx;
+    mbedtls_sha256_context ctx;
     uint8_t *buf = malloc(4096);
     if (!buf) return ESP_ERR_NO_MEM;
-    mbedtls_sha512_init(&ctx);
-    mbedtls_sha512_starts(&ctx, 1); // 1 -> SHA-384
+    mbedtls_sha256_init(&ctx);
+    if (mbedtls_sha256_starts(&ctx, 0) != 0) {
+        free(buf);
+        mbedtls_sha256_free(&ctx);
+        return ESP_FAIL;
+    }
+
     uint32_t offset = 0;
     while (offset < len) {
         uint32_t to_read = len - offset;
@@ -585,22 +595,113 @@ static esp_err_t partition_sha384(const esp_partition_t *part, uint32_t len, uin
         esp_err_t r = esp_partition_read(part, offset, buf, to_read);
         if (r != ESP_OK) {
             free(buf);
-            mbedtls_sha512_free(&ctx);
+            mbedtls_sha256_free(&ctx);
             return r;
         }
-        mbedtls_sha512_update(&ctx, buf, to_read);
+        if (mbedtls_sha256_update(&ctx, buf, to_read) != 0) {
+            free(buf);
+            mbedtls_sha256_free(&ctx);
+            return ESP_FAIL;
+        }
         offset += to_read;
     }
-    mbedtls_sha512_finish(&ctx, out);
-    mbedtls_sha512_free(&ctx);
+
+    if (mbedtls_sha256_finish(&ctx, out) != 0) {
+        free(buf);
+        mbedtls_sha256_free(&ctx);
+        return ESP_FAIL;
+    }
+    mbedtls_sha256_free(&ctx);
     free(buf);
+    return ESP_OK;
+}
+
+typedef struct __attribute__((packed)) {
+    uint32_t magic;
+    uint8_t version;
+    uint8_t algorithm;
+    uint16_t reserved;
+    uint32_t firmware_length;
+    uint8_t firmware_hash[32];
+    uint16_t signature_length;
+} ota_sig_header_t;
+
+static const char OTA_PUBLIC_KEY_PEM[] =
+"-----BEGIN PUBLIC KEY-----\n"
+"MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEc7wRUGf/3u+SEglQj3guj6g4S52v\n"
+"G8NV8uYx6NG2NfG3m10vRJVh6W23Q6osETCNrCtPqHep4eoWsxM7RYTYxQ==\n"
+"-----END PUBLIC KEY-----\n";
+
+static esp_err_t verify_signature_blob(const uint8_t *sig_blob, size_t sig_len,
+                                       uint32_t image_len, const uint8_t image_hash[32]) {
+    if (sig_len < sizeof(ota_sig_header_t)) {
+        ESP_LOGE(TAG, "Signature file too short: %u", (unsigned)sig_len);
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    const ota_sig_header_t *header = (const ota_sig_header_t *)sig_blob;
+    if (header->magic != OTA_SIG_MAGIC) {
+        ESP_LOGE(TAG, "Signature magic mismatch: 0x%08lx", (unsigned long)header->magic);
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+    if (header->version != OTA_SIG_VERSION) {
+        ESP_LOGE(TAG, "Unsupported signature version: %u", (unsigned)header->version);
+        return ESP_ERR_NOT_SUPPORTED;
+    }
+    if (header->algorithm != OTA_SIG_ALGO_ECDSA_P256_SHA256) {
+        ESP_LOGE(TAG, "Unsupported signature algorithm id: %u", (unsigned)header->algorithm);
+        return ESP_ERR_NOT_SUPPORTED;
+    }
+
+    if (header->firmware_length != image_len) {
+        ESP_LOGE(TAG, "Image length mismatch: expected %lu got %lu",
+                 (unsigned long)header->firmware_length, (unsigned long)image_len);
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    if (memcmp(header->firmware_hash, image_hash, 32) != 0) {
+        ESP_LOGE(TAG, "Image hash mismatch");
+        return ESP_ERR_INVALID_CRC;
+    }
+
+    const size_t expected_total = sizeof(ota_sig_header_t) + header->signature_length;
+    if (header->signature_length == 0 || expected_total != sig_len) {
+        ESP_LOGE(TAG, "Signature length invalid: %u (total %u)",
+                 (unsigned)header->signature_length, (unsigned)sig_len);
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    const uint8_t *signature = sig_blob + sizeof(ota_sig_header_t);
+    mbedtls_pk_context pk;
+    mbedtls_pk_init(&pk);
+
+    int parse_res = mbedtls_pk_parse_public_key(&pk,
+            (const unsigned char *)OTA_PUBLIC_KEY_PEM,
+            strlen(OTA_PUBLIC_KEY_PEM) + 1);
+    if (parse_res != 0) {
+        ESP_LOGE(TAG, "Public key parse failed: -0x%04x", -parse_res);
+        mbedtls_pk_free(&pk);
+        return ESP_FAIL;
+    }
+
+    int verify_res = mbedtls_pk_verify(&pk, MBEDTLS_MD_SHA256,
+                                       image_hash, 32,
+                                       signature, header->signature_length);
+    mbedtls_pk_free(&pk);
+
+    if (verify_res != 0) {
+        ESP_LOGE(TAG, "Signature verification failed: -0x%04x", -verify_res);
+        return ESP_ERR_INVALID_CRC;
+    }
+
+    ESP_LOGI(TAG, "Cryptographic signature verified");
     return ESP_OK;
 }
 
 esp_err_t github_update_from_urls(const char *fw_url, const char *sig_url,
                                   const char *release_version) {
     ESP_LOGI(TAG, "Downloading signature from %s", sig_url);
-    uint8_t sig[52];
+    uint8_t sig[OTA_SIG_MAX_LEN];
     size_t sig_len = 0;
     esp_err_t sig_res = download_signature(sig_url, sig, sizeof(sig), &sig_len);
     if (sig_res != ESP_OK) {
@@ -608,10 +709,6 @@ esp_err_t github_update_from_urls(const char *fw_url, const char *sig_url,
         return sig_res;
     }
     ESP_LOGI(TAG, "Downloaded signature (%u bytes)", (unsigned)sig_len);
-    if (sig_len != sizeof(sig)) {
-        ESP_LOGE(TAG, "Signature length %u unexpected", (unsigned)sig_len);
-        return ESP_FAIL;
-    }
 
     const esp_partition_t *update_part = esp_ota_get_next_update_partition(NULL);
     if (!update_part) {
@@ -654,30 +751,18 @@ esp_err_t github_update_from_urls(const char *fw_url, const char *sig_url,
         ret = meta_res;
         goto cleanup;
     }
-    uint8_t expected_hash[48];
-    memcpy(expected_hash, sig, sizeof(expected_hash));
-    uint32_t expected_len = ((uint32_t)sig[48] << 24) | ((uint32_t)sig[49] << 16) |
-                            ((uint32_t)sig[50] << 8) | (uint32_t)sig[51];
-    if (expected_len != meta.image_len) {
-        ESP_LOGE(TAG, "Image length mismatch: expected %u got %u", (unsigned)expected_len,
-                 (unsigned)meta.image_len);
-        ret = ESP_FAIL;
-        goto cleanup;
-    }
-    ESP_LOGI(TAG, "Image length verified (%u bytes)", (unsigned)meta.image_len);
-    uint8_t actual[48];
-    esp_err_t hash_res = partition_sha384(update_part, meta.image_len, actual);
-    ESP_LOGD(TAG, "partition_sha384 -> %s", esp_err_to_name(hash_res));
+    uint8_t actual[32];
+    esp_err_t hash_res = partition_sha256(update_part, meta.image_len, actual);
+    ESP_LOGD(TAG, "partition_sha256 -> %s", esp_err_to_name(hash_res));
     if (hash_res != ESP_OK) {
         ESP_LOGE(TAG, "Failed to compute image hash: %s", esp_err_to_name(hash_res));
         ret = hash_res;
         goto cleanup;
     }
-    ESP_LOGD(TAG, "Image SHA384:");
-    ESP_LOG_BUFFER_HEX_LEVEL(TAG, actual, sizeof(actual), ESP_LOG_DEBUG);
-    if (memcmp(actual, expected_hash, sizeof(actual)) != 0) {
-        ESP_LOGE(TAG, "SHA384 mismatch");
-        ret = ESP_FAIL;
+
+    ret = verify_signature_blob(sig, sig_len, meta.image_len, actual);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Signature validation failed: %s", esp_err_to_name(ret));
         goto cleanup;
     }
     led_blinking_stop();
@@ -710,7 +795,7 @@ esp_err_t github_update_from_urls(const char *fw_url, const char *sig_url,
         ESP_LOGW(TAG, "Skipping persistence of installed version because no value is available");
     }
 
-    ESP_LOGI(TAG, "Signature verified, rebooting");
+    ESP_LOGI(TAG, "Signed image verified, rebooting");
     esp_err_t flag_err = write_update_request_flag(false);
     if (flag_err != ESP_OK) {
         ESP_LOGW(TAG, "Failed to clear update request flag: %s", esp_err_to_name(flag_err));

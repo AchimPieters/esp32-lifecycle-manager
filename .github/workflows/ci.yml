@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  unit-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Run Python unit tests
+        run: python3 -m unittest discover -s tests -v
+
+  signature-artifact-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Generate temporary ECDSA key
+        run: |
+          mkdir -p keys build
+          openssl ecparam -name prime256v1 -genkey -noout -out keys/ota_signing_private.pem
+          dd if=/dev/zero of=build/main.bin bs=1024 count=1
+      - name: Generate signed metadata
+        run: ./generate_sig.sh build/main.bin keys/ota_signing_private.pem
+      - name: Verify signature file exists
+        run: test -f build/main.bin.sig
+
+  cross-target-build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [esp32, esp32s2, esp32s3, esp32c2, esp32c3]
+    steps:
+      - uses: actions/checkout@v4
+      - name: ESP-IDF build (${{ matrix.target }})
+        uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: v5.4.2
+          target: ${{ matrix.target }}
+          command: idf.py set-target ${{ matrix.target }} && idf.py build
