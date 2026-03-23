@@ -30,24 +30,33 @@
 #include <wifi_config.h>
 #include <esp_sntp.h>
 #include <esp_system.h>
-#include <esp_timer.h>
 #include <esp_wifi.h>
-#include <esp_partition.h>
+#include <esp_flash.h>
 #include <inttypes.h>
-#include <nvs.h>
 #include "github_update.h"
 #include "led_indicator.h"
 #include "lifecycle_manager.h"
-#include "nvs_keys.h"
+#include "lifecycle_restart_counter.h"
+
+#ifndef CONFIG_ESP_LED_GPIO
+#define CONFIG_ESP_LED_GPIO 2
+#endif
+
+#ifndef CONFIG_LCM_RESTART_COUNTER_TIMEOUT_MS
+#define CONFIG_LCM_RESTART_COUNTER_TIMEOUT_MS 10000
+#endif
+
+#ifndef CONFIG_LCM_REQUIRE_NVS_ENCRYPTION
+#define CONFIG_LCM_REQUIRE_NVS_ENCRYPTION 1
+#endif
 
 static const char *TAG = "main";
 
 static const uint32_t RESTART_COUNTER_THRESHOLD_MIN = 10U;
 static const uint32_t RESTART_COUNTER_THRESHOLD_MAX = 12U;
-static const uint32_t RESTART_COUNTER_RESET_TIMEOUT_MS = 10000U;
+static const uint32_t RESTART_COUNTER_RESET_TIMEOUT_MS = CONFIG_LCM_RESTART_COUNTER_TIMEOUT_MS;
 
-static esp_timer_handle_t restart_counter_timer = NULL;
-static uint32_t restart_counter_value = 0U;
+static const uint32_t MIN_FLASH_SIZE_BYTES = 4U * 1024U * 1024U;
 
 static void sntp_start_and_wait(void);
 void wifi_ready(void);
@@ -68,7 +77,10 @@ void led_write(bool on) {
     ESP_LOGD(TAG, "Setting LED %s", on ? "ON" : "OFF");
     led_on = on;
     int level = (on == led_active_high) ? 1 : 0;
-    gpio_set_level(led_gpio, level);
+    esp_err_t err = gpio_set_level(led_gpio, level);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "gpio_set_level(%d) failed: %s", led_gpio, esp_err_to_name(err));
+    }
 }
 
 static void led_blink_task(void *pv) {
@@ -119,12 +131,21 @@ void gpio_init() {
     ESP_LOGD(TAG, "Initializing GPIO");
     // LED setup
     if (led_gpio >= 0 && led_enabled) {
-        gpio_reset_pin(led_gpio);
-        gpio_set_direction(led_gpio, GPIO_MODE_OUTPUT);
+        esp_err_t err = gpio_reset_pin(led_gpio);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "gpio_reset_pin(%d) failed: %s", led_gpio, esp_err_to_name(err));
+        }
+        err = gpio_set_direction(led_gpio, GPIO_MODE_OUTPUT);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "gpio_set_direction(%d) failed: %s", led_gpio, esp_err_to_name(err));
+        }
         led_write(led_on);
         ESP_LOGD(TAG, "LED GPIO configured on pin %d", led_gpio);
     } else if (led_gpio >= 0) {
-        gpio_reset_pin(led_gpio);
+        esp_err_t err = gpio_reset_pin(led_gpio);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "gpio_reset_pin(%d) failed: %s", led_gpio, esp_err_to_name(err));
+        }
         ESP_LOGD(TAG, "LED indicator disabled on GPIO %d", led_gpio);
     } else {
         ESP_LOGD(TAG, "LED indicator disabled");
@@ -184,156 +205,39 @@ void led_indicator_reload(void) {
 
 static bool factory_reset_requested = false;
 
-static esp_err_t restart_counter_store(uint32_t value) {
-    restart_counter_value = value;
-    nvs_handle_t handle;
-    esp_err_t err = nvs_open(NVS_NS_LCM, NVS_READWRITE, &handle);
+static void lifecycle_factory_reset_and_reboot(void);
+
+static esp_err_t lifecycle_validate_hardware_requirements(void) {
+    uint32_t flash_size = 0;
+    esp_err_t err = esp_flash_get_size(NULL, &flash_size);
     if (err != ESP_OK) {
-        ESP_LOGW(TAG, "Failed to open restart counter namespace: %s", esp_err_to_name(err));
+        ESP_LOGE(TAG, "Unable to read flash size: %s", esp_err_to_name(err));
         return err;
     }
 
-    err = nvs_set_u32(handle, NVS_KEY_RESTART_COUNT, value);
-    if (err == ESP_OK) {
-        err = nvs_commit(handle);
+    if (flash_size < MIN_FLASH_SIZE_BYTES) {
+        ESP_LOGE(TAG, "Unsupported flash size: %lu bytes (minimum required: %lu bytes)",
+                 (unsigned long)flash_size, (unsigned long)MIN_FLASH_SIZE_BYTES);
+        return ESP_ERR_NOT_SUPPORTED;
     }
 
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "Failed to persist restart counter: %s", esp_err_to_name(err));
-    }
-
-    nvs_close(handle);
-    return err;
+    ESP_LOGI(TAG, "Flash size check passed: %lu bytes", (unsigned long)flash_size);
+    return ESP_OK;
 }
 
-static uint32_t restart_counter_load(void) {
-    nvs_handle_t handle;
-    uint32_t value = 0;
-
-    esp_err_t err = nvs_open(NVS_NS_LCM, NVS_READWRITE, &handle);
-    if (err != ESP_OK) {
-        if (err != ESP_ERR_NVS_NOT_FOUND) {
-            ESP_LOGW(TAG, "Failed to open restart counter namespace: %s", esp_err_to_name(err));
-        }
-        restart_counter_value = 0;
-        return 0;
-    }
-
-    err = nvs_get_u32(handle, NVS_KEY_RESTART_COUNT, &value);
-    if (err == ESP_ERR_NVS_NOT_FOUND) {
-        value = 0;
-        err = ESP_OK;
-    }
-
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "Failed to read restart counter: %s", esp_err_to_name(err));
-        value = 0;
-    }
-
-    nvs_close(handle);
-    restart_counter_value = value;
-    return value;
-}
-
-static void restart_counter_reset(void) {
-    if (restart_counter_timer != NULL) {
-        esp_err_t stop_err = esp_timer_stop(restart_counter_timer);
-        if (stop_err != ESP_OK && stop_err != ESP_ERR_INVALID_STATE) {
-            ESP_LOGW(TAG, "Failed to stop restart counter timer: %s", esp_err_to_name(stop_err));
-        }
-    }
-
-    restart_counter_value = 0;
-    if (restart_counter_store(0) == ESP_OK) {
-        ESP_LOGI(TAG, "Restart counter reset");
-    }
-}
-
-static void restart_counter_timeout(void *arg) {
-    (void)arg;
-    ESP_LOGI(TAG, "Restart counter timeout expired; clearing counter");
-    restart_counter_reset();
-}
-
-static void restart_counter_schedule_reset(void) {
-    if (restart_counter_timer == NULL) {
-        const esp_timer_create_args_t args = {
-            .callback = restart_counter_timeout,
-            .arg = NULL,
-            .name = "rst_cnt",
-        };
-
-        esp_err_t create_err = esp_timer_create(&args, &restart_counter_timer);
-        if (create_err != ESP_OK) {
-            ESP_LOGW(TAG, "Failed to create restart counter timer: %s", esp_err_to_name(create_err));
-            return;
-        }
-    }
-
-    esp_err_t stop_err = esp_timer_stop(restart_counter_timer);
-    if (stop_err != ESP_OK && stop_err != ESP_ERR_INVALID_STATE) {
-        ESP_LOGW(TAG, "Failed to stop restart counter timer: %s", esp_err_to_name(stop_err));
-    }
-
-    esp_err_t start_err = esp_timer_start_once(restart_counter_timer,
-            (uint64_t)RESTART_COUNTER_RESET_TIMEOUT_MS * 1000ULL);
-    if (start_err != ESP_OK) {
-        ESP_LOGW(TAG, "Failed to start restart counter timer: %s", esp_err_to_name(start_err));
-    } else {
-        ESP_LOGD(TAG, "Restart counter timeout armed for %" PRIu32 " ms", RESTART_COUNTER_RESET_TIMEOUT_MS);
-    }
-}
-
-static void lifecycle_factory_reset_and_reboot(void);
-
-static bool handle_power_cycle_sequence(void) {
-    esp_reset_reason_t reason = esp_reset_reason();
-    ESP_LOGI(TAG, "Reset reason: %d, current powercycle counter: %" PRIu32, reason, restart_counter_value);
-    if (reason != ESP_RST_POWERON && reason != ESP_RST_EXT && reason != ESP_RST_SW) {
-        if (restart_counter_value != 0) {
-            ESP_LOGI(TAG, "Reset reason %d detected; clearing restart counter", reason);
-            restart_counter_reset();
-        }
-        return false;
-    }
-
-    uint32_t count = restart_counter_value;
-    if (count >= UINT32_MAX) {
-        count = 0;
-    }
-    count++;
-
-    ESP_LOGI(TAG, "Consecutive power cycles: %" PRIu32, count);
-    restart_counter_store(count);
-
-    if (count > RESTART_COUNTER_THRESHOLD_MAX) {
-        ESP_LOGW(TAG,
-                "Detected %" PRIu32 " consecutive power cycles; exceeding maximum window %" PRIu32 ", resetting counter",
-                count, RESTART_COUNTER_THRESHOLD_MAX);
-        restart_counter_reset();
-        restart_counter_schedule_reset();
-        return false;
-    }
-
-    if (count >= RESTART_COUNTER_THRESHOLD_MIN) {
-        ESP_LOGW(TAG,
-                "Detected %" PRIu32 " consecutive power cycles within factory reset window (%" PRIu32 "-%" PRIu32 "); starting countdown",
-                count, RESTART_COUNTER_THRESHOLD_MIN, RESTART_COUNTER_THRESHOLD_MAX);
-
-        for (int i = (int)RESTART_COUNTER_THRESHOLD_MIN; i >= 0; --i) {
-            ESP_LOGW(TAG, "Factory reset in %d", i);
-            vTaskDelay(pdMS_TO_TICKS(1000));
-        }
-
-        restart_counter_reset();
-
-        ESP_LOGW(TAG, "Factory reset threshold reached=%" PRIu32, count);
-        lifecycle_factory_reset_and_reboot();
-        return true;
-    }
-
-    restart_counter_schedule_reset();
-    return false;
+static esp_err_t lifecycle_validate_security_requirements(void) {
+#if CONFIG_LCM_REQUIRE_NVS_ENCRYPTION
+#if !CONFIG_NVS_ENCRYPTION
+    ESP_LOGE(TAG, "Security requirement failed: CONFIG_NVS_ENCRYPTION is disabled");
+    return ESP_ERR_NOT_SUPPORTED;
+#else
+    ESP_LOGI(TAG, "Security requirement passed: NVS encryption is enabled");
+    return ESP_OK;
+#endif
+#else
+    ESP_LOGW(TAG, "NVS encryption requirement is disabled by configuration");
+    return ESP_OK;
+#endif
 }
 
 // Task factory_reset
@@ -373,10 +277,23 @@ void app_main(void) {
         ESP_LOGE(TAG, "NVS init failed: %s", esp_err_to_name(err));
     }
 
-    restart_counter_load();
+    err = lifecycle_validate_hardware_requirements();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Hardware requirements not met; aborting startup");
+        return;
+    }
+    err = lifecycle_validate_security_requirements();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Security requirements not met; aborting startup");
+        return;
+    }
+
     ESP_LOGI(TAG, "Powercycle threshold window: %" PRIu32 "-%" PRIu32 ", timeout=%" PRIu32 "ms",
              RESTART_COUNTER_THRESHOLD_MIN, RESTART_COUNTER_THRESHOLD_MAX, RESTART_COUNTER_RESET_TIMEOUT_MS);
-    if (handle_power_cycle_sequence()) {
+    if (lifecycle_restart_counter_process(RESTART_COUNTER_THRESHOLD_MIN,
+                                          RESTART_COUNTER_THRESHOLD_MAX,
+                                          RESTART_COUNTER_RESET_TIMEOUT_MS,
+                                          lifecycle_factory_reset_and_reboot)) {
         return;
     }
     led_indicator_reload();

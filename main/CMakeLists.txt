@@ -6,6 +6,8 @@ idf_component_register(
         "form_urlencoded.c"
         "github_update.c"
         "lifecycle_reset.c"
+        "lifecycle_restart_counter.c"
+        "nvs_store.c"
     INCLUDE_DIRS
         "."
         "include"
@@ -22,6 +24,7 @@ idf_component_register(
         esp_http_client
         esp_https_ota
         app_update
+        spi_flash
         mbedtls
         json
         EMBED_TXTFILES
