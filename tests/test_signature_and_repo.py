@@ -1,5 +1,7 @@
 import struct
 import unittest
+import csv
+from pathlib import Path
 
 MAGIC = 0x4C434D53
 VERSION = 1
@@ -18,6 +20,79 @@ def is_valid_repo_format(repo: str) -> bool:
         return False
     allowed = set('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_.')
     return all(c in allowed for c in owner + name)
+
+
+def parse_version(value: str):
+    if value is None:
+        return None
+    value = value.strip()
+    if value.lower().startswith('v'):
+        value = value[1:]
+    parts = value.split('.')
+    if len(parts) != 3:
+        return None
+    try:
+        major, minor, patch = (int(parts[0]), int(parts[1]), int(parts[2]))
+    except ValueError:
+        return None
+    return major, minor, patch
+
+
+def compare_version(a: str, b: str):
+    pa = parse_version(a)
+    pb = parse_version(b)
+    if pa is None or pb is None:
+        raise ValueError('invalid version')
+    if pa[0] != pb[0]:
+        return pa[0] - pb[0]
+    if pa[1] != pb[1]:
+        return pa[1] - pb[1]
+    return pa[2] - pb[2]
+
+
+def should_trigger_powercycle_reset(current_count: int, reset_reason: str, min_threshold=10, max_threshold=12):
+    allowed_reasons = {'POWERON', 'EXT', 'SW'}
+    if reset_reason not in allowed_reasons:
+        return False, 0
+    count = current_count + 1
+    if count > max_threshold:
+        return False, 0
+    return count >= min_threshold, count
+
+
+def is_valid_ota_transition(current: str, nxt: str):
+    allowed = {
+        'IDLE': {'CHECKING_RELEASE'},
+        'CHECKING_RELEASE': {'IDLE', 'DOWNLOADING', 'FAILED'},
+        'DOWNLOADING': {'VERIFYING', 'FAILED'},
+        'VERIFYING': {'STAGING', 'FAILED'},
+        'STAGING': {'ACTIVATING', 'FAILED'},
+        'ACTIVATING': {'REBOOTING', 'FAILED'},
+        'FAILED': {'CHECKING_RELEASE', 'IDLE'},
+        'REBOOTING': set(),
+    }
+    return nxt in allowed.get(current, set())
+
+
+def required_ota_failure_reasons():
+    return {
+        'release_api_failure',
+        'missing_asset',
+        'invalid_signature',
+        'invalid_image_length',
+        'partition_unavailable',
+        'boot_partition_set_failure',
+        'http_failure',
+    }
+
+
+def parse_partition_value(value: str) -> int:
+    v = value.strip().lower()
+    if v.endswith('k'):
+        return int(v[:-1], 0) * 1024
+    if v.endswith('m'):
+        return int(v[:-1], 0) * 1024 * 1024
+    return int(v, 0)
 
 
 def validate_sig_blob(blob: bytes, image: bytes):
@@ -94,6 +169,88 @@ class RepoValidationTests(unittest.TestCase):
 
     def test_invalid_repo_multi_slash(self):
         self.assertFalse(is_valid_repo_format('owner/repo/extra'))
+
+
+class VersionLogicTests(unittest.TestCase):
+    def test_parse_version_with_prefix(self):
+        self.assertEqual(parse_version('v1.2.3'), (1, 2, 3))
+
+    def test_parse_version_rejects_invalid(self):
+        self.assertIsNone(parse_version('1.2'))
+
+    def test_compare_version_higher_patch(self):
+        self.assertGreater(compare_version('1.2.4', '1.2.3'), 0)
+
+    def test_compare_version_invalid_raises(self):
+        with self.assertRaises(ValueError):
+            compare_version('x', '1.0.0')
+
+
+class PowercycleLogicTests(unittest.TestCase):
+    def test_threshold_reaches_reset(self):
+        should_reset, count = should_trigger_powercycle_reset(9, 'POWERON')
+        self.assertTrue(should_reset)
+        self.assertEqual(count, 10)
+
+    def test_non_allowed_reason_clears_path(self):
+        should_reset, count = should_trigger_powercycle_reset(9, 'PANIC')
+        self.assertFalse(should_reset)
+        self.assertEqual(count, 0)
+
+    def test_above_window_resets_counter_without_factory_reset(self):
+        should_reset, count = should_trigger_powercycle_reset(12, 'SW')
+        self.assertFalse(should_reset)
+        self.assertEqual(count, 0)
+
+
+class OtaStateMachineTests(unittest.TestCase):
+    def test_happy_flow_is_valid(self):
+        flow = ['IDLE', 'CHECKING_RELEASE', 'DOWNLOADING', 'VERIFYING', 'STAGING', 'ACTIVATING', 'REBOOTING']
+        for i in range(len(flow) - 1):
+            self.assertTrue(is_valid_ota_transition(flow[i], flow[i + 1]))
+
+    def test_failure_transition_is_valid(self):
+        self.assertTrue(is_valid_ota_transition('VERIFYING', 'FAILED'))
+
+    def test_invalid_skip_is_rejected(self):
+        self.assertFalse(is_valid_ota_transition('CHECKING_RELEASE', 'ACTIVATING'))
+
+    def test_failure_reason_taxonomy_is_complete(self):
+        reasons = required_ota_failure_reasons()
+        self.assertIn('invalid_signature', reasons)
+        self.assertIn('partition_unavailable', reasons)
+        self.assertEqual(len(reasons), 7)
+
+
+class PartitionLayoutTests(unittest.TestCase):
+    def test_layout_requires_4mb_or_more(self):
+        partitions = Path(__file__).resolve().parents[1] / 'partitions.csv'
+        max_end = 0
+        with partitions.open('r', encoding='utf-8') as f:
+            rows = csv.reader(line for line in f if line.strip() and not line.strip().startswith('#'))
+            for row in rows:
+                # Name, Type, SubType, Offset, Size, Flags
+                if len(row) < 5:
+                    continue
+                offset = parse_partition_value(row[3])
+                size = parse_partition_value(row[4])
+                max_end = max(max_end, offset + size)
+
+        self.assertLessEqual(max_end, 0x400000, f'Partition end exceeds 4MB flash: 0x{max_end:x}')
+
+    def test_layout_contains_dual_ota_and_otadata(self):
+        partitions = Path(__file__).resolve().parents[1] / 'partitions.csv'
+        names = set()
+        with partitions.open('r', encoding='utf-8') as f:
+            rows = csv.reader(line for line in f if line.strip() and not line.strip().startswith('#'))
+            for row in rows:
+                if row:
+                    names.add(row[0].strip())
+
+        self.assertIn('otadata', names)
+        self.assertIn('nvs_keys', names)
+        self.assertIn('ota_0', names)
+        self.assertIn('ota_1', names)
 
 
 if __name__ == '__main__':
