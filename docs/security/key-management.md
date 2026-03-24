@@ -40,12 +40,18 @@ Baseline flow per device:
 2. Flash `nvs_keys` partition to the target offset from `partitions.csv`.
 3. Flash firmware image.
 4. Verify NVS encryption is enabled at runtime (`CONFIG_NVS_ENCRYPTION=y` and runtime guard if enabled).
+5. Record provisioning audit metadata (device id, key hash, timestamp, job context).
 
 ## Manufacturing checklist
 
 - Unique NVS keys generated per device (no shared key binary reused).
 - `nvs_keys` partition flashed before final functional test.
-- Device serial/lot linked to provisioning job id.
+- Device serial/lot linked to provisioning job id and audit record.
 - Provisioning logs retained for audit/recovery.
 - Failed provisioning attempts quarantined and not shipped.
 
+### Scripted audit support
+
+`scripts/provision_nvs_keys.sh` supports:
+- `--device-id <id>` for device traceability.
+- `--audit-log <path>` to append JSONL records with key SHA-256 and timestamp.

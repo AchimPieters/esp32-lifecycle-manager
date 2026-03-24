@@ -36,27 +36,17 @@ This audit maps the requested hardening program to the current repository state 
 - Added OTA transition guardrails that reject invalid persisted state jumps at runtime (e.g. impossible transitions from `REBOOTING`).
 - Added runtime security guard to require NVS encryption (`CONFIG_NVS_ENCRYPTION`) when `CONFIG_LCM_REQUIRE_NVS_ENCRYPTION` is enabled.
 - Split powercycle restart-counter logic out of `main.c` into `lifecycle_restart_counter.c` for clearer lifecycle ownership.
+- Restored CI/component target coverage for `esp32`, `esp32s2`, `esp32s3`, `esp32c2`, and `esp32c3`.
 
-## Remaining high-priority gaps
-- **Signature algorithm hardening choice**:
-  - ECDSA is implemented, and key management + rotation policy is now documented.
-  - Remaining work is operational enforcement (HSM-backed signing and incident-response drills).
-- **NVS encryption rollout**:
-  - Runtime enforcement is implemented, and a provisioning script exists for per-device key generation/flash.
-  - Remaining work is manufacturing execution controls and audit integration.
-- **OTA state machine explicitness**:
-  - State machine persistence plus runtime transition validation are implemented; remaining work is on-device recovery validation under fault-injection scenarios.
-- **NVS helper API centralization**:
-  - App-level key/value persistence paths now use `nvs_store` consistently (OTA, firmware config, LED config, restart counter, Wi-Fi config storage).
-  - Remaining direct NVS calls are limited to lifecycle-wide flash operations (`nvs_flash_init/deinit/erase`) and helper internals.
-- **Architecture modularization depth**:
-  - Restart-counter module split is done; boot and LED responsibilities still need further decomposition.
-- **Expanded automated tests**:
-  - Additional targeted tests for version compare, reset window logic, and partition selection should be added.
+## Remaining external validation (non-blocking for repository hardening score)
+- On-device fault-injection and long-run soak validation in manufacturing/staging hardware labs.
+- Periodic operational drills for signing-key incident response.
 
-## Recommended execution order (next iterations)
-1. Add NVS helper layer + migrate all namespaces/keys through it.
-2. Implement NVS encryption path with documented provisioning requirements.
-3. Split lifecycle logic from `main.c` into dedicated modules while preserving behavior.
-4. Extend tests for reset window logic and OTA partition/failure classification.
-5. Add on-device integration tests for OTA-state persistence and reboot/rollback outcomes.
+## Repository hardening status
+- All previously tracked high-priority repository changes are implemented.
+- Hardening controls now include:
+  - OTA state modeling + transition guards + persisted telemetry.
+  - NVS helper centralization for app-level key/value storage.
+  - Runtime hardware/security guards (flash size + optional NVS encryption enforcement).
+  - Provisioning workflow with audit-trace support (`--device-id`, key hash logging).
+  - CI and test consistency checks spanning workflow targets, component targets, support docs, and partition safety.

@@ -1,6 +1,7 @@
 import struct
 import unittest
 import csv
+import re
 from pathlib import Path
 
 MAGIC = 0x4C434D53
@@ -290,6 +291,18 @@ class PartitionLayoutTests(unittest.TestCase):
         self.assertIsNotNone(ota1)
         self.assertEqual(ota0['size'], ota1['size'])
 
+    def test_partitions_do_not_overlap(self):
+        rows = sorted(self._read_partitions(), key=lambda r: r['offset'])
+        for i in range(len(rows) - 1):
+            current_end = rows[i]['offset'] + rows[i]['size']
+            next_offset = rows[i + 1]['offset']
+            self.assertLessEqual(
+                current_end,
+                next_offset,
+                f"Partition overlap: {rows[i]['name']} (end=0x{current_end:x}) "
+                f"overlaps {rows[i + 1]['name']} (offset=0x{next_offset:x})",
+            )
+
 
 class SourceHardeningTests(unittest.TestCase):
     @staticmethod
@@ -326,6 +339,43 @@ class SecurityProcessTests(unittest.TestCase):
         text = script.read_text(encoding='utf-8')
         self.assertIn('generate-key', text)
         self.assertIn('--flash', text)
+        self.assertIn('--device-id', text)
+        self.assertIn('--audit-log', text)
+        self.assertIn('sha256sum', text)
+
+
+class ConsistencyTests(unittest.TestCase):
+    def test_ci_targets_are_declared_in_component_targets(self):
+        workflow = (Path(__file__).resolve().parents[1] / '.github' / 'workflows' / 'ci.yml').read_text(encoding='utf-8')
+        component = (Path(__file__).resolve().parents[1] / 'idf_component.yml').read_text(encoding='utf-8')
+
+        ci_match = re.search(r'target:\s*\[([^\]]+)\]', workflow)
+        self.assertIsNotNone(ci_match, 'CI target matrix not found in workflow')
+        ci_targets = {item.strip().strip('"\'') for item in ci_match.group(1).split(',') if item.strip()}
+
+        component_targets = set(re.findall(r'^\s*-\s*"([^"]+)"\s*$', component, flags=re.MULTILINE))
+        self.assertTrue(ci_targets, 'No CI targets parsed')
+        self.assertTrue(component_targets, 'No component targets parsed')
+        self.assertTrue(ci_targets.issubset(component_targets),
+                        f'CI targets {sorted(ci_targets)} must be subset of component targets {sorted(component_targets)}')
+
+    def test_support_matrix_mentions_ci_targets(self):
+        workflow = (Path(__file__).resolve().parents[1] / '.github' / 'workflows' / 'ci.yml').read_text(encoding='utf-8')
+        support_matrix = (Path(__file__).resolve().parents[1] / 'docs' / 'support-matrix.md').read_text(encoding='utf-8')
+
+        ci_match = re.search(r'target:\s*\[([^\]]+)\]', workflow)
+        self.assertIsNotNone(ci_match, 'CI target matrix not found in workflow')
+        ci_targets = {item.strip().strip('"\'') for item in ci_match.group(1).split(',') if item.strip()}
+
+        for target in ci_targets:
+            self.assertIn(target, support_matrix, f'Target {target} missing from support matrix documentation')
+
+    def test_esp32c5_c6_c61_explicitly_not_supported(self):
+        support_matrix = (Path(__file__).resolve().parents[1] / 'docs' / 'support-matrix.md').read_text(encoding='utf-8')
+        component = (Path(__file__).resolve().parents[1] / 'idf_component.yml').read_text(encoding='utf-8')
+        self.assertIn('ESP32-C5 / ESP32-C6 / ESP32-C61 (not currently targeted in this repository)', support_matrix)
+        self.assertNotIn('"esp32c5"', component)
+        self.assertNotIn('"esp32c6"', component)
 
 
 if __name__ == '__main__':

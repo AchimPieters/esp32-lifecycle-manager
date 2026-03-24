@@ -55,10 +55,6 @@
 #define CONFIG_ESP_LED_GPIO 2
 #endif
 
-#ifndef CONFIG_ESP_LED_GPIO
-#define CONFIG_ESP_LED_GPIO 2
-#endif
-
 enum {
         STATION_MODE = 1,
         SOFTAP_MODE = 2,
