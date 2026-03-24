@@ -4,11 +4,11 @@
 - ESP32 series: `esp32` (minimum flash: 4MB)
 - ESP32-E series: mapped to ESP32 target compatibility profile (`esp32`) (minimum flash: 4MB)
 - ESP32-S series: `esp32s2`, `esp32s3` (minimum flash: 4MB)
-- ESP32-C series: `esp32c2`, `esp32c3`, `esp32c5`, `esp32c6` (minimum flash: 4MB)
+- ESP32-C series: `esp32c2`, `esp32c3` (minimum flash: 4MB)
 
 ## Explicitly not supported
 - ESP32-H series (not targeted in this repository)
-- ESP32-C61 (not currently targeted in this repository)
+- ESP32-C5 / ESP32-C6 / ESP32-C61 (not currently targeted in this repository)
 - Any target not listed in `idf_component.yml`
 
 ## Requirements

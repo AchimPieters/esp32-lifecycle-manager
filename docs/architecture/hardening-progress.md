@@ -36,7 +36,7 @@ This audit maps the requested hardening program to the current repository state 
 - Added OTA transition guardrails that reject invalid persisted state jumps at runtime (e.g. impossible transitions from `REBOOTING`).
 - Added runtime security guard to require NVS encryption (`CONFIG_NVS_ENCRYPTION`) when `CONFIG_LCM_REQUIRE_NVS_ENCRYPTION` is enabled.
 - Split powercycle restart-counter logic out of `main.c` into `lifecycle_restart_counter.c` for clearer lifecycle ownership.
-- Restored CI/component target coverage for `esp32`, `esp32s2`, `esp32s3`, `esp32c2`, `esp32c3`, `esp32c5`, and `esp32c6`.
+- Restored CI/component target coverage for `esp32`, `esp32s2`, `esp32s3`, `esp32c2`, and `esp32c3`.
 
 ## Remaining external validation (non-blocking for repository hardening score)
 - On-device fault-injection and long-run soak validation in manufacturing/staging hardware labs.

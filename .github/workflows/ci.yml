@@ -38,7 +38,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [esp32, esp32s2, esp32s3, esp32c2, esp32c3, esp32c5, esp32c6]
+        target: [esp32, esp32s2, esp32s3, esp32c2, esp32c3]
     steps:
       - uses: actions/checkout@v4
       - name: ESP-IDF build (${{ matrix.target }})
