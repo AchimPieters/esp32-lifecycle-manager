@@ -10,7 +10,7 @@
 #include "esp_app_desc.h"
 #include "esp_crt_bundle.h"
 #include "soc/soc_caps.h"
-#include "mbedtls/sha256.h"
+#include "mbedtls/md.h"
 #include "mbedtls/pk.h"
 #include "esp_image_format.h"
 #include "cJSON.h"
@@ -731,13 +731,14 @@ static esp_err_t download_signature(const char *url, uint8_t *buf, size_t buf_le
 
 static esp_err_t partition_sha256(const esp_partition_t *part, uint32_t len, uint8_t *out)
 {
-    mbedtls_sha256_context ctx;
+    mbedtls_md_context_t ctx;
+    const mbedtls_md_info_t *md_info = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
     uint8_t *buf = malloc(4096);
     if (!buf) return ESP_ERR_NO_MEM;
-    mbedtls_sha256_init(&ctx);
-    if (mbedtls_sha256_starts(&ctx, 0) != 0) {
+    mbedtls_md_init(&ctx);
+    if (md_info == NULL || mbedtls_md_setup(&ctx, md_info, 0) != 0 || mbedtls_md_starts(&ctx) != 0) {
         free(buf);
-        mbedtls_sha256_free(&ctx);
+        mbedtls_md_free(&ctx);
         return ESP_FAIL;
     }
 
@@ -748,23 +749,23 @@ static esp_err_t partition_sha256(const esp_partition_t *part, uint32_t len, uin
         esp_err_t r = esp_partition_read(part, offset, buf, to_read);
         if (r != ESP_OK) {
             free(buf);
-            mbedtls_sha256_free(&ctx);
+            mbedtls_md_free(&ctx);
             return r;
         }
-        if (mbedtls_sha256_update(&ctx, buf, to_read) != 0) {
+        if (mbedtls_md_update(&ctx, buf, to_read) != 0) {
             free(buf);
-            mbedtls_sha256_free(&ctx);
+            mbedtls_md_free(&ctx);
             return ESP_FAIL;
         }
         offset += to_read;
     }
 
-    if (mbedtls_sha256_finish(&ctx, out) != 0) {
+    if (mbedtls_md_finish(&ctx, out) != 0) {
         free(buf);
-        mbedtls_sha256_free(&ctx);
+        mbedtls_md_free(&ctx);
         return ESP_FAIL;
     }
-    mbedtls_sha256_free(&ctx);
+    mbedtls_md_free(&ctx);
     free(buf);
     return ESP_OK;
 }
