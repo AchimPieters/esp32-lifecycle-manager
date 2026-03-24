@@ -304,5 +304,22 @@ class SourceHardeningTests(unittest.TestCase):
         self.assertIn('ESP_ERR_INVALID_STATE', src)
 
 
+class SecurityProcessTests(unittest.TestCase):
+    def test_key_management_doc_exists_with_required_sections(self):
+        doc = (Path(__file__).resolve().parents[1] / 'docs' / 'security' / 'key-management.md')
+        self.assertTrue(doc.exists(), 'docs/security/key-management.md is missing')
+        text = doc.read_text(encoding='utf-8')
+        self.assertIn('OTA signing key lifecycle', text)
+        self.assertIn('NVS encryption provisioning flow', text)
+        self.assertIn('Rotation policy', text)
+
+    def test_nvs_provisioning_script_exists(self):
+        script = (Path(__file__).resolve().parents[1] / 'scripts' / 'provision_nvs_keys.sh')
+        self.assertTrue(script.exists(), 'scripts/provision_nvs_keys.sh is missing')
+        text = script.read_text(encoding='utf-8')
+        self.assertIn('generate-key', text)
+        self.assertIn('--flash', text)
+
+
 if __name__ == '__main__':
     unittest.main()

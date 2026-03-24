@@ -39,9 +39,11 @@ This audit maps the requested hardening program to the current repository state 
 
 ## Remaining high-priority gaps
 - **Signature algorithm hardening choice**:
-  - ECDSA is implemented; key management, rotation policy, and secure key provisioning process are not yet documented/automated.
+  - ECDSA is implemented, and key management + rotation policy is now documented.
+  - Remaining work is operational enforcement (HSM-backed signing and incident-response drills).
 - **NVS encryption rollout**:
-  - Runtime enforcement is implemented; remaining work is rollout tooling for provisioning key partitions in manufacturing.
+  - Runtime enforcement is implemented, and a provisioning script exists for per-device key generation/flash.
+  - Remaining work is manufacturing execution controls and audit integration.
 - **OTA state machine explicitness**:
   - State machine persistence plus runtime transition validation are implemented; remaining work is on-device recovery validation under fault-injection scenarios.
 - **NVS helper API centralization**:
