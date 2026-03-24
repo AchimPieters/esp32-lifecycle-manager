@@ -1,6 +1,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdbool.h>
+#include <time.h>
 #include "esp_log.h"
 #include "esp_https_ota.h"
 #include "esp_http_client.h"
@@ -17,6 +18,7 @@
 #include "github_update.h"
 #include "led_indicator.h"
 #include "nvs_keys.h"
+#include "nvs_store.h"
 
 static const char *TAG = "github_update";
 
@@ -30,6 +32,86 @@ static const char *TAG = "github_update";
 #define OTA_SIG_ALGO_ECDSA_P256_SHA256 1U
 #define OTA_SIG_MAX_LEN 512U
 #define INSTALLED_LABEL_MAX_LEN (ESP_PARTITION_LABEL_MAX_LEN + 1)
+typedef enum {
+    OTA_STATE_IDLE = 0,
+    OTA_STATE_CHECKING_RELEASE,
+    OTA_STATE_DOWNLOADING,
+    OTA_STATE_VERIFYING,
+    OTA_STATE_STAGING,
+    OTA_STATE_ACTIVATING,
+    OTA_STATE_FAILED,
+    OTA_STATE_REBOOTING,
+} ota_state_t;
+
+static const char *OTA_REASON_NONE = "none";
+static const char *OTA_REASON_RELEASE_API_FAILURE = "release_api_failure";
+static const char *OTA_REASON_MISSING_ASSET = "missing_asset";
+static const char *OTA_REASON_INVALID_SIGNATURE = "invalid_signature";
+static const char *OTA_REASON_INVALID_IMAGE_LENGTH = "invalid_image_length";
+static const char *OTA_REASON_PARTITION_UNAVAILABLE = "partition_unavailable";
+static const char *OTA_REASON_BOOT_PARTITION_SET_FAILURE = "boot_partition_set_failure";
+static const char *OTA_REASON_HTTP_FAILURE = "http_failure";
+
+static const char *ota_state_to_str(ota_state_t state) {
+    switch (state) {
+    case OTA_STATE_IDLE: return "IDLE";
+    case OTA_STATE_CHECKING_RELEASE: return "CHECKING_RELEASE";
+    case OTA_STATE_DOWNLOADING: return "DOWNLOADING";
+    case OTA_STATE_VERIFYING: return "VERIFYING";
+    case OTA_STATE_STAGING: return "STAGING";
+    case OTA_STATE_ACTIVATING: return "ACTIVATING";
+    case OTA_STATE_FAILED: return "FAILED";
+    case OTA_STATE_REBOOTING: return "REBOOTING";
+    default: return "UNKNOWN";
+    }
+}
+
+static esp_err_t ota_persist_state(ota_state_t state, esp_err_t last_error,
+                                   const char *repo, const char *last_seen_version,
+                                   const char *last_success_version,
+                                   const char *failure_reason) {
+    nvs_handle_t h;
+    esp_err_t err = nvs_store_open_rw(NVS_NS_FWCFG, &h);
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    err = nvs_store_set_str(h, NVS_KEY_OTA_STATE, ota_state_to_str(state));
+    if (err == ESP_OK) {
+        err = nvs_store_set_i32(h, NVS_KEY_OTA_LAST_ERR, (int32_t)last_error);
+    }
+    if (err == ESP_OK) {
+        err = nvs_store_set_u32(h, NVS_KEY_OTA_LAST_ATTEMPT, (uint32_t)time(NULL));
+    }
+    if (err == ESP_OK && repo && repo[0] != '\0') {
+        err = nvs_store_set_str(h, NVS_KEY_OTA_SOURCE_REPO, repo);
+    }
+    if (err == ESP_OK && last_seen_version && last_seen_version[0] != '\0') {
+        err = nvs_store_set_str(h, NVS_KEY_OTA_LAST_SEEN_VER, last_seen_version);
+    }
+    if (err == ESP_OK && last_success_version && last_success_version[0] != '\0') {
+        err = nvs_store_set_str(h, NVS_KEY_OTA_LAST_OK_VER, last_success_version);
+    }
+    if (err == ESP_OK && failure_reason && failure_reason[0] != '\0') {
+        err = nvs_store_set_str(h, NVS_KEY_OTA_LAST_REASON, failure_reason);
+    }
+    if (err == ESP_OK) {
+        err = nvs_store_commit_and_close(h);
+    } else {
+        nvs_store_close(h);
+    }
+
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Failed to persist OTA state %s: %s",
+                 ota_state_to_str(state), esp_err_to_name(err));
+        return err;
+    }
+
+    ESP_LOGI(TAG, "OTA state => %s (err=%s, reason=%s)",
+             ota_state_to_str(state), esp_err_to_name(last_error),
+             failure_reason ? failure_reason : OTA_REASON_NONE);
+    return ESP_OK;
+}
 
 static bool parse_version(const char *str, int *maj, int *min, int *pat) {
     *maj = *min = *pat = 0;
@@ -700,6 +782,7 @@ static esp_err_t verify_signature_blob(const uint8_t *sig_blob, size_t sig_len,
 
 esp_err_t github_update_from_urls(const char *fw_url, const char *sig_url,
                                   const char *release_version) {
+    (void)ota_persist_state(OTA_STATE_DOWNLOADING, ESP_OK, NULL, release_version, NULL, OTA_REASON_NONE);
     ESP_LOGI(TAG, "Downloading signature from %s", sig_url);
     uint8_t sig[OTA_SIG_MAX_LEN];
     size_t sig_len = 0;
@@ -713,6 +796,7 @@ esp_err_t github_update_from_urls(const char *fw_url, const char *sig_url,
     const esp_partition_t *update_part = esp_ota_get_next_update_partition(NULL);
     if (!update_part) {
         ESP_LOGE(TAG, "No OTA partition available");
+        (void)ota_persist_state(OTA_STATE_FAILED, ESP_FAIL, NULL, release_version, NULL, OTA_REASON_PARTITION_UNAVAILABLE);
         return ESP_FAIL;
     }
     ESP_LOGI(TAG, "Using OTA partition at 0x%lx (%lu bytes)",
@@ -742,6 +826,7 @@ esp_err_t github_update_from_urls(const char *fw_url, const char *sig_url,
         goto cleanup;
     }
     ESP_LOGI(TAG, "OTA download complete");
+    (void)ota_persist_state(OTA_STATE_VERIFYING, ESP_OK, NULL, release_version, NULL, OTA_REASON_NONE);
     esp_partition_pos_t pos = { .offset = update_part->address, .size = update_part->size };
     esp_image_metadata_t meta;
     esp_err_t meta_res = esp_image_get_metadata(&pos, &meta);
@@ -749,20 +834,24 @@ esp_err_t github_update_from_urls(const char *fw_url, const char *sig_url,
     if (meta_res != ESP_OK) {
         ESP_LOGE(TAG, "Failed to get image metadata: %s", esp_err_to_name(meta_res));
         ret = meta_res;
+        (void)ota_persist_state(OTA_STATE_FAILED, ret, NULL, release_version, NULL, OTA_REASON_INVALID_IMAGE_LENGTH);
         goto cleanup;
     }
+    (void)ota_persist_state(OTA_STATE_STAGING, ESP_OK, NULL, release_version, NULL, OTA_REASON_NONE);
     uint8_t actual[32];
     esp_err_t hash_res = partition_sha256(update_part, meta.image_len, actual);
     ESP_LOGD(TAG, "partition_sha256 -> %s", esp_err_to_name(hash_res));
     if (hash_res != ESP_OK) {
         ESP_LOGE(TAG, "Failed to compute image hash: %s", esp_err_to_name(hash_res));
         ret = hash_res;
+        (void)ota_persist_state(OTA_STATE_FAILED, ret, NULL, release_version, NULL, OTA_REASON_INVALID_IMAGE_LENGTH);
         goto cleanup;
     }
 
     ret = verify_signature_blob(sig, sig_len, meta.image_len, actual);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Signature validation failed: %s", esp_err_to_name(ret));
+        (void)ota_persist_state(OTA_STATE_FAILED, ret, NULL, release_version, NULL, OTA_REASON_INVALID_SIGNATURE);
         goto cleanup;
     }
     led_blinking_stop();
@@ -785,6 +874,7 @@ esp_err_t github_update_from_urls(const char *fw_url, const char *sig_url,
         }
     }
     if (version_to_store && version_to_store[0] != '\0') {
+        (void)ota_persist_state(OTA_STATE_ACTIVATING, ESP_OK, NULL, release_version, version_to_store, OTA_REASON_NONE);
         esp_err_t store_err = store_installed_version_if_needed(version_to_store,
                                                                 update_part->label);
         if (store_err != ESP_OK) {
@@ -796,6 +886,7 @@ esp_err_t github_update_from_urls(const char *fw_url, const char *sig_url,
     }
 
     ESP_LOGI(TAG, "Signed image verified, rebooting");
+    (void)ota_persist_state(OTA_STATE_REBOOTING, ESP_OK, NULL, release_version, version_to_store, OTA_REASON_NONE);
     esp_err_t flag_err = write_update_request_flag(false);
     if (flag_err != ESP_OK) {
         ESP_LOGW(TAG, "Failed to clear update request flag: %s", esp_err_to_name(flag_err));
@@ -804,6 +895,9 @@ esp_err_t github_update_from_urls(const char *fw_url, const char *sig_url,
     return ESP_OK;
 
 cleanup:
+    if (ret != ESP_OK) {
+        (void)ota_persist_state(OTA_STATE_FAILED, ret, NULL, release_version, NULL, OTA_REASON_HTTP_FAILURE);
+    }
     if (led_active) {
         led_blinking_stop();
     }
@@ -811,6 +905,7 @@ cleanup:
 }
 
 esp_err_t github_update_if_needed(const char *repo, bool prerelease) {
+    (void)ota_persist_state(OTA_STATE_CHECKING_RELEASE, ESP_OK, repo, NULL, NULL, OTA_REASON_NONE);
     char api[256];
     snprintf(api, sizeof(api), "https://api.github.com/repos/%s/releases%s", repo,
              prerelease ? "?per_page=5" : "/latest");
@@ -854,11 +949,16 @@ esp_err_t github_update_if_needed(const char *repo, bool prerelease) {
     ESP_LOGI(TAG, "Current firmware version %d.%d.%d (%s)", curMaj, curMin, curPat,
              using_stored_version ? "installed" : "factory");
     esp_http_client_handle_t client = esp_http_client_init(&cfg);
-    if (!client) { ESP_LOGE(TAG, "esp_http_client_init failed"); return ESP_FAIL; }
+    if (!client) {
+        ESP_LOGE(TAG, "esp_http_client_init failed");
+        (void)ota_persist_state(OTA_STATE_FAILED, ESP_FAIL, repo, NULL, NULL, OTA_REASON_RELEASE_API_FAILURE);
+        return ESP_FAIL;
+    }
     esp_err_t err = esp_http_client_open(client, 0);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "esp_http_client_open failed: %s", esp_err_to_name(err));
         esp_http_client_cleanup(client);
+        (void)ota_persist_state(OTA_STATE_FAILED, err, repo, NULL, NULL, OTA_REASON_HTTP_FAILURE);
         return err;
     }
     ESP_LOGD(TAG, "esp_http_client_open -> %s", esp_err_to_name(err));
@@ -868,10 +968,11 @@ esp_err_t github_update_if_needed(const char *repo, bool prerelease) {
         ESP_LOGE(TAG, "esp_http_client_fetch_headers failed: errno=%d", esp_http_client_get_errno(client));
         esp_http_client_close(client);
         esp_http_client_cleanup(client);
+        (void)ota_persist_state(OTA_STATE_FAILED, ESP_FAIL, repo, NULL, NULL, OTA_REASON_HTTP_FAILURE);
         return ESP_FAIL;
     }
     char *data = malloc(len + 1);
-    if (!data) { ESP_LOGE(TAG, "malloc failed"); esp_http_client_close(client); esp_http_client_cleanup(client); return ESP_ERR_NO_MEM; }
+    if (!data) { ESP_LOGE(TAG, "malloc failed"); esp_http_client_close(client); esp_http_client_cleanup(client); (void)ota_persist_state(OTA_STATE_FAILED, ESP_ERR_NO_MEM, repo, NULL, NULL, OTA_REASON_RELEASE_API_FAILURE); return ESP_ERR_NO_MEM; }
     int read = esp_http_client_read_response(client, data, len);
     int status = esp_http_client_get_status_code(client);
     ESP_LOGD(TAG, "Read %d bytes with HTTP status %d", read, status);
@@ -880,6 +981,7 @@ esp_err_t github_update_if_needed(const char *repo, bool prerelease) {
         free(data);
         esp_http_client_close(client);
         esp_http_client_cleanup(client);
+        (void)ota_persist_state(OTA_STATE_FAILED, ESP_FAIL, repo, NULL, NULL, OTA_REASON_HTTP_FAILURE);
         return ESP_FAIL;
     }
     data[read] = '\0';
@@ -888,7 +990,7 @@ esp_err_t github_update_if_needed(const char *repo, bool prerelease) {
 
     cJSON *json = cJSON_Parse(data);
     free(data);
-    if (!json) { ESP_LOGE(TAG, "cJSON_Parse failed"); return ESP_FAIL; }
+    if (!json) { ESP_LOGE(TAG, "cJSON_Parse failed"); (void)ota_persist_state(OTA_STATE_FAILED, ESP_FAIL, repo, NULL, NULL, OTA_REASON_RELEASE_API_FAILURE); return ESP_FAIL; }
     ESP_LOGD(TAG, "Release JSON parsed");
 
     cJSON *release = NULL;
@@ -957,10 +1059,10 @@ esp_err_t github_update_if_needed(const char *repo, bool prerelease) {
             }
         }
     }
-    if (!release) { cJSON_Delete(json); ESP_LOGE(TAG, "No suitable release"); return ESP_FAIL; }
+    if (!release) { cJSON_Delete(json); ESP_LOGE(TAG, "No suitable release"); (void)ota_persist_state(OTA_STATE_FAILED, ESP_FAIL, repo, NULL, NULL, OTA_REASON_RELEASE_API_FAILURE); return ESP_FAIL; }
     ESP_LOGD(TAG, "Release selected");
     cJSON *assets = cJSON_GetObjectItem(release, "assets");
-    if (!cJSON_IsArray(assets)) { cJSON_Delete(json); return ESP_FAIL; }
+    if (!cJSON_IsArray(assets)) { cJSON_Delete(json); (void)ota_persist_state(OTA_STATE_FAILED, ESP_FAIL, repo, NULL, NULL, OTA_REASON_MISSING_ASSET); return ESP_FAIL; }
     const char *fw=NULL,*sig=NULL;
     cJSON *tag = cJSON_GetObjectItem(release, "tag_name");
     const char *raw_tag = cJSON_IsString(tag) ? tag->valuestring : NULL;
@@ -970,6 +1072,7 @@ esp_err_t github_update_if_needed(const char *repo, bool prerelease) {
     if (relValid) {
         snprintf(sanitized_version, sizeof(sanitized_version), "%d.%d.%d",
                  relMaj, relMin, relPat);
+        (void)ota_persist_state(OTA_STATE_CHECKING_RELEASE, ESP_OK, repo, sanitized_version, NULL, OTA_REASON_NONE);
     }
     ESP_LOGI(TAG, "Latest release version %d.%d.%d", relMaj, relMin, relPat);
     if (!relValid) {
@@ -1019,11 +1122,14 @@ esp_err_t github_update_if_needed(const char *repo, bool prerelease) {
                     }
                     ESP_LOGE(TAG, "Failed to select installed firmware partition: %s",
                              esp_err_to_name(boot_err));
+                    (void)ota_persist_state(OTA_STATE_FAILED, boot_err, repo, version_to_store, NULL,
+                                            OTA_REASON_BOOT_PARTITION_SET_FAILURE);
                 } else {
                     ESP_LOGW(TAG, "Update was requested but installed version could not be determined");
                 }
             }
             cJSON_Delete(json);
+            (void)ota_persist_state(OTA_STATE_IDLE, ESP_OK, repo, version_to_store, version_to_store, OTA_REASON_NONE);
             return ESP_OK;
         }
     }
@@ -1037,7 +1143,7 @@ esp_err_t github_update_if_needed(const char *repo, bool prerelease) {
             else if (!strcmp(name->valuestring, "main.bin.sig")) sig = url->valuestring;
         }
     }
-    if (!fw || !sig) { cJSON_Delete(json); ESP_LOGE(TAG, "Missing assets"); return ESP_FAIL; }
+    if (!fw || !sig) { cJSON_Delete(json); ESP_LOGE(TAG, "Missing assets"); (void)ota_persist_state(OTA_STATE_FAILED, ESP_FAIL, repo, sanitized_version, NULL, OTA_REASON_MISSING_ASSET); return ESP_FAIL; }
     ESP_LOGD(TAG, "Firmware URL: %s", fw);
     ESP_LOGD(TAG, "Signature URL: %s", sig);
     ESP_LOGI(TAG, "Release %s selected", cJSON_IsString(tag)?tag->valuestring:"?");
@@ -1045,6 +1151,11 @@ esp_err_t github_update_if_needed(const char *repo, bool prerelease) {
     esp_err_t res = github_update_from_urls(fw, sig,
                                             version_argument && version_argument[0] ? version_argument : NULL);
     ESP_LOGD(TAG, "github_update_from_urls -> %s", esp_err_to_name(res));
+    if (res == ESP_OK) {
+        (void)ota_persist_state(OTA_STATE_REBOOTING, ESP_OK, repo, version_argument, version_argument, OTA_REASON_NONE);
+    } else {
+        (void)ota_persist_state(OTA_STATE_FAILED, res, repo, version_argument, NULL, OTA_REASON_HTTP_FAILURE);
+    }
     cJSON_Delete(json);
     return res;
 }
