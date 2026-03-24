@@ -49,6 +49,11 @@
 #include "github_update.h"
 #include "led_indicator.h"
 #include "nvs_keys.h"
+#include "nvs_store.h"
+
+#ifndef CONFIG_ESP_LED_GPIO
+#define CONFIG_ESP_LED_GPIO 2
+#endif
 
 enum {
         STATION_MODE = 1,
@@ -89,27 +94,47 @@ static int sdk_wifi_get_opmode(void) {
 
 static void sdk_wifi_set_opmode(int mode) {
         ESP_LOGI("wifi_config", "Setting WiFi mode: %d", mode);
-        esp_wifi_set_mode(opmode_to_wifi_mode(mode));
+        esp_err_t err = esp_wifi_set_mode(opmode_to_wifi_mode(mode));
+        if (err != ESP_OK) {
+                ESP_LOGE("wifi_config", "esp_wifi_set_mode failed: %s", esp_err_to_name(err));
+        }
 }
 
 static void sdk_wifi_get_macaddr(int iface, uint8_t *mac) {
-        esp_wifi_get_mac(iface == SOFTAP_IF ? WIFI_IF_AP : WIFI_IF_STA, mac);
+        esp_err_t err = esp_wifi_get_mac(iface == SOFTAP_IF ? WIFI_IF_AP : WIFI_IF_STA, mac);
+        if (err != ESP_OK) {
+                ESP_LOGE("wifi_config", "esp_wifi_get_mac failed: %s", esp_err_to_name(err));
+                memset(mac, 0, 6);
+        }
 }
 
 static void sdk_wifi_softap_get_config(wifi_config_t *cfg) {
-        esp_wifi_get_config(WIFI_IF_AP, cfg);
+        esp_err_t err = esp_wifi_get_config(WIFI_IF_AP, cfg);
+        if (err != ESP_OK) {
+                ESP_LOGE("wifi_config", "esp_wifi_get_config(AP) failed: %s", esp_err_to_name(err));
+                memset(cfg, 0, sizeof(*cfg));
+        }
 }
 
 static void sdk_wifi_softap_set_config(wifi_config_t *cfg) {
-        esp_wifi_set_config(WIFI_IF_AP, cfg);
+        esp_err_t err = esp_wifi_set_config(WIFI_IF_AP, cfg);
+        if (err != ESP_OK) {
+                ESP_LOGE("wifi_config", "esp_wifi_set_config(AP) failed: %s", esp_err_to_name(err));
+        }
 }
 
 static void sdk_wifi_station_set_config(wifi_config_t *cfg) {
-        esp_wifi_set_config(WIFI_IF_STA, cfg);
+        esp_err_t err = esp_wifi_set_config(WIFI_IF_STA, cfg);
+        if (err != ESP_OK) {
+                ESP_LOGE("wifi_config", "esp_wifi_set_config(STA) failed: %s", esp_err_to_name(err));
+        }
 }
 
 static void sdk_wifi_station_connect(void) {
-        esp_wifi_connect();
+        esp_err_t err = esp_wifi_connect();
+        if (err != ESP_OK) {
+                ESP_LOGE("wifi_config", "esp_wifi_connect failed: %s", esp_err_to_name(err));
+        }
 }
 
 static void sdk_wifi_station_set_auto_connect(bool en) {
@@ -122,12 +147,21 @@ static void sysparam_init(void) {
         if (!initialized) {
                 ESP_LOGD("wifi_config", "Initializing NVS for WiFi config");
                 esp_err_t err = nvs_flash_init();
-                if (err != ESP_OK) {
+                if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+                        ESP_LOGW("wifi_config", "NVS init requires recovery (%s), erasing NVS partition", esp_err_to_name(err));
+                        esp_err_t erase_err = nvs_flash_erase();
+                        if (erase_err != ESP_OK) {
+                                ESP_LOGE("wifi_config", "nvs_flash_erase failed: %s", esp_err_to_name(erase_err));
+                        } else {
+                                err = nvs_flash_init();
+                        }
+                }
+                if (err != ESP_OK && err != ESP_ERR_NVS_INVALID_STATE) {
                         ESP_LOGE("wifi_config", "nvs_flash_init failed: %s", esp_err_to_name(err));
                 }
-                err = nvs_open("wifi_cfg", NVS_READWRITE, &wifi_cfg_handle);
+                err = nvs_store_open_rw(NVS_NS_WIFI_CFG, &wifi_cfg_handle);
                 if (err != ESP_OK) {
-                        ESP_LOGE("wifi_config", "nvs_open failed: %s", esp_err_to_name(err));
+                        ESP_LOGE("wifi_config", "nvs_store_open_rw failed: %s", esp_err_to_name(err));
                 }
                 initialized = true;
         }
@@ -137,9 +171,9 @@ static void sysparam_set_string(const char *key, const char *value) {
         sysparam_init();
         if (!value) value = "";
         ESP_LOGD("wifi_config", "Setting NVS key %s", key);
-        esp_err_t err = nvs_set_str(wifi_cfg_handle, key, value);
+        esp_err_t err = nvs_store_set_str(wifi_cfg_handle, key, value);
         if (err != ESP_OK) {
-                ESP_LOGE("wifi_config", "nvs_set_str failed: %s", esp_err_to_name(err));
+                ESP_LOGE("wifi_config", "nvs_store_set_str failed: %s", esp_err_to_name(err));
         }
         err = nvs_commit(wifi_cfg_handle);
         if (err != ESP_OK) {
@@ -150,10 +184,10 @@ static void sysparam_set_string(const char *key, const char *value) {
 static void sysparam_get_string(const char *key, char **value) {
         sysparam_init();
         size_t required = 0;
-        esp_err_t err = nvs_get_str(wifi_cfg_handle, key, NULL, &required);
+        esp_err_t err = nvs_store_get_str(wifi_cfg_handle, key, NULL, &required);
         if (err == ESP_OK && required > 0) {
                 *value = malloc(required);
-                err = nvs_get_str(wifi_cfg_handle, key, *value, &required);
+                err = nvs_store_get_str(wifi_cfg_handle, key, *value, &required);
                 if (err != ESP_OK) {
                         ESP_LOGE("wifi_config", "Failed to read key %s: %s", key, esp_err_to_name(err));
                         free(*value);
@@ -215,6 +249,10 @@ static void wifi_config_init_wifi(void) {
 #define WIFI_CONFIG_HTTP_MAX_BODY_SIZE 4096
 #define WIFI_CONFIG_MAX_REPO_LEN 95
 #define WIFI_CONFIG_MIN_CONFIG_UPDATE_INTERVAL_MS 1000
+#define WIFI_CONFIG_MAX_SSID_LEN 32
+#define WIFI_CONFIG_MAX_PASSWORD_LEN 63
+#define WIFI_CONFIG_MAX_LED_LEVEL_LEN 8
+#define WIFI_CONFIG_MAX_LED_GPIO_LEN 3
 
 #ifndef WIFI_CONFIG_CONNECT_TIMEOUT
 #define WIFI_CONFIG_CONNECT_TIMEOUT 15000
@@ -470,11 +508,17 @@ static void wifi_config_server_on_settings(client_t *client) {
         client_send_chunk(client, html_settings_header);
 
         if (context->custom_html != NULL && context->custom_html[0] > 0) {
-                uint8_t buffer_size = strlen(html_settings_custom_html) + strlen(context->custom_html);
-                char* buffer = (char*) calloc(buffer_size, sizeof(char)); //fill up the buffer with zeros
-                snprintf(buffer, buffer_size, html_settings_custom_html, context->custom_html); //fill in template with the custom_html content
-                client_send_chunk(client, buffer);
-                free(buffer);
+                size_t template_len = strlen(html_settings_custom_html);
+                size_t custom_len = strlen(context->custom_html);
+                size_t buffer_size = template_len + custom_len + 1;
+                char *buffer = (char *)calloc(buffer_size, sizeof(char));
+                if (!buffer) {
+                        ESP_LOGE("wifi_config", "Failed to allocate custom HTML response buffer");
+                } else {
+                        snprintf(buffer, buffer_size, html_settings_custom_html, context->custom_html);
+                        client_send_chunk(client, buffer);
+                        free(buffer);
+                }
         }
 
         client_send_chunk(client, html_settings_body);
@@ -579,7 +623,7 @@ static void wifi_config_server_on_settings_update(client_t *client) {
 
     size_t ssid_len = strlen(ssid_param->value);
     size_t password_len = (password_param && password_param->value) ? strlen(password_param->value) : 0;
-    if (ssid_len == 0 || ssid_len > 32 || password_len > 63) {
+    if (ssid_len == 0 || ssid_len > WIFI_CONFIG_MAX_SSID_LEN || password_len > WIFI_CONFIG_MAX_PASSWORD_LEN) {
         ESP_LOGW("wifi_config", "Rejecting invalid SSID/password length ssid=%u pass=%u", (unsigned)ssid_len, (unsigned)password_len);
         form_params_free(form);
         client_send_redirect(client, 400, "/settings");
@@ -620,6 +664,12 @@ static void wifi_config_server_on_settings_update(client_t *client) {
     bool led = led_param && (strcmp(led_param->value, "on") == 0 || strcmp(led_param->value, "1") == 0);
     bool active_high = false;
     if (level_param && level_param->value) {
+        if (strlen(level_param->value) > WIFI_CONFIG_MAX_LED_LEVEL_LEN) {
+            ESP_LOGW("wifi_config", "Rejecting invalid LED level value length");
+            form_params_free(form);
+            client_send_redirect(client, 400, "/settings");
+            return;
+        }
         if (strcmp(level_param->value, "high") == 0 || strcmp(level_param->value, "1") == 0) {
             active_high = true;
         } else if (strcmp(level_param->value, "low") == 0 || strcmp(level_param->value, "0") == 0) {
@@ -632,6 +682,12 @@ static void wifi_config_server_on_settings_update(client_t *client) {
     }
     int gpio = -1;
     if (gpio_param && gpio_param->value && gpio_param->value[0] != '\0' && strcmp(gpio_param->value, "n") != 0) {
+        if (strlen(gpio_param->value) > WIFI_CONFIG_MAX_LED_GPIO_LEN) {
+            ESP_LOGW("wifi_config", "Rejecting invalid LED GPIO value length");
+            form_params_free(form);
+            client_send_redirect(client, 400, "/settings");
+            return;
+        }
         int candidate = atoi(gpio_param->value);
         if (candidate >= 0 && candidate <= 32) {
             gpio = candidate;

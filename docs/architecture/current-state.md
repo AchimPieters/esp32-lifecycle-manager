@@ -47,7 +47,8 @@
 From `partitions.csv`:
 - `nvs` data/nvs at `0x9000`, size `0x5000`
 - `otadata` data/ota at `0xe000`, size `0x2000`
-- `phy_init` data/phy at `0x10000`, size `0x1000`
+- `nvs_keys` data/nvs_keys at `0x10000`, size `0x1000` (encrypted key partition)
+- `phy_init` data/phy at `0x11000`, size `0x1000`
 - `factory` app/factory at `0x20000`, size `1M`
 - `ota_0` app/ota_0 at `0x120000`, size `1M`
 - `ota_1` app/ota_1 at `0x220000`, size `1M`
