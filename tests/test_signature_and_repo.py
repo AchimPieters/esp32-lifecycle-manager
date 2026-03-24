@@ -187,10 +187,20 @@ class VersionLogicTests(unittest.TestCase):
 
 
 class PowercycleLogicTests(unittest.TestCase):
+    def test_below_window_increments_without_reset(self):
+        should_reset, count = should_trigger_powercycle_reset(5, 'EXT')
+        self.assertFalse(should_reset)
+        self.assertEqual(count, 6)
+
     def test_threshold_reaches_reset(self):
         should_reset, count = should_trigger_powercycle_reset(9, 'POWERON')
         self.assertTrue(should_reset)
         self.assertEqual(count, 10)
+
+    def test_maximum_window_still_triggers_reset(self):
+        should_reset, count = should_trigger_powercycle_reset(11, 'SW')
+        self.assertTrue(should_reset)
+        self.assertEqual(count, 12)
 
     def test_non_allowed_reason_clears_path(self):
         should_reset, count = should_trigger_powercycle_reset(9, 'PANIC')
@@ -215,6 +225,16 @@ class OtaStateMachineTests(unittest.TestCase):
     def test_invalid_skip_is_rejected(self):
         self.assertFalse(is_valid_ota_transition('CHECKING_RELEASE', 'ACTIVATING'))
 
+    def test_failed_state_recovery_paths(self):
+        self.assertTrue(is_valid_ota_transition('FAILED', 'CHECKING_RELEASE'))
+        self.assertTrue(is_valid_ota_transition('FAILED', 'IDLE'))
+
+    def test_failed_state_cannot_jump_to_downloading(self):
+        self.assertFalse(is_valid_ota_transition('FAILED', 'DOWNLOADING'))
+
+    def test_rebooting_is_terminal(self):
+        self.assertFalse(is_valid_ota_transition('REBOOTING', 'IDLE'))
+
     def test_failure_reason_taxonomy_is_complete(self):
         reasons = required_ota_failure_reasons()
         self.assertIn('invalid_signature', reasons)
@@ -223,34 +243,89 @@ class OtaStateMachineTests(unittest.TestCase):
 
 
 class PartitionLayoutTests(unittest.TestCase):
-    def test_layout_requires_4mb_or_more(self):
+    @staticmethod
+    def _read_partitions():
         partitions = Path(__file__).resolve().parents[1] / 'partitions.csv'
-        max_end = 0
+        parsed = []
         with partitions.open('r', encoding='utf-8') as f:
             rows = csv.reader(line for line in f if line.strip() and not line.strip().startswith('#'))
             for row in rows:
-                # Name, Type, SubType, Offset, Size, Flags
-                if len(row) < 5:
-                    continue
-                offset = parse_partition_value(row[3])
-                size = parse_partition_value(row[4])
-                max_end = max(max_end, offset + size)
+                if len(row) >= 5:
+                    parsed.append({
+                        'name': row[0].strip(),
+                        'type': row[1].strip(),
+                        'subtype': row[2].strip(),
+                        'offset': parse_partition_value(row[3]),
+                        'size': parse_partition_value(row[4]),
+                        'flags': row[5].strip() if len(row) > 5 else '',
+                    })
+        return parsed
+
+    def test_layout_requires_4mb_or_more(self):
+        max_end = 0
+        for row in self._read_partitions():
+            max_end = max(max_end, row['offset'] + row['size'])
 
         self.assertLessEqual(max_end, 0x400000, f'Partition end exceeds 4MB flash: 0x{max_end:x}')
 
     def test_layout_contains_dual_ota_and_otadata(self):
-        partitions = Path(__file__).resolve().parents[1] / 'partitions.csv'
-        names = set()
-        with partitions.open('r', encoding='utf-8') as f:
-            rows = csv.reader(line for line in f if line.strip() and not line.strip().startswith('#'))
-            for row in rows:
-                if row:
-                    names.add(row[0].strip())
+        names = {row['name'] for row in self._read_partitions()}
 
         self.assertIn('otadata', names)
         self.assertIn('nvs_keys', names)
         self.assertIn('ota_0', names)
         self.assertIn('ota_1', names)
+
+    def test_nvs_keys_partition_is_encrypted(self):
+        rows = self._read_partitions()
+        nvs_keys = next((row for row in rows if row['name'] == 'nvs_keys'), None)
+        self.assertIsNotNone(nvs_keys)
+        self.assertEqual(nvs_keys['flags'], 'encrypted')
+
+    def test_ota_slot_sizes_match(self):
+        rows = self._read_partitions()
+        ota0 = next((row for row in rows if row['name'] == 'ota_0'), None)
+        ota1 = next((row for row in rows if row['name'] == 'ota_1'), None)
+        self.assertIsNotNone(ota0)
+        self.assertIsNotNone(ota1)
+        self.assertEqual(ota0['size'], ota1['size'])
+
+
+class SourceHardeningTests(unittest.TestCase):
+    @staticmethod
+    def _github_update_source() -> str:
+        path = Path(__file__).resolve().parents[1] / 'main' / 'github_update.c'
+        return path.read_text(encoding='utf-8')
+
+    def test_ota_transition_guard_exists_in_source(self):
+        src = self._github_update_source()
+        self.assertIn('static bool ota_transition_allowed', src)
+        self.assertIn('Rejected invalid OTA transition', src)
+        self.assertIn('ESP_ERR_INVALID_STATE', src)
+
+    def test_cleanup_preserves_specific_failure_reason(self):
+        src = self._github_update_source()
+        self.assertIn('const char *failure_reason = OTA_REASON_HTTP_FAILURE;', src)
+        self.assertIn('failure_reason = OTA_REASON_INVALID_SIGNATURE;', src)
+        self.assertIn('failure_reason = OTA_REASON_INVALID_IMAGE_LENGTH;', src)
+        self.assertIn('ota_persist_state(OTA_STATE_FAILED, ret, NULL, release_version, NULL, failure_reason);', src)
+
+
+class SecurityProcessTests(unittest.TestCase):
+    def test_key_management_doc_exists_with_required_sections(self):
+        doc = (Path(__file__).resolve().parents[1] / 'docs' / 'security' / 'key-management.md')
+        self.assertTrue(doc.exists(), 'docs/security/key-management.md is missing')
+        text = doc.read_text(encoding='utf-8')
+        self.assertIn('OTA signing key lifecycle', text)
+        self.assertIn('NVS encryption provisioning flow', text)
+        self.assertIn('Rotation policy', text)
+
+    def test_nvs_provisioning_script_exists(self):
+        script = (Path(__file__).resolve().parents[1] / 'scripts' / 'provision_nvs_keys.sh')
+        self.assertTrue(script.exists(), 'scripts/provision_nvs_keys.sh is missing')
+        text = script.read_text(encoding='utf-8')
+        self.assertIn('generate-key', text)
+        self.assertIn('--flash', text)
 
 
 if __name__ == '__main__':

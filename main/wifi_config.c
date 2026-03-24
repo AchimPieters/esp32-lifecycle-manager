@@ -49,6 +49,11 @@
 #include "github_update.h"
 #include "led_indicator.h"
 #include "nvs_keys.h"
+#include "nvs_store.h"
+
+#ifndef CONFIG_ESP_LED_GPIO
+#define CONFIG_ESP_LED_GPIO 2
+#endif
 
 #ifndef CONFIG_ESP_LED_GPIO
 #define CONFIG_ESP_LED_GPIO 2
@@ -149,9 +154,9 @@ static void sysparam_init(void) {
                 if (err != ESP_OK) {
                         ESP_LOGE("wifi_config", "nvs_flash_init failed: %s", esp_err_to_name(err));
                 }
-                err = nvs_open(NVS_NS_WIFI_CFG, NVS_READWRITE, &wifi_cfg_handle);
+                err = nvs_store_open_rw(NVS_NS_WIFI_CFG, &wifi_cfg_handle);
                 if (err != ESP_OK) {
-                        ESP_LOGE("wifi_config", "nvs_open failed: %s", esp_err_to_name(err));
+                        ESP_LOGE("wifi_config", "nvs_store_open_rw failed: %s", esp_err_to_name(err));
                 }
                 initialized = true;
         }
@@ -161,9 +166,9 @@ static void sysparam_set_string(const char *key, const char *value) {
         sysparam_init();
         if (!value) value = "";
         ESP_LOGD("wifi_config", "Setting NVS key %s", key);
-        esp_err_t err = nvs_set_str(wifi_cfg_handle, key, value);
+        esp_err_t err = nvs_store_set_str(wifi_cfg_handle, key, value);
         if (err != ESP_OK) {
-                ESP_LOGE("wifi_config", "nvs_set_str failed: %s", esp_err_to_name(err));
+                ESP_LOGE("wifi_config", "nvs_store_set_str failed: %s", esp_err_to_name(err));
         }
         err = nvs_commit(wifi_cfg_handle);
         if (err != ESP_OK) {
@@ -174,10 +179,10 @@ static void sysparam_set_string(const char *key, const char *value) {
 static void sysparam_get_string(const char *key, char **value) {
         sysparam_init();
         size_t required = 0;
-        esp_err_t err = nvs_get_str(wifi_cfg_handle, key, NULL, &required);
+        esp_err_t err = nvs_store_get_str(wifi_cfg_handle, key, NULL, &required);
         if (err == ESP_OK && required > 0) {
                 *value = malloc(required);
-                err = nvs_get_str(wifi_cfg_handle, key, *value, &required);
+                err = nvs_store_get_str(wifi_cfg_handle, key, *value, &required);
                 if (err != ESP_OK) {
                         ESP_LOGE("wifi_config", "Failed to read key %s: %s", key, esp_err_to_name(err));
                         free(*value);
