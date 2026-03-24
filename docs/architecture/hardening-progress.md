@@ -44,7 +44,8 @@ This audit maps the requested hardening program to the current repository state 
 - **OTA state machine explicitness**:
   - State machine persistence is now implemented; remaining work is validating transitions and recovery behavior on target hardware.
 - **NVS helper API centralization**:
-  - Helper abstraction now exists, but migration is not complete across all modules yet.
+  - App-level key/value persistence paths now use `nvs_store` consistently (OTA, firmware config, LED config, restart counter, Wi-Fi config storage).
+  - Remaining direct NVS calls are limited to lifecycle-wide flash operations (`nvs_flash_init/deinit/erase`) and helper internals.
 - **Architecture modularization depth**:
   - Restart-counter module split is done; boot and LED responsibilities still need further decomposition.
 - **Expanded automated tests**:

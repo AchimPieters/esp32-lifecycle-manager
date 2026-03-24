@@ -13,7 +13,6 @@
 #include "mbedtls/pk.h"
 #include "esp_image_format.h"
 #include "cJSON.h"
-#include "nvs.h"
 #include "nvs_flash.h"
 #include "github_update.h"
 #include "led_indicator.h"
@@ -146,9 +145,9 @@ static esp_err_t store_installed_version_if_needed(const char *version,
     strlcpy(truncated, version, sizeof(truncated));
 
     nvs_handle_t handle;
-    esp_err_t err = nvs_open(NVS_NS_FWCFG, NVS_READWRITE, &handle);
+    esp_err_t err = nvs_store_open_rw(NVS_NS_FWCFG, &handle);
     if (err != ESP_OK) {
-        ESP_LOGW(TAG, "nvs_open(fwcfg) failed when storing version: %s", esp_err_to_name(err));
+        ESP_LOGW(TAG, "open_rw(fwcfg) failed when storing version: %s", esp_err_to_name(err));
         return err;
     }
 
@@ -157,25 +156,25 @@ static esp_err_t store_installed_version_if_needed(const char *version,
 
     char existing[INSTALLED_VER_MAX_LEN];
     size_t existing_len = sizeof(existing);
-    esp_err_t get_err = nvs_get_str(handle, NVS_KEY_INSTALLED_VER, existing, &existing_len);
+    esp_err_t get_err = nvs_store_get_str(handle, NVS_KEY_INSTALLED_VER, existing, &existing_len);
     if (get_err == ESP_OK) {
         if (strcmp(existing, truncated) != 0) {
-            err = nvs_set_str(handle, NVS_KEY_INSTALLED_VER, truncated);
+            err = nvs_store_set_str(handle, NVS_KEY_INSTALLED_VER, truncated);
             if (err != ESP_OK) {
-                ESP_LOGW(TAG, "nvs_set_str(installed_ver) failed: %s", esp_err_to_name(err));
-                nvs_close(handle);
+                ESP_LOGW(TAG, "set_str(installed_ver) failed: %s", esp_err_to_name(err));
+                nvs_store_close(handle);
                 return err;
             }
             version_changed = true;
         }
     } else {
         if (get_err != ESP_ERR_NVS_NOT_FOUND) {
-            ESP_LOGW(TAG, "nvs_get_str(installed_ver) failed: %s", esp_err_to_name(get_err));
+            ESP_LOGW(TAG, "get_str(installed_ver) failed: %s", esp_err_to_name(get_err));
         }
-        err = nvs_set_str(handle, NVS_KEY_INSTALLED_VER, truncated);
+        err = nvs_store_set_str(handle, NVS_KEY_INSTALLED_VER, truncated);
         if (err != ESP_OK) {
-            ESP_LOGW(TAG, "nvs_set_str(installed_ver) failed: %s", esp_err_to_name(err));
-            nvs_close(handle);
+            ESP_LOGW(TAG, "set_str(installed_ver) failed: %s", esp_err_to_name(err));
+            nvs_store_close(handle);
             return err;
         }
         version_changed = true;
@@ -184,25 +183,25 @@ static esp_err_t store_installed_version_if_needed(const char *version,
     if (partition_label && partition_label[0] != '\0') {
         char existing_label[INSTALLED_LABEL_MAX_LEN];
         size_t label_len = sizeof(existing_label);
-        esp_err_t label_err = nvs_get_str(handle, NVS_KEY_INSTALLED_PART, existing_label, &label_len);
+        esp_err_t label_err = nvs_store_get_str(handle, NVS_KEY_INSTALLED_PART, existing_label, &label_len);
         if (label_err == ESP_OK) {
             if (strcmp(existing_label, partition_label) != 0) {
-                err = nvs_set_str(handle, NVS_KEY_INSTALLED_PART, partition_label);
+                err = nvs_store_set_str(handle, NVS_KEY_INSTALLED_PART, partition_label);
                 if (err != ESP_OK) {
-                    ESP_LOGW(TAG, "nvs_set_str(%s) failed: %s", NVS_KEY_INSTALLED_PART, esp_err_to_name(err));
-                    nvs_close(handle);
+                    ESP_LOGW(TAG, "set_str(%s) failed: %s", NVS_KEY_INSTALLED_PART, esp_err_to_name(err));
+                    nvs_store_close(handle);
                     return err;
                 }
                 label_changed = true;
             }
         } else {
             if (label_err != ESP_ERR_NVS_NOT_FOUND) {
-                ESP_LOGW(TAG, "nvs_get_str(%s) failed: %s", NVS_KEY_INSTALLED_PART, esp_err_to_name(label_err));
+                ESP_LOGW(TAG, "get_str(%s) failed: %s", NVS_KEY_INSTALLED_PART, esp_err_to_name(label_err));
             }
-            err = nvs_set_str(handle, NVS_KEY_INSTALLED_PART, partition_label);
+            err = nvs_store_set_str(handle, NVS_KEY_INSTALLED_PART, partition_label);
             if (err != ESP_OK) {
-                ESP_LOGW(TAG, "nvs_set_str(%s) failed: %s", NVS_KEY_INSTALLED_PART, esp_err_to_name(err));
-                nvs_close(handle);
+                ESP_LOGW(TAG, "set_str(%s) failed: %s", NVS_KEY_INSTALLED_PART, esp_err_to_name(err));
+                nvs_store_close(handle);
                 return err;
             }
             label_changed = true;
@@ -210,10 +209,9 @@ static esp_err_t store_installed_version_if_needed(const char *version,
     }
 
     if (version_changed || label_changed) {
-        err = nvs_commit(handle);
+        err = nvs_store_commit_and_close(handle);
         if (err != ESP_OK) {
-            ESP_LOGW(TAG, "nvs_commit(installed metadata) failed: %s", esp_err_to_name(err));
-            nvs_close(handle);
+            ESP_LOGW(TAG, "commit(installed metadata) failed: %s", esp_err_to_name(err));
             return err;
         }
         if (label_changed && partition_label && partition_label[0] != '\0') {
@@ -226,7 +224,7 @@ static esp_err_t store_installed_version_if_needed(const char *version,
         ESP_LOGD(TAG, "Installed firmware metadata unchanged");
     }
 
-    nvs_close(handle);
+    nvs_store_close(handle);
     return ESP_OK;
 }
 
@@ -236,7 +234,7 @@ static bool load_installed_version(char *version, size_t version_len) {
     }
 
     nvs_handle_t handle;
-    esp_err_t err = nvs_open(NVS_NS_FWCFG, NVS_READONLY, &handle);
+    esp_err_t err = nvs_store_open_ro(NVS_NS_FWCFG, &handle);
     if (err != ESP_OK) {
         ESP_LOGD(TAG, "Unable to open fwcfg namespace for installed version: %s",
                  esp_err_to_name(err));
@@ -244,14 +242,14 @@ static bool load_installed_version(char *version, size_t version_len) {
     }
 
     size_t required = version_len;
-    err = nvs_get_str(handle, NVS_KEY_INSTALLED_VER, version, &required);
-    nvs_close(handle);
+    err = nvs_store_get_str(handle, NVS_KEY_INSTALLED_VER, version, &required);
+    nvs_store_close(handle);
     if (err == ESP_OK) {
         return true;
     }
 
     if (err != ESP_ERR_NVS_NOT_FOUND) {
-        ESP_LOGW(TAG, "nvs_get_str(installed_ver) failed: %s", esp_err_to_name(err));
+        ESP_LOGW(TAG, "get_str(installed_ver) failed: %s", esp_err_to_name(err));
     } else {
         ESP_LOGD(TAG, "Installed firmware version not stored in NVS");
     }
@@ -264,7 +262,7 @@ static bool load_installed_partition_label(char *label, size_t label_len) {
     }
 
     nvs_handle_t handle;
-    esp_err_t err = nvs_open(NVS_NS_FWCFG, NVS_READONLY, &handle);
+    esp_err_t err = nvs_store_open_ro(NVS_NS_FWCFG, &handle);
     if (err != ESP_OK) {
         ESP_LOGD(TAG, "Unable to open fwcfg namespace for partition label: %s",
                  esp_err_to_name(err));
@@ -272,14 +270,14 @@ static bool load_installed_partition_label(char *label, size_t label_len) {
     }
 
     size_t required = label_len;
-    err = nvs_get_str(handle, NVS_KEY_INSTALLED_PART, label, &required);
-    nvs_close(handle);
+    err = nvs_store_get_str(handle, NVS_KEY_INSTALLED_PART, label, &required);
+    nvs_store_close(handle);
     if (err == ESP_OK) {
         return true;
     }
 
     if (err != ESP_ERR_NVS_NOT_FOUND) {
-        ESP_LOGW(TAG, "nvs_get_str(%s) failed: %s", NVS_KEY_INSTALLED_PART, esp_err_to_name(err));
+        ESP_LOGW(TAG, "get_str(%s) failed: %s", NVS_KEY_INSTALLED_PART, esp_err_to_name(err));
     } else {
         ESP_LOGD(TAG, "Installed partition label not stored in NVS");
     }
