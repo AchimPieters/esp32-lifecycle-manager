@@ -1,6 +1,8 @@
 set(JSON_COMPONENT json)
+set(DRIVER_COMPONENT driver)
 if(DEFINED IDF_VERSION_MAJOR AND IDF_VERSION_MAJOR GREATER_EQUAL 6)
     set(JSON_COMPONENT cjson)
+    set(DRIVER_COMPONENT esp_driver_gpio)
 endif()
 
 idf_component_register(
@@ -21,7 +23,7 @@ idf_component_register(
         freertos
         esp_wifi
         nvs_flash
-        driver
+        ${DRIVER_COMPONENT}
         esp_event
         esp_netif
         esp_timer
