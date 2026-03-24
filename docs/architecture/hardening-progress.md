@@ -42,6 +42,11 @@ This audit maps the requested hardening program to the current repository state 
 - On-device fault-injection and long-run soak validation in manufacturing/staging hardware labs.
 - Periodic operational drills for signing-key incident response.
 
+## Belangrijkste bevindingen (verbeterkansen)
+- NVS-initialisatie is nu fail-fast/recovery-guarded in zowel `main.c` als Wi-Fi configuratiepaden om opstart met half-initialized NVS te voorkomen.
+- GPIO-bounds checks zijn chip-cap aware (`SOC_GPIO_PIN_COUNT`) om board-/target-specifieke pinlimieten correct af te dwingen.
+- CI/component/support-matrix target consistency is automatisch afgedekt met regressietests.
+
 ## Repository hardening status
 - All previously tracked high-priority repository changes are implemented.
 - Hardening controls now include:

@@ -147,7 +147,16 @@ static void sysparam_init(void) {
         if (!initialized) {
                 ESP_LOGD("wifi_config", "Initializing NVS for WiFi config");
                 esp_err_t err = nvs_flash_init();
-                if (err != ESP_OK) {
+                if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+                        ESP_LOGW("wifi_config", "NVS init requires recovery (%s), erasing NVS partition", esp_err_to_name(err));
+                        esp_err_t erase_err = nvs_flash_erase();
+                        if (erase_err != ESP_OK) {
+                                ESP_LOGE("wifi_config", "nvs_flash_erase failed: %s", esp_err_to_name(erase_err));
+                        } else {
+                                err = nvs_flash_init();
+                        }
+                }
+                if (err != ESP_OK && err != ESP_ERR_NVS_INVALID_STATE) {
                         ESP_LOGE("wifi_config", "nvs_flash_init failed: %s", esp_err_to_name(err));
                 }
                 err = nvs_store_open_rw(NVS_NS_WIFI_CFG, &wifi_cfg_handle);
