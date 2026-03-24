@@ -1,6 +1,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdbool.h>
+#include <time.h>
 #include "esp_log.h"
 #include "esp_https_ota.h"
 #include "esp_http_client.h"
@@ -12,11 +13,11 @@
 #include "mbedtls/pk.h"
 #include "esp_image_format.h"
 #include "cJSON.h"
-#include "nvs.h"
 #include "nvs_flash.h"
 #include "github_update.h"
 #include "led_indicator.h"
 #include "nvs_keys.h"
+#include "nvs_store.h"
 
 static const char *TAG = "github_update";
 
@@ -30,6 +31,164 @@ static const char *TAG = "github_update";
 #define OTA_SIG_ALGO_ECDSA_P256_SHA256 1U
 #define OTA_SIG_MAX_LEN 512U
 #define INSTALLED_LABEL_MAX_LEN (ESP_PARTITION_LABEL_MAX_LEN + 1)
+typedef enum {
+    OTA_STATE_IDLE = 0,
+    OTA_STATE_CHECKING_RELEASE,
+    OTA_STATE_DOWNLOADING,
+    OTA_STATE_VERIFYING,
+    OTA_STATE_STAGING,
+    OTA_STATE_ACTIVATING,
+    OTA_STATE_FAILED,
+    OTA_STATE_REBOOTING,
+} ota_state_t;
+
+static const char *OTA_REASON_NONE = "none";
+static const char *OTA_REASON_RELEASE_API_FAILURE = "release_api_failure";
+static const char *OTA_REASON_MISSING_ASSET = "missing_asset";
+static const char *OTA_REASON_INVALID_SIGNATURE = "invalid_signature";
+static const char *OTA_REASON_INVALID_IMAGE_LENGTH = "invalid_image_length";
+static const char *OTA_REASON_PARTITION_UNAVAILABLE = "partition_unavailable";
+static const char *OTA_REASON_BOOT_PARTITION_SET_FAILURE = "boot_partition_set_failure";
+static const char *OTA_REASON_HTTP_FAILURE = "http_failure";
+
+static const char *ota_state_to_str(ota_state_t state) {
+    switch (state) {
+    case OTA_STATE_IDLE: return "IDLE";
+    case OTA_STATE_CHECKING_RELEASE: return "CHECKING_RELEASE";
+    case OTA_STATE_DOWNLOADING: return "DOWNLOADING";
+    case OTA_STATE_VERIFYING: return "VERIFYING";
+    case OTA_STATE_STAGING: return "STAGING";
+    case OTA_STATE_ACTIVATING: return "ACTIVATING";
+    case OTA_STATE_FAILED: return "FAILED";
+    case OTA_STATE_REBOOTING: return "REBOOTING";
+    default: return "UNKNOWN";
+    }
+}
+
+static bool ota_state_from_str(const char *state_str, ota_state_t *out_state) {
+    if (!state_str || !out_state) {
+        return false;
+    }
+    if (strcmp(state_str, "IDLE") == 0) {
+        *out_state = OTA_STATE_IDLE;
+        return true;
+    }
+    if (strcmp(state_str, "CHECKING_RELEASE") == 0) {
+        *out_state = OTA_STATE_CHECKING_RELEASE;
+        return true;
+    }
+    if (strcmp(state_str, "DOWNLOADING") == 0) {
+        *out_state = OTA_STATE_DOWNLOADING;
+        return true;
+    }
+    if (strcmp(state_str, "VERIFYING") == 0) {
+        *out_state = OTA_STATE_VERIFYING;
+        return true;
+    }
+    if (strcmp(state_str, "STAGING") == 0) {
+        *out_state = OTA_STATE_STAGING;
+        return true;
+    }
+    if (strcmp(state_str, "ACTIVATING") == 0) {
+        *out_state = OTA_STATE_ACTIVATING;
+        return true;
+    }
+    if (strcmp(state_str, "FAILED") == 0) {
+        *out_state = OTA_STATE_FAILED;
+        return true;
+    }
+    if (strcmp(state_str, "REBOOTING") == 0) {
+        *out_state = OTA_STATE_REBOOTING;
+        return true;
+    }
+    return false;
+}
+
+static bool ota_transition_allowed(ota_state_t current, ota_state_t next) {
+    switch (current) {
+    case OTA_STATE_IDLE:
+        return next == OTA_STATE_CHECKING_RELEASE;
+    case OTA_STATE_CHECKING_RELEASE:
+        return next == OTA_STATE_IDLE || next == OTA_STATE_DOWNLOADING || next == OTA_STATE_FAILED;
+    case OTA_STATE_DOWNLOADING:
+        return next == OTA_STATE_VERIFYING || next == OTA_STATE_FAILED;
+    case OTA_STATE_VERIFYING:
+        return next == OTA_STATE_STAGING || next == OTA_STATE_FAILED;
+    case OTA_STATE_STAGING:
+        return next == OTA_STATE_ACTIVATING || next == OTA_STATE_FAILED;
+    case OTA_STATE_ACTIVATING:
+        return next == OTA_STATE_REBOOTING || next == OTA_STATE_FAILED;
+    case OTA_STATE_FAILED:
+        return next == OTA_STATE_CHECKING_RELEASE || next == OTA_STATE_IDLE;
+    case OTA_STATE_REBOOTING:
+        return false;
+    default:
+        return false;
+    }
+}
+
+static esp_err_t ota_persist_state(ota_state_t state, esp_err_t last_error,
+                                   const char *repo, const char *last_seen_version,
+                                   const char *last_success_version,
+                                   const char *failure_reason) {
+    nvs_handle_t h;
+    esp_err_t err = nvs_store_open_rw(NVS_NS_FWCFG, &h);
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    char current_state_str[16];
+    size_t current_len = sizeof(current_state_str);
+    esp_err_t current_err = nvs_store_get_str(h, NVS_KEY_OTA_STATE, current_state_str, &current_len);
+    if (current_err == ESP_OK) {
+        ota_state_t current_state = OTA_STATE_IDLE;
+        if (ota_state_from_str(current_state_str, &current_state) &&
+            !ota_transition_allowed(current_state, state)) {
+            ESP_LOGW(TAG, "Rejected invalid OTA transition: %s -> %s",
+                     current_state_str, ota_state_to_str(state));
+            nvs_store_close(h);
+            return ESP_ERR_INVALID_STATE;
+        }
+    } else if (current_err != ESP_ERR_NVS_NOT_FOUND) {
+        ESP_LOGW(TAG, "Failed to load current OTA state: %s", esp_err_to_name(current_err));
+    }
+
+    err = nvs_store_set_str(h, NVS_KEY_OTA_STATE, ota_state_to_str(state));
+    if (err == ESP_OK) {
+        err = nvs_store_set_i32(h, NVS_KEY_OTA_LAST_ERR, (int32_t)last_error);
+    }
+    if (err == ESP_OK) {
+        err = nvs_store_set_u32(h, NVS_KEY_OTA_LAST_ATTEMPT, (uint32_t)time(NULL));
+    }
+    if (err == ESP_OK && repo && repo[0] != '\0') {
+        err = nvs_store_set_str(h, NVS_KEY_OTA_SOURCE_REPO, repo);
+    }
+    if (err == ESP_OK && last_seen_version && last_seen_version[0] != '\0') {
+        err = nvs_store_set_str(h, NVS_KEY_OTA_LAST_SEEN_VER, last_seen_version);
+    }
+    if (err == ESP_OK && last_success_version && last_success_version[0] != '\0') {
+        err = nvs_store_set_str(h, NVS_KEY_OTA_LAST_OK_VER, last_success_version);
+    }
+    if (err == ESP_OK && failure_reason && failure_reason[0] != '\0') {
+        err = nvs_store_set_str(h, NVS_KEY_OTA_LAST_REASON, failure_reason);
+    }
+    if (err == ESP_OK) {
+        err = nvs_store_commit_and_close(h);
+    } else {
+        nvs_store_close(h);
+    }
+
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Failed to persist OTA state %s: %s",
+                 ota_state_to_str(state), esp_err_to_name(err));
+        return err;
+    }
+
+    ESP_LOGI(TAG, "OTA state => %s (err=%s, reason=%s)",
+             ota_state_to_str(state), esp_err_to_name(last_error),
+             failure_reason ? failure_reason : OTA_REASON_NONE);
+    return ESP_OK;
+}
 
 static bool parse_version(const char *str, int *maj, int *min, int *pat) {
     *maj = *min = *pat = 0;
@@ -64,9 +223,9 @@ static esp_err_t store_installed_version_if_needed(const char *version,
     strlcpy(truncated, version, sizeof(truncated));
 
     nvs_handle_t handle;
-    esp_err_t err = nvs_open(NVS_NS_FWCFG, NVS_READWRITE, &handle);
+    esp_err_t err = nvs_store_open_rw(NVS_NS_FWCFG, &handle);
     if (err != ESP_OK) {
-        ESP_LOGW(TAG, "nvs_open(fwcfg) failed when storing version: %s", esp_err_to_name(err));
+        ESP_LOGW(TAG, "open_rw(fwcfg) failed when storing version: %s", esp_err_to_name(err));
         return err;
     }
 
@@ -75,25 +234,25 @@ static esp_err_t store_installed_version_if_needed(const char *version,
 
     char existing[INSTALLED_VER_MAX_LEN];
     size_t existing_len = sizeof(existing);
-    esp_err_t get_err = nvs_get_str(handle, NVS_KEY_INSTALLED_VER, existing, &existing_len);
+    esp_err_t get_err = nvs_store_get_str(handle, NVS_KEY_INSTALLED_VER, existing, &existing_len);
     if (get_err == ESP_OK) {
         if (strcmp(existing, truncated) != 0) {
-            err = nvs_set_str(handle, NVS_KEY_INSTALLED_VER, truncated);
+            err = nvs_store_set_str(handle, NVS_KEY_INSTALLED_VER, truncated);
             if (err != ESP_OK) {
-                ESP_LOGW(TAG, "nvs_set_str(installed_ver) failed: %s", esp_err_to_name(err));
-                nvs_close(handle);
+                ESP_LOGW(TAG, "set_str(installed_ver) failed: %s", esp_err_to_name(err));
+                nvs_store_close(handle);
                 return err;
             }
             version_changed = true;
         }
     } else {
         if (get_err != ESP_ERR_NVS_NOT_FOUND) {
-            ESP_LOGW(TAG, "nvs_get_str(installed_ver) failed: %s", esp_err_to_name(get_err));
+            ESP_LOGW(TAG, "get_str(installed_ver) failed: %s", esp_err_to_name(get_err));
         }
-        err = nvs_set_str(handle, NVS_KEY_INSTALLED_VER, truncated);
+        err = nvs_store_set_str(handle, NVS_KEY_INSTALLED_VER, truncated);
         if (err != ESP_OK) {
-            ESP_LOGW(TAG, "nvs_set_str(installed_ver) failed: %s", esp_err_to_name(err));
-            nvs_close(handle);
+            ESP_LOGW(TAG, "set_str(installed_ver) failed: %s", esp_err_to_name(err));
+            nvs_store_close(handle);
             return err;
         }
         version_changed = true;
@@ -102,25 +261,25 @@ static esp_err_t store_installed_version_if_needed(const char *version,
     if (partition_label && partition_label[0] != '\0') {
         char existing_label[INSTALLED_LABEL_MAX_LEN];
         size_t label_len = sizeof(existing_label);
-        esp_err_t label_err = nvs_get_str(handle, NVS_KEY_INSTALLED_PART, existing_label, &label_len);
+        esp_err_t label_err = nvs_store_get_str(handle, NVS_KEY_INSTALLED_PART, existing_label, &label_len);
         if (label_err == ESP_OK) {
             if (strcmp(existing_label, partition_label) != 0) {
-                err = nvs_set_str(handle, NVS_KEY_INSTALLED_PART, partition_label);
+                err = nvs_store_set_str(handle, NVS_KEY_INSTALLED_PART, partition_label);
                 if (err != ESP_OK) {
-                    ESP_LOGW(TAG, "nvs_set_str(%s) failed: %s", NVS_KEY_INSTALLED_PART, esp_err_to_name(err));
-                    nvs_close(handle);
+                    ESP_LOGW(TAG, "set_str(%s) failed: %s", NVS_KEY_INSTALLED_PART, esp_err_to_name(err));
+                    nvs_store_close(handle);
                     return err;
                 }
                 label_changed = true;
             }
         } else {
             if (label_err != ESP_ERR_NVS_NOT_FOUND) {
-                ESP_LOGW(TAG, "nvs_get_str(%s) failed: %s", NVS_KEY_INSTALLED_PART, esp_err_to_name(label_err));
+                ESP_LOGW(TAG, "get_str(%s) failed: %s", NVS_KEY_INSTALLED_PART, esp_err_to_name(label_err));
             }
-            err = nvs_set_str(handle, NVS_KEY_INSTALLED_PART, partition_label);
+            err = nvs_store_set_str(handle, NVS_KEY_INSTALLED_PART, partition_label);
             if (err != ESP_OK) {
-                ESP_LOGW(TAG, "nvs_set_str(%s) failed: %s", NVS_KEY_INSTALLED_PART, esp_err_to_name(err));
-                nvs_close(handle);
+                ESP_LOGW(TAG, "set_str(%s) failed: %s", NVS_KEY_INSTALLED_PART, esp_err_to_name(err));
+                nvs_store_close(handle);
                 return err;
             }
             label_changed = true;
@@ -128,10 +287,9 @@ static esp_err_t store_installed_version_if_needed(const char *version,
     }
 
     if (version_changed || label_changed) {
-        err = nvs_commit(handle);
+        err = nvs_store_commit_and_close(handle);
         if (err != ESP_OK) {
-            ESP_LOGW(TAG, "nvs_commit(installed metadata) failed: %s", esp_err_to_name(err));
-            nvs_close(handle);
+            ESP_LOGW(TAG, "commit(installed metadata) failed: %s", esp_err_to_name(err));
             return err;
         }
         if (label_changed && partition_label && partition_label[0] != '\0') {
@@ -144,7 +302,7 @@ static esp_err_t store_installed_version_if_needed(const char *version,
         ESP_LOGD(TAG, "Installed firmware metadata unchanged");
     }
 
-    nvs_close(handle);
+    nvs_store_close(handle);
     return ESP_OK;
 }
 
@@ -154,7 +312,7 @@ static bool load_installed_version(char *version, size_t version_len) {
     }
 
     nvs_handle_t handle;
-    esp_err_t err = nvs_open(NVS_NS_FWCFG, NVS_READONLY, &handle);
+    esp_err_t err = nvs_store_open_ro(NVS_NS_FWCFG, &handle);
     if (err != ESP_OK) {
         ESP_LOGD(TAG, "Unable to open fwcfg namespace for installed version: %s",
                  esp_err_to_name(err));
@@ -162,14 +320,14 @@ static bool load_installed_version(char *version, size_t version_len) {
     }
 
     size_t required = version_len;
-    err = nvs_get_str(handle, NVS_KEY_INSTALLED_VER, version, &required);
-    nvs_close(handle);
+    err = nvs_store_get_str(handle, NVS_KEY_INSTALLED_VER, version, &required);
+    nvs_store_close(handle);
     if (err == ESP_OK) {
         return true;
     }
 
     if (err != ESP_ERR_NVS_NOT_FOUND) {
-        ESP_LOGW(TAG, "nvs_get_str(installed_ver) failed: %s", esp_err_to_name(err));
+        ESP_LOGW(TAG, "get_str(installed_ver) failed: %s", esp_err_to_name(err));
     } else {
         ESP_LOGD(TAG, "Installed firmware version not stored in NVS");
     }
@@ -182,7 +340,7 @@ static bool load_installed_partition_label(char *label, size_t label_len) {
     }
 
     nvs_handle_t handle;
-    esp_err_t err = nvs_open(NVS_NS_FWCFG, NVS_READONLY, &handle);
+    esp_err_t err = nvs_store_open_ro(NVS_NS_FWCFG, &handle);
     if (err != ESP_OK) {
         ESP_LOGD(TAG, "Unable to open fwcfg namespace for partition label: %s",
                  esp_err_to_name(err));
@@ -190,14 +348,14 @@ static bool load_installed_partition_label(char *label, size_t label_len) {
     }
 
     size_t required = label_len;
-    err = nvs_get_str(handle, NVS_KEY_INSTALLED_PART, label, &required);
-    nvs_close(handle);
+    err = nvs_store_get_str(handle, NVS_KEY_INSTALLED_PART, label, &required);
+    nvs_store_close(handle);
     if (err == ESP_OK) {
         return true;
     }
 
     if (err != ESP_ERR_NVS_NOT_FOUND) {
-        ESP_LOGW(TAG, "nvs_get_str(%s) failed: %s", NVS_KEY_INSTALLED_PART, esp_err_to_name(err));
+        ESP_LOGW(TAG, "get_str(%s) failed: %s", NVS_KEY_INSTALLED_PART, esp_err_to_name(err));
     } else {
         ESP_LOGD(TAG, "Installed partition label not stored in NVS");
     }
@@ -206,15 +364,15 @@ static bool load_installed_partition_label(char *label, size_t label_len) {
 
 static bool read_update_request_flag(void) {
     nvs_handle_t handle;
-    esp_err_t err = nvs_open(NVS_NS_LCM, NVS_READONLY, &handle);
+    esp_err_t err = nvs_store_open_ro(NVS_NS_LCM, &handle);
     if (err != ESP_OK) {
         ESP_LOGD(TAG, "No update request flag present: %s", esp_err_to_name(err));
         return false;
     }
 
     uint8_t flag = 0;
-    err = nvs_get_u8(handle, NVS_KEY_DO_UPDATE, &flag);
-    nvs_close(handle);
+    err = nvs_store_get_u8(handle, NVS_KEY_DO_UPDATE, &flag);
+    nvs_store_close(handle);
     if (err == ESP_OK) {
         return flag != 0;
     }
@@ -227,34 +385,29 @@ static bool read_update_request_flag(void) {
 
 static esp_err_t write_update_request_flag(bool value) {
     nvs_handle_t handle;
-    esp_err_t err = nvs_open(NVS_NS_LCM, NVS_READWRITE, &handle);
+    esp_err_t err = nvs_store_open_rw(NVS_NS_LCM, &handle);
     if (err != ESP_OK) {
-        ESP_LOGW(TAG, "nvs_open(lcm) failed when updating flag: %s", esp_err_to_name(err));
         return err;
     }
 
     uint8_t current = 0;
-    esp_err_t get_err = nvs_get_u8(handle, NVS_KEY_DO_UPDATE, &current);
+    esp_err_t get_err = nvs_store_get_u8(handle, NVS_KEY_DO_UPDATE, &current);
     if (get_err == ESP_OK && current == (value ? 1 : 0)) {
-        nvs_close(handle);
+        nvs_store_close(handle);
         return ESP_OK;
     }
 
-    err = nvs_set_u8(handle, NVS_KEY_DO_UPDATE, value ? 1 : 0);
+    err = nvs_store_set_u8(handle, NVS_KEY_DO_UPDATE, value ? 1 : 0);
     if (err != ESP_OK) {
-        ESP_LOGW(TAG, "nvs_set_u8(do_update) failed: %s", esp_err_to_name(err));
-        nvs_close(handle);
+        nvs_store_close(handle);
         return err;
     }
 
-    err = nvs_commit(handle);
+    err = nvs_store_commit_and_close(handle);
     if (err != ESP_OK) {
-        ESP_LOGW(TAG, "nvs_commit(do_update) failed: %s", esp_err_to_name(err));
-        nvs_close(handle);
         return err;
     }
 
-    nvs_close(handle);
     ESP_LOGD(TAG, "Update request flag set to %d", value ? 1 : 0);
     return ESP_OK;
 }
@@ -340,38 +493,34 @@ static esp_err_t set_boot_partition_for_installed_firmware(int maj, int min, int
 esp_err_t save_fw_config(const char *repo, bool pre) {
     ESP_LOGD(TAG, "Saving firmware config repo=%s pre=%d", repo ? repo : "(null)", pre);
     nvs_handle_t h;
-    esp_err_t err = nvs_open(NVS_NS_FWCFG, NVS_READWRITE, &h);
+    esp_err_t err = nvs_store_open_rw(NVS_NS_FWCFG, &h);
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "nvs_open failed: %s", esp_err_to_name(err));
         return err;
     }
 
-    if ((err = nvs_set_str(h, NVS_KEY_FW_REPO, repo ? repo : "")) != ESP_OK) {
-        ESP_LOGE(TAG, "nvs_set_str failed: %s", esp_err_to_name(err));
-        nvs_close(h);
+    if ((err = nvs_store_set_str(h, NVS_KEY_FW_REPO, repo ? repo : "")) != ESP_OK) {
+        nvs_store_close(h);
         return err;
     }
 
-    if ((err = nvs_set_u8(h, NVS_KEY_FW_PRE, pre ? 1 : 0)) != ESP_OK) {
-        ESP_LOGE(TAG, "nvs_set_u8 failed: %s", esp_err_to_name(err));
-        nvs_close(h);
+    if ((err = nvs_store_set_u8(h, NVS_KEY_FW_PRE, pre ? 1 : 0)) != ESP_OK) {
+        nvs_store_close(h);
         return err;
     }
 
-    err = nvs_commit(h);
+    err = nvs_store_commit_and_close(h);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "nvs_commit failed: %s", esp_err_to_name(err));
     } else {
         ESP_LOGD(TAG, "Firmware config saved");
     }
-    nvs_close(h);
     return err;
 }
 
 bool load_fw_config(char *repo, size_t repo_len, bool *pre) {
     ESP_LOGD(TAG, "Loading firmware config");
     nvs_handle_t h;
-    esp_err_t err = nvs_open(NVS_NS_FWCFG, NVS_READONLY, &h);
+    esp_err_t err = nvs_store_open_ro(NVS_NS_FWCFG, &h);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "fwcfg namespace not found");
         return false;
@@ -379,32 +528,31 @@ bool load_fw_config(char *repo, size_t repo_len, bool *pre) {
 
     if (repo) {
         size_t len = repo_len;
-        err = nvs_get_str(h, NVS_KEY_FW_REPO, repo, &len);
+        err = nvs_store_get_str(h, NVS_KEY_FW_REPO, repo, &len);
         if (err != ESP_OK) {
             ESP_LOGW(TAG, "nvs_get_str(repo) failed: %s", esp_err_to_name(err));
-            nvs_close(h);
+            nvs_store_close(h);
             return false;
         }
     }
 
     uint8_t pre_u8;
-    err = nvs_get_u8(h, NVS_KEY_FW_PRE, &pre_u8);
+    err = nvs_store_get_u8(h, NVS_KEY_FW_PRE, &pre_u8);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "nvs_get_u8(pre) failed: %s", esp_err_to_name(err));
-        nvs_close(h);
+        nvs_store_close(h);
         return false;
     }
     if (pre) *pre = pre_u8 != 0;
-    nvs_close(h);
+    nvs_store_close(h);
     ESP_LOGD(TAG, "Loaded firmware config repo=%s pre=%d", repo ? repo : "(null)", pre ? *pre : pre_u8);
     return true;
 }
 
 esp_err_t save_led_config(bool enabled, int gpio, bool active_high) {
     nvs_handle_t h;
-    esp_err_t err = nvs_open(NVS_NS_FWCFG, NVS_READWRITE, &h);
+    esp_err_t err = nvs_store_open_rw(NVS_NS_FWCFG, &h);
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "nvs_open failed: %s", esp_err_to_name(err));
         return err;
     }
 
@@ -415,36 +563,32 @@ esp_err_t save_led_config(bool enabled, int gpio, bool active_high) {
         gpio = -1;
     }
 
-    if ((err = nvs_set_u8(h, NVS_KEY_LED_ENABLED, enabled ? 1 : 0)) != ESP_OK) {
-        ESP_LOGE(TAG, "nvs_set_u8(led_en) failed: %s", esp_err_to_name(err));
-        nvs_close(h);
+    if ((err = nvs_store_set_u8(h, NVS_KEY_LED_ENABLED, enabled ? 1 : 0)) != ESP_OK) {
+        nvs_store_close(h);
         return err;
     }
 
-    if ((err = nvs_set_i32(h, NVS_KEY_LED_GPIO, gpio)) != ESP_OK) {
-        ESP_LOGE(TAG, "nvs_set_i32(led_gpio) failed: %s", esp_err_to_name(err));
-        nvs_close(h);
+    if ((err = nvs_store_set_i32(h, NVS_KEY_LED_GPIO, gpio)) != ESP_OK) {
+        nvs_store_close(h);
         return err;
     }
 
-    if ((err = nvs_set_u8(h, NVS_KEY_LED_LEVEL, active_high ? 1 : 0)) != ESP_OK) {
-        ESP_LOGE(TAG, "nvs_set_u8(led_lvl) failed: %s", esp_err_to_name(err));
-        nvs_close(h);
+    if ((err = nvs_store_set_u8(h, NVS_KEY_LED_LEVEL, active_high ? 1 : 0)) != ESP_OK) {
+        nvs_store_close(h);
         return err;
     }
 
-    err = nvs_commit(h);
+    err = nvs_store_commit_and_close(h);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "nvs_commit failed: %s", esp_err_to_name(err));
     }
     ESP_LOGD(TAG, "Saved LED config enabled=%d gpio=%d active_high=%d", enabled, gpio, active_high);
-    nvs_close(h);
     return err;
 }
 
 bool load_led_config(bool *enabled, int *gpio, bool *active_high) {
     nvs_handle_t h;
-    esp_err_t err = nvs_open(NVS_NS_FWCFG, NVS_READONLY, &h);
+    esp_err_t err = nvs_store_open_ro(NVS_NS_FWCFG, &h);
     if (err != ESP_OK) {
         return false;
     }
@@ -452,22 +596,22 @@ bool load_led_config(bool *enabled, int *gpio, bool *active_high) {
     uint8_t en;
     int32_t pin;
     uint8_t level = 0;
-    err = nvs_get_u8(h, NVS_KEY_LED_ENABLED, &en);
+    err = nvs_store_get_u8(h, NVS_KEY_LED_ENABLED, &en);
     if (err != ESP_OK) {
-        nvs_close(h);
+        nvs_store_close(h);
         return false;
     }
-    err = nvs_get_i32(h, NVS_KEY_LED_GPIO, &pin);
+    err = nvs_store_get_i32(h, NVS_KEY_LED_GPIO, &pin);
     if (err != ESP_OK) {
-        nvs_close(h);
+        nvs_store_close(h);
         return false;
     }
-    err = nvs_get_u8(h, NVS_KEY_LED_LEVEL, &level);
+    err = nvs_store_get_u8(h, NVS_KEY_LED_LEVEL, &level);
     if (err != ESP_OK) {
         if (err == ESP_ERR_NVS_NOT_FOUND) {
             level = 0;
         } else {
-            nvs_close(h);
+            nvs_store_close(h);
             return false;
         }
     }
@@ -478,7 +622,7 @@ bool load_led_config(bool *enabled, int *gpio, bool *active_high) {
     if (enabled) *enabled = en != 0;
     if (gpio) *gpio = (int)pin;
     if (active_high) *active_high = level != 0;
-    nvs_close(h);
+    nvs_store_close(h);
     return true;
 }
 
@@ -700,6 +844,7 @@ static esp_err_t verify_signature_blob(const uint8_t *sig_blob, size_t sig_len,
 
 esp_err_t github_update_from_urls(const char *fw_url, const char *sig_url,
                                   const char *release_version) {
+    (void)ota_persist_state(OTA_STATE_DOWNLOADING, ESP_OK, NULL, release_version, NULL, OTA_REASON_NONE);
     ESP_LOGI(TAG, "Downloading signature from %s", sig_url);
     uint8_t sig[OTA_SIG_MAX_LEN];
     size_t sig_len = 0;
@@ -713,6 +858,7 @@ esp_err_t github_update_from_urls(const char *fw_url, const char *sig_url,
     const esp_partition_t *update_part = esp_ota_get_next_update_partition(NULL);
     if (!update_part) {
         ESP_LOGE(TAG, "No OTA partition available");
+        (void)ota_persist_state(OTA_STATE_FAILED, ESP_FAIL, NULL, release_version, NULL, OTA_REASON_PARTITION_UNAVAILABLE);
         return ESP_FAIL;
     }
     ESP_LOGI(TAG, "Using OTA partition at 0x%lx (%lu bytes)",
@@ -733,6 +879,7 @@ esp_err_t github_update_from_urls(const char *fw_url, const char *sig_url,
     ESP_LOGI(TAG, "Starting OTA from %s", fw_url);
     bool led_active = false;
     esp_err_t ret = ESP_OK;
+    const char *failure_reason = OTA_REASON_HTTP_FAILURE;
     led_blinking_start();
     led_active = true;
     ret = esp_https_ota(&ota_cfg);
@@ -742,6 +889,7 @@ esp_err_t github_update_from_urls(const char *fw_url, const char *sig_url,
         goto cleanup;
     }
     ESP_LOGI(TAG, "OTA download complete");
+    (void)ota_persist_state(OTA_STATE_VERIFYING, ESP_OK, NULL, release_version, NULL, OTA_REASON_NONE);
     esp_partition_pos_t pos = { .offset = update_part->address, .size = update_part->size };
     esp_image_metadata_t meta;
     esp_err_t meta_res = esp_image_get_metadata(&pos, &meta);
@@ -749,20 +897,27 @@ esp_err_t github_update_from_urls(const char *fw_url, const char *sig_url,
     if (meta_res != ESP_OK) {
         ESP_LOGE(TAG, "Failed to get image metadata: %s", esp_err_to_name(meta_res));
         ret = meta_res;
+        failure_reason = OTA_REASON_INVALID_IMAGE_LENGTH;
+        (void)ota_persist_state(OTA_STATE_FAILED, ret, NULL, release_version, NULL, OTA_REASON_INVALID_IMAGE_LENGTH);
         goto cleanup;
     }
+    (void)ota_persist_state(OTA_STATE_STAGING, ESP_OK, NULL, release_version, NULL, OTA_REASON_NONE);
     uint8_t actual[32];
     esp_err_t hash_res = partition_sha256(update_part, meta.image_len, actual);
     ESP_LOGD(TAG, "partition_sha256 -> %s", esp_err_to_name(hash_res));
     if (hash_res != ESP_OK) {
         ESP_LOGE(TAG, "Failed to compute image hash: %s", esp_err_to_name(hash_res));
         ret = hash_res;
+        failure_reason = OTA_REASON_INVALID_IMAGE_LENGTH;
+        (void)ota_persist_state(OTA_STATE_FAILED, ret, NULL, release_version, NULL, OTA_REASON_INVALID_IMAGE_LENGTH);
         goto cleanup;
     }
 
     ret = verify_signature_blob(sig, sig_len, meta.image_len, actual);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Signature validation failed: %s", esp_err_to_name(ret));
+        failure_reason = OTA_REASON_INVALID_SIGNATURE;
+        (void)ota_persist_state(OTA_STATE_FAILED, ret, NULL, release_version, NULL, OTA_REASON_INVALID_SIGNATURE);
         goto cleanup;
     }
     led_blinking_stop();
@@ -785,6 +940,7 @@ esp_err_t github_update_from_urls(const char *fw_url, const char *sig_url,
         }
     }
     if (version_to_store && version_to_store[0] != '\0') {
+        (void)ota_persist_state(OTA_STATE_ACTIVATING, ESP_OK, NULL, release_version, version_to_store, OTA_REASON_NONE);
         esp_err_t store_err = store_installed_version_if_needed(version_to_store,
                                                                 update_part->label);
         if (store_err != ESP_OK) {
@@ -796,6 +952,7 @@ esp_err_t github_update_from_urls(const char *fw_url, const char *sig_url,
     }
 
     ESP_LOGI(TAG, "Signed image verified, rebooting");
+    (void)ota_persist_state(OTA_STATE_REBOOTING, ESP_OK, NULL, release_version, version_to_store, OTA_REASON_NONE);
     esp_err_t flag_err = write_update_request_flag(false);
     if (flag_err != ESP_OK) {
         ESP_LOGW(TAG, "Failed to clear update request flag: %s", esp_err_to_name(flag_err));
@@ -804,6 +961,9 @@ esp_err_t github_update_from_urls(const char *fw_url, const char *sig_url,
     return ESP_OK;
 
 cleanup:
+    if (ret != ESP_OK) {
+        (void)ota_persist_state(OTA_STATE_FAILED, ret, NULL, release_version, NULL, failure_reason);
+    }
     if (led_active) {
         led_blinking_stop();
     }
@@ -811,6 +971,7 @@ cleanup:
 }
 
 esp_err_t github_update_if_needed(const char *repo, bool prerelease) {
+    (void)ota_persist_state(OTA_STATE_CHECKING_RELEASE, ESP_OK, repo, NULL, NULL, OTA_REASON_NONE);
     char api[256];
     snprintf(api, sizeof(api), "https://api.github.com/repos/%s/releases%s", repo,
              prerelease ? "?per_page=5" : "/latest");
@@ -854,11 +1015,16 @@ esp_err_t github_update_if_needed(const char *repo, bool prerelease) {
     ESP_LOGI(TAG, "Current firmware version %d.%d.%d (%s)", curMaj, curMin, curPat,
              using_stored_version ? "installed" : "factory");
     esp_http_client_handle_t client = esp_http_client_init(&cfg);
-    if (!client) { ESP_LOGE(TAG, "esp_http_client_init failed"); return ESP_FAIL; }
+    if (!client) {
+        ESP_LOGE(TAG, "esp_http_client_init failed");
+        (void)ota_persist_state(OTA_STATE_FAILED, ESP_FAIL, repo, NULL, NULL, OTA_REASON_RELEASE_API_FAILURE);
+        return ESP_FAIL;
+    }
     esp_err_t err = esp_http_client_open(client, 0);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "esp_http_client_open failed: %s", esp_err_to_name(err));
         esp_http_client_cleanup(client);
+        (void)ota_persist_state(OTA_STATE_FAILED, err, repo, NULL, NULL, OTA_REASON_HTTP_FAILURE);
         return err;
     }
     ESP_LOGD(TAG, "esp_http_client_open -> %s", esp_err_to_name(err));
@@ -868,10 +1034,11 @@ esp_err_t github_update_if_needed(const char *repo, bool prerelease) {
         ESP_LOGE(TAG, "esp_http_client_fetch_headers failed: errno=%d", esp_http_client_get_errno(client));
         esp_http_client_close(client);
         esp_http_client_cleanup(client);
+        (void)ota_persist_state(OTA_STATE_FAILED, ESP_FAIL, repo, NULL, NULL, OTA_REASON_HTTP_FAILURE);
         return ESP_FAIL;
     }
     char *data = malloc(len + 1);
-    if (!data) { ESP_LOGE(TAG, "malloc failed"); esp_http_client_close(client); esp_http_client_cleanup(client); return ESP_ERR_NO_MEM; }
+    if (!data) { ESP_LOGE(TAG, "malloc failed"); esp_http_client_close(client); esp_http_client_cleanup(client); (void)ota_persist_state(OTA_STATE_FAILED, ESP_ERR_NO_MEM, repo, NULL, NULL, OTA_REASON_RELEASE_API_FAILURE); return ESP_ERR_NO_MEM; }
     int read = esp_http_client_read_response(client, data, len);
     int status = esp_http_client_get_status_code(client);
     ESP_LOGD(TAG, "Read %d bytes with HTTP status %d", read, status);
@@ -880,6 +1047,7 @@ esp_err_t github_update_if_needed(const char *repo, bool prerelease) {
         free(data);
         esp_http_client_close(client);
         esp_http_client_cleanup(client);
+        (void)ota_persist_state(OTA_STATE_FAILED, ESP_FAIL, repo, NULL, NULL, OTA_REASON_HTTP_FAILURE);
         return ESP_FAIL;
     }
     data[read] = '\0';
@@ -888,7 +1056,7 @@ esp_err_t github_update_if_needed(const char *repo, bool prerelease) {
 
     cJSON *json = cJSON_Parse(data);
     free(data);
-    if (!json) { ESP_LOGE(TAG, "cJSON_Parse failed"); return ESP_FAIL; }
+    if (!json) { ESP_LOGE(TAG, "cJSON_Parse failed"); (void)ota_persist_state(OTA_STATE_FAILED, ESP_FAIL, repo, NULL, NULL, OTA_REASON_RELEASE_API_FAILURE); return ESP_FAIL; }
     ESP_LOGD(TAG, "Release JSON parsed");
 
     cJSON *release = NULL;
@@ -957,10 +1125,10 @@ esp_err_t github_update_if_needed(const char *repo, bool prerelease) {
             }
         }
     }
-    if (!release) { cJSON_Delete(json); ESP_LOGE(TAG, "No suitable release"); return ESP_FAIL; }
+    if (!release) { cJSON_Delete(json); ESP_LOGE(TAG, "No suitable release"); (void)ota_persist_state(OTA_STATE_FAILED, ESP_FAIL, repo, NULL, NULL, OTA_REASON_RELEASE_API_FAILURE); return ESP_FAIL; }
     ESP_LOGD(TAG, "Release selected");
     cJSON *assets = cJSON_GetObjectItem(release, "assets");
-    if (!cJSON_IsArray(assets)) { cJSON_Delete(json); return ESP_FAIL; }
+    if (!cJSON_IsArray(assets)) { cJSON_Delete(json); (void)ota_persist_state(OTA_STATE_FAILED, ESP_FAIL, repo, NULL, NULL, OTA_REASON_MISSING_ASSET); return ESP_FAIL; }
     const char *fw=NULL,*sig=NULL;
     cJSON *tag = cJSON_GetObjectItem(release, "tag_name");
     const char *raw_tag = cJSON_IsString(tag) ? tag->valuestring : NULL;
@@ -970,6 +1138,7 @@ esp_err_t github_update_if_needed(const char *repo, bool prerelease) {
     if (relValid) {
         snprintf(sanitized_version, sizeof(sanitized_version), "%d.%d.%d",
                  relMaj, relMin, relPat);
+        (void)ota_persist_state(OTA_STATE_CHECKING_RELEASE, ESP_OK, repo, sanitized_version, NULL, OTA_REASON_NONE);
     }
     ESP_LOGI(TAG, "Latest release version %d.%d.%d", relMaj, relMin, relPat);
     if (!relValid) {
@@ -1019,11 +1188,14 @@ esp_err_t github_update_if_needed(const char *repo, bool prerelease) {
                     }
                     ESP_LOGE(TAG, "Failed to select installed firmware partition: %s",
                              esp_err_to_name(boot_err));
+                    (void)ota_persist_state(OTA_STATE_FAILED, boot_err, repo, version_to_store, NULL,
+                                            OTA_REASON_BOOT_PARTITION_SET_FAILURE);
                 } else {
                     ESP_LOGW(TAG, "Update was requested but installed version could not be determined");
                 }
             }
             cJSON_Delete(json);
+            (void)ota_persist_state(OTA_STATE_IDLE, ESP_OK, repo, version_to_store, version_to_store, OTA_REASON_NONE);
             return ESP_OK;
         }
     }
@@ -1037,7 +1209,7 @@ esp_err_t github_update_if_needed(const char *repo, bool prerelease) {
             else if (!strcmp(name->valuestring, "main.bin.sig")) sig = url->valuestring;
         }
     }
-    if (!fw || !sig) { cJSON_Delete(json); ESP_LOGE(TAG, "Missing assets"); return ESP_FAIL; }
+    if (!fw || !sig) { cJSON_Delete(json); ESP_LOGE(TAG, "Missing assets"); (void)ota_persist_state(OTA_STATE_FAILED, ESP_FAIL, repo, sanitized_version, NULL, OTA_REASON_MISSING_ASSET); return ESP_FAIL; }
     ESP_LOGD(TAG, "Firmware URL: %s", fw);
     ESP_LOGD(TAG, "Signature URL: %s", sig);
     ESP_LOGI(TAG, "Release %s selected", cJSON_IsString(tag)?tag->valuestring:"?");
@@ -1045,6 +1217,11 @@ esp_err_t github_update_if_needed(const char *repo, bool prerelease) {
     esp_err_t res = github_update_from_urls(fw, sig,
                                             version_argument && version_argument[0] ? version_argument : NULL);
     ESP_LOGD(TAG, "github_update_from_urls -> %s", esp_err_to_name(res));
+    if (res == ESP_OK) {
+        (void)ota_persist_state(OTA_STATE_REBOOTING, ESP_OK, repo, version_argument, version_argument, OTA_REASON_NONE);
+    } else {
+        (void)ota_persist_state(OTA_STATE_FAILED, res, repo, version_argument, NULL, OTA_REASON_HTTP_FAILURE);
+    }
     cJSON_Delete(json);
     return res;
 }
