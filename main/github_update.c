@@ -65,6 +65,68 @@ static const char *ota_state_to_str(ota_state_t state) {
     }
 }
 
+static bool ota_state_from_str(const char *state_str, ota_state_t *out_state) {
+    if (!state_str || !out_state) {
+        return false;
+    }
+    if (strcmp(state_str, "IDLE") == 0) {
+        *out_state = OTA_STATE_IDLE;
+        return true;
+    }
+    if (strcmp(state_str, "CHECKING_RELEASE") == 0) {
+        *out_state = OTA_STATE_CHECKING_RELEASE;
+        return true;
+    }
+    if (strcmp(state_str, "DOWNLOADING") == 0) {
+        *out_state = OTA_STATE_DOWNLOADING;
+        return true;
+    }
+    if (strcmp(state_str, "VERIFYING") == 0) {
+        *out_state = OTA_STATE_VERIFYING;
+        return true;
+    }
+    if (strcmp(state_str, "STAGING") == 0) {
+        *out_state = OTA_STATE_STAGING;
+        return true;
+    }
+    if (strcmp(state_str, "ACTIVATING") == 0) {
+        *out_state = OTA_STATE_ACTIVATING;
+        return true;
+    }
+    if (strcmp(state_str, "FAILED") == 0) {
+        *out_state = OTA_STATE_FAILED;
+        return true;
+    }
+    if (strcmp(state_str, "REBOOTING") == 0) {
+        *out_state = OTA_STATE_REBOOTING;
+        return true;
+    }
+    return false;
+}
+
+static bool ota_transition_allowed(ota_state_t current, ota_state_t next) {
+    switch (current) {
+    case OTA_STATE_IDLE:
+        return next == OTA_STATE_CHECKING_RELEASE;
+    case OTA_STATE_CHECKING_RELEASE:
+        return next == OTA_STATE_IDLE || next == OTA_STATE_DOWNLOADING || next == OTA_STATE_FAILED;
+    case OTA_STATE_DOWNLOADING:
+        return next == OTA_STATE_VERIFYING || next == OTA_STATE_FAILED;
+    case OTA_STATE_VERIFYING:
+        return next == OTA_STATE_STAGING || next == OTA_STATE_FAILED;
+    case OTA_STATE_STAGING:
+        return next == OTA_STATE_ACTIVATING || next == OTA_STATE_FAILED;
+    case OTA_STATE_ACTIVATING:
+        return next == OTA_STATE_REBOOTING || next == OTA_STATE_FAILED;
+    case OTA_STATE_FAILED:
+        return next == OTA_STATE_CHECKING_RELEASE || next == OTA_STATE_IDLE;
+    case OTA_STATE_REBOOTING:
+        return false;
+    default:
+        return false;
+    }
+}
+
 static esp_err_t ota_persist_state(ota_state_t state, esp_err_t last_error,
                                    const char *repo, const char *last_seen_version,
                                    const char *last_success_version,
@@ -73,6 +135,22 @@ static esp_err_t ota_persist_state(ota_state_t state, esp_err_t last_error,
     esp_err_t err = nvs_store_open_rw(NVS_NS_FWCFG, &h);
     if (err != ESP_OK) {
         return err;
+    }
+
+    char current_state_str[16];
+    size_t current_len = sizeof(current_state_str);
+    esp_err_t current_err = nvs_store_get_str(h, NVS_KEY_OTA_STATE, current_state_str, &current_len);
+    if (current_err == ESP_OK) {
+        ota_state_t current_state = OTA_STATE_IDLE;
+        if (ota_state_from_str(current_state_str, &current_state) &&
+            !ota_transition_allowed(current_state, state)) {
+            ESP_LOGW(TAG, "Rejected invalid OTA transition: %s -> %s",
+                     current_state_str, ota_state_to_str(state));
+            nvs_store_close(h);
+            return ESP_ERR_INVALID_STATE;
+        }
+    } else if (current_err != ESP_ERR_NVS_NOT_FOUND) {
+        ESP_LOGW(TAG, "Failed to load current OTA state: %s", esp_err_to_name(current_err));
     }
 
     err = nvs_store_set_str(h, NVS_KEY_OTA_STATE, ota_state_to_str(state));

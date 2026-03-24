@@ -291,5 +291,18 @@ class PartitionLayoutTests(unittest.TestCase):
         self.assertEqual(ota0['size'], ota1['size'])
 
 
+class SourceHardeningTests(unittest.TestCase):
+    @staticmethod
+    def _github_update_source() -> str:
+        path = Path(__file__).resolve().parents[1] / 'main' / 'github_update.c'
+        return path.read_text(encoding='utf-8')
+
+    def test_ota_transition_guard_exists_in_source(self):
+        src = self._github_update_source()
+        self.assertIn('static bool ota_transition_allowed', src)
+        self.assertIn('Rejected invalid OTA transition', src)
+        self.assertIn('ESP_ERR_INVALID_STATE', src)
+
+
 if __name__ == '__main__':
     unittest.main()
