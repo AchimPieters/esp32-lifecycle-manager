@@ -8,7 +8,7 @@ menu "StudioPieters"
 
       config ESP_BUTTON_GPIO
               int "Button GPIO"
-              default 32
+              default 9
               help
                   GPIO van de knop (actief laag als je button_config_default(button_active_low) gebruikt).
 
