@@ -30,6 +30,7 @@ This audit maps the requested hardening program to the current repository state 
 - Added an explicit OTA state model (`IDLE`, `CHECKING_RELEASE`, `DOWNLOADING`, `VERIFYING`, `STAGING`, `ACTIVATING`, `FAILED`, `REBOOTING`) with persisted telemetry (last error/time/version/repo) in `fwcfg` NVS.
 - Added reusable `nvs_store` helpers and started migrating OTA telemetry writes to the shared helper API.
 - Migrated restart-counter NVS reads/writes onto `nvs_store` helper APIs to reduce duplicate direct NVS handling code.
+- Migrated firmware config, LED config, and update-request-flag persistence paths onto `nvs_store` helper APIs.
 - Added runtime hardware guard that enforces minimum flash size of 4MB before lifecycle startup continues.
 - Added explicit OTA failure-reason persistence (`release_api_failure`, `missing_asset`, `invalid_signature`, `invalid_image_length`, `partition_unavailable`, `boot_partition_set_failure`, `http_failure`).
 - Added runtime security guard to require NVS encryption (`CONFIG_NVS_ENCRYPTION`) when `CONFIG_LCM_REQUIRE_NVS_ENCRYPTION` is enabled.

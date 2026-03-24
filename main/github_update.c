@@ -288,15 +288,15 @@ static bool load_installed_partition_label(char *label, size_t label_len) {
 
 static bool read_update_request_flag(void) {
     nvs_handle_t handle;
-    esp_err_t err = nvs_open(NVS_NS_LCM, NVS_READONLY, &handle);
+    esp_err_t err = nvs_store_open_ro(NVS_NS_LCM, &handle);
     if (err != ESP_OK) {
         ESP_LOGD(TAG, "No update request flag present: %s", esp_err_to_name(err));
         return false;
     }
 
     uint8_t flag = 0;
-    err = nvs_get_u8(handle, NVS_KEY_DO_UPDATE, &flag);
-    nvs_close(handle);
+    err = nvs_store_get_u8(handle, NVS_KEY_DO_UPDATE, &flag);
+    nvs_store_close(handle);
     if (err == ESP_OK) {
         return flag != 0;
     }
@@ -309,34 +309,29 @@ static bool read_update_request_flag(void) {
 
 static esp_err_t write_update_request_flag(bool value) {
     nvs_handle_t handle;
-    esp_err_t err = nvs_open(NVS_NS_LCM, NVS_READWRITE, &handle);
+    esp_err_t err = nvs_store_open_rw(NVS_NS_LCM, &handle);
     if (err != ESP_OK) {
-        ESP_LOGW(TAG, "nvs_open(lcm) failed when updating flag: %s", esp_err_to_name(err));
         return err;
     }
 
     uint8_t current = 0;
-    esp_err_t get_err = nvs_get_u8(handle, NVS_KEY_DO_UPDATE, &current);
+    esp_err_t get_err = nvs_store_get_u8(handle, NVS_KEY_DO_UPDATE, &current);
     if (get_err == ESP_OK && current == (value ? 1 : 0)) {
-        nvs_close(handle);
+        nvs_store_close(handle);
         return ESP_OK;
     }
 
-    err = nvs_set_u8(handle, NVS_KEY_DO_UPDATE, value ? 1 : 0);
+    err = nvs_store_set_u8(handle, NVS_KEY_DO_UPDATE, value ? 1 : 0);
     if (err != ESP_OK) {
-        ESP_LOGW(TAG, "nvs_set_u8(do_update) failed: %s", esp_err_to_name(err));
-        nvs_close(handle);
+        nvs_store_close(handle);
         return err;
     }
 
-    err = nvs_commit(handle);
+    err = nvs_store_commit_and_close(handle);
     if (err != ESP_OK) {
-        ESP_LOGW(TAG, "nvs_commit(do_update) failed: %s", esp_err_to_name(err));
-        nvs_close(handle);
         return err;
     }
 
-    nvs_close(handle);
     ESP_LOGD(TAG, "Update request flag set to %d", value ? 1 : 0);
     return ESP_OK;
 }
@@ -422,38 +417,34 @@ static esp_err_t set_boot_partition_for_installed_firmware(int maj, int min, int
 esp_err_t save_fw_config(const char *repo, bool pre) {
     ESP_LOGD(TAG, "Saving firmware config repo=%s pre=%d", repo ? repo : "(null)", pre);
     nvs_handle_t h;
-    esp_err_t err = nvs_open(NVS_NS_FWCFG, NVS_READWRITE, &h);
+    esp_err_t err = nvs_store_open_rw(NVS_NS_FWCFG, &h);
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "nvs_open failed: %s", esp_err_to_name(err));
         return err;
     }
 
-    if ((err = nvs_set_str(h, NVS_KEY_FW_REPO, repo ? repo : "")) != ESP_OK) {
-        ESP_LOGE(TAG, "nvs_set_str failed: %s", esp_err_to_name(err));
-        nvs_close(h);
+    if ((err = nvs_store_set_str(h, NVS_KEY_FW_REPO, repo ? repo : "")) != ESP_OK) {
+        nvs_store_close(h);
         return err;
     }
 
-    if ((err = nvs_set_u8(h, NVS_KEY_FW_PRE, pre ? 1 : 0)) != ESP_OK) {
-        ESP_LOGE(TAG, "nvs_set_u8 failed: %s", esp_err_to_name(err));
-        nvs_close(h);
+    if ((err = nvs_store_set_u8(h, NVS_KEY_FW_PRE, pre ? 1 : 0)) != ESP_OK) {
+        nvs_store_close(h);
         return err;
     }
 
-    err = nvs_commit(h);
+    err = nvs_store_commit_and_close(h);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "nvs_commit failed: %s", esp_err_to_name(err));
     } else {
         ESP_LOGD(TAG, "Firmware config saved");
     }
-    nvs_close(h);
     return err;
 }
 
 bool load_fw_config(char *repo, size_t repo_len, bool *pre) {
     ESP_LOGD(TAG, "Loading firmware config");
     nvs_handle_t h;
-    esp_err_t err = nvs_open(NVS_NS_FWCFG, NVS_READONLY, &h);
+    esp_err_t err = nvs_store_open_ro(NVS_NS_FWCFG, &h);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "fwcfg namespace not found");
         return false;
@@ -461,32 +452,31 @@ bool load_fw_config(char *repo, size_t repo_len, bool *pre) {
 
     if (repo) {
         size_t len = repo_len;
-        err = nvs_get_str(h, NVS_KEY_FW_REPO, repo, &len);
+        err = nvs_store_get_str(h, NVS_KEY_FW_REPO, repo, &len);
         if (err != ESP_OK) {
             ESP_LOGW(TAG, "nvs_get_str(repo) failed: %s", esp_err_to_name(err));
-            nvs_close(h);
+            nvs_store_close(h);
             return false;
         }
     }
 
     uint8_t pre_u8;
-    err = nvs_get_u8(h, NVS_KEY_FW_PRE, &pre_u8);
+    err = nvs_store_get_u8(h, NVS_KEY_FW_PRE, &pre_u8);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "nvs_get_u8(pre) failed: %s", esp_err_to_name(err));
-        nvs_close(h);
+        nvs_store_close(h);
         return false;
     }
     if (pre) *pre = pre_u8 != 0;
-    nvs_close(h);
+    nvs_store_close(h);
     ESP_LOGD(TAG, "Loaded firmware config repo=%s pre=%d", repo ? repo : "(null)", pre ? *pre : pre_u8);
     return true;
 }
 
 esp_err_t save_led_config(bool enabled, int gpio, bool active_high) {
     nvs_handle_t h;
-    esp_err_t err = nvs_open(NVS_NS_FWCFG, NVS_READWRITE, &h);
+    esp_err_t err = nvs_store_open_rw(NVS_NS_FWCFG, &h);
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "nvs_open failed: %s", esp_err_to_name(err));
         return err;
     }
 
@@ -497,36 +487,32 @@ esp_err_t save_led_config(bool enabled, int gpio, bool active_high) {
         gpio = -1;
     }
 
-    if ((err = nvs_set_u8(h, NVS_KEY_LED_ENABLED, enabled ? 1 : 0)) != ESP_OK) {
-        ESP_LOGE(TAG, "nvs_set_u8(led_en) failed: %s", esp_err_to_name(err));
-        nvs_close(h);
+    if ((err = nvs_store_set_u8(h, NVS_KEY_LED_ENABLED, enabled ? 1 : 0)) != ESP_OK) {
+        nvs_store_close(h);
         return err;
     }
 
-    if ((err = nvs_set_i32(h, NVS_KEY_LED_GPIO, gpio)) != ESP_OK) {
-        ESP_LOGE(TAG, "nvs_set_i32(led_gpio) failed: %s", esp_err_to_name(err));
-        nvs_close(h);
+    if ((err = nvs_store_set_i32(h, NVS_KEY_LED_GPIO, gpio)) != ESP_OK) {
+        nvs_store_close(h);
         return err;
     }
 
-    if ((err = nvs_set_u8(h, NVS_KEY_LED_LEVEL, active_high ? 1 : 0)) != ESP_OK) {
-        ESP_LOGE(TAG, "nvs_set_u8(led_lvl) failed: %s", esp_err_to_name(err));
-        nvs_close(h);
+    if ((err = nvs_store_set_u8(h, NVS_KEY_LED_LEVEL, active_high ? 1 : 0)) != ESP_OK) {
+        nvs_store_close(h);
         return err;
     }
 
-    err = nvs_commit(h);
+    err = nvs_store_commit_and_close(h);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "nvs_commit failed: %s", esp_err_to_name(err));
     }
     ESP_LOGD(TAG, "Saved LED config enabled=%d gpio=%d active_high=%d", enabled, gpio, active_high);
-    nvs_close(h);
     return err;
 }
 
 bool load_led_config(bool *enabled, int *gpio, bool *active_high) {
     nvs_handle_t h;
-    esp_err_t err = nvs_open(NVS_NS_FWCFG, NVS_READONLY, &h);
+    esp_err_t err = nvs_store_open_ro(NVS_NS_FWCFG, &h);
     if (err != ESP_OK) {
         return false;
     }
@@ -534,22 +520,22 @@ bool load_led_config(bool *enabled, int *gpio, bool *active_high) {
     uint8_t en;
     int32_t pin;
     uint8_t level = 0;
-    err = nvs_get_u8(h, NVS_KEY_LED_ENABLED, &en);
+    err = nvs_store_get_u8(h, NVS_KEY_LED_ENABLED, &en);
     if (err != ESP_OK) {
-        nvs_close(h);
+        nvs_store_close(h);
         return false;
     }
-    err = nvs_get_i32(h, NVS_KEY_LED_GPIO, &pin);
+    err = nvs_store_get_i32(h, NVS_KEY_LED_GPIO, &pin);
     if (err != ESP_OK) {
-        nvs_close(h);
+        nvs_store_close(h);
         return false;
     }
-    err = nvs_get_u8(h, NVS_KEY_LED_LEVEL, &level);
+    err = nvs_store_get_u8(h, NVS_KEY_LED_LEVEL, &level);
     if (err != ESP_OK) {
         if (err == ESP_ERR_NVS_NOT_FOUND) {
             level = 0;
         } else {
-            nvs_close(h);
+            nvs_store_close(h);
             return false;
         }
     }
@@ -560,7 +546,7 @@ bool load_led_config(bool *enabled, int *gpio, bool *active_high) {
     if (enabled) *enabled = en != 0;
     if (gpio) *gpio = (int)pin;
     if (active_high) *active_high = level != 0;
-    nvs_close(h);
+    nvs_store_close(h);
     return true;
 }
 
