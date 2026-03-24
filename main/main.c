@@ -32,6 +32,7 @@
 #include <esp_system.h>
 #include <esp_wifi.h>
 #include <esp_flash.h>
+#include <soc/soc_caps.h>
 #include <inttypes.h>
 #include "github_update.h"
 #include "led_indicator.h"
@@ -51,6 +52,12 @@
 #endif
 
 static const char *TAG = "main";
+
+#ifdef SOC_GPIO_PIN_COUNT
+#define LCM_MAX_GPIO_PIN ((int)SOC_GPIO_PIN_COUNT - 1)
+#else
+#define LCM_MAX_GPIO_PIN 32
+#endif
 
 static const uint32_t RESTART_COUNTER_THRESHOLD_MIN = 10U;
 static const uint32_t RESTART_COUNTER_THRESHOLD_MAX = 12U;
@@ -166,8 +173,9 @@ static void led_indicator_apply(bool enabled, int gpio, bool active_high) {
         gpio_reset_pin(previous_gpio);
     }
 
-    if (gpio > 32) {
-        ESP_LOGW(TAG, "Requested LED GPIO %d out of range; disabling indicator", gpio);
+    if (gpio > LCM_MAX_GPIO_PIN) {
+        ESP_LOGW(TAG, "Requested LED GPIO %d out of range (max=%d); disabling indicator",
+                 gpio, LCM_MAX_GPIO_PIN);
         gpio = -1;
     }
 

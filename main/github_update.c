@@ -9,6 +9,7 @@
 #include "esp_partition.h"
 #include "esp_app_desc.h"
 #include "esp_crt_bundle.h"
+#include "soc/soc_caps.h"
 #include "mbedtls/sha256.h"
 #include "mbedtls/pk.h"
 #include "esp_image_format.h"
@@ -20,6 +21,12 @@
 #include "nvs_store.h"
 
 static const char *TAG = "github_update";
+
+#ifdef SOC_GPIO_PIN_COUNT
+#define LCM_MAX_GPIO_PIN ((int)SOC_GPIO_PIN_COUNT - 1)
+#else
+#define LCM_MAX_GPIO_PIN 32
+#endif
 
 #ifndef ESP_PARTITION_LABEL_MAX_LEN
 #define ESP_PARTITION_LABEL_MAX_LEN 16
@@ -558,8 +565,9 @@ esp_err_t save_led_config(bool enabled, int gpio, bool active_high) {
 
     if (gpio < 0) {
         gpio = -1;
-    } else if (gpio > 32) {
-        ESP_LOGW(TAG, "LED GPIO %d out of range; disabling indicator", gpio);
+    } else if (gpio > LCM_MAX_GPIO_PIN) {
+        ESP_LOGW(TAG, "LED GPIO %d out of range (max=%d); disabling indicator",
+                 gpio, LCM_MAX_GPIO_PIN);
         gpio = -1;
     }
 
@@ -615,8 +623,9 @@ bool load_led_config(bool *enabled, int *gpio, bool *active_high) {
             return false;
         }
     }
-    if (pin > 32) {
-        ESP_LOGW(TAG, "Stored LED GPIO %ld out of range; using disabled", (long)pin);
+    if (pin > LCM_MAX_GPIO_PIN) {
+        ESP_LOGW(TAG, "Stored LED GPIO %ld out of range (max=%d); using disabled",
+                 (long)pin, LCM_MAX_GPIO_PIN);
         pin = -1;
     }
     if (enabled) *enabled = en != 0;
