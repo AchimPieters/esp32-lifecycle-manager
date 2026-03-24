@@ -26,7 +26,7 @@ idf_component_register(
         app_update
         spi_flash
         mbedtls
-        json
+        cjson
         EMBED_TXTFILES
             "content/index.html"
 )
