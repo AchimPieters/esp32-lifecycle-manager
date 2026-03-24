@@ -370,12 +370,15 @@ class ConsistencyTests(unittest.TestCase):
         for target in ci_targets:
             self.assertIn(target, support_matrix, f'Target {target} missing from support matrix documentation')
 
-    def test_esp32c5_c6_c61_explicitly_not_supported(self):
+    def test_esp32c5_c6_supported_c61_not_supported(self):
         support_matrix = (Path(__file__).resolve().parents[1] / 'docs' / 'support-matrix.md').read_text(encoding='utf-8')
         component = (Path(__file__).resolve().parents[1] / 'idf_component.yml').read_text(encoding='utf-8')
-        self.assertIn('ESP32-C5 / ESP32-C6 / ESP32-C61 (not currently targeted in this repository)', support_matrix)
-        self.assertNotIn('"esp32c5"', component)
-        self.assertNotIn('"esp32c6"', component)
+        self.assertIn('esp32c5', support_matrix)
+        self.assertIn('esp32c6', support_matrix)
+        self.assertIn('ESP32-C61 (not currently targeted in this repository)', support_matrix)
+        self.assertIn('"esp32c5"', component)
+        self.assertIn('"esp32c6"', component)
+        self.assertNotIn('"esp32c61"', component)
 
 
 if __name__ == '__main__':

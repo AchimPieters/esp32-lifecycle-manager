@@ -166,7 +166,7 @@ Connect the pins as described below (configurable via `menuconfig`):
 | Name | Description | Default |
 |------|-------------|---------|
 | `CONFIG_ESP_LED_GPIO` | GPIO for the LED | `2` |
-| `CONFIG_ESP_BUTTON_GPIO` | GPIO for the button | `32` |
+| `CONFIG_ESP_BUTTON_GPIO` | GPIO for the button | `9` |
 
 ## 11. Schematic
 
@@ -187,3 +187,24 @@ Connect the pins as described below (configurable via `menuconfig`):
 - Configure the reboot counter timeout in `Lifecycle Manager` to control automatic factory resets.
 
 By following these steps, you convert the original LED demo into a version that leverages the Lifecycle Manager. You gain OTA updates, consistent firmware information, and straightforward reset scenarios without complex extra code.
+
+
+## 14. Troubleshooting set-target
+
+If `idf.py set-target <chip>` prints this error:
+
+```
+Directory ".../build" doesn't seem to be a CMake build directory.
+Refusing to automatically delete files in this directory.
+```
+
+remove the stale build folder once and re-run:
+
+```sh
+rm -rf build
+idf.py set-target esp32c3   # or your target
+# ESP32-C5/C6 on IDF 6.0 may require preview mode:
+# idf.py --preview set-target esp32c5
+```
+
+This happens when `build/` exists but was not created by CMake (for example, after copying files between environments).
