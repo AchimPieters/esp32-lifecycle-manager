@@ -303,6 +303,13 @@ class SourceHardeningTests(unittest.TestCase):
         self.assertIn('Rejected invalid OTA transition', src)
         self.assertIn('ESP_ERR_INVALID_STATE', src)
 
+    def test_cleanup_preserves_specific_failure_reason(self):
+        src = self._github_update_source()
+        self.assertIn('const char *failure_reason = OTA_REASON_HTTP_FAILURE;', src)
+        self.assertIn('failure_reason = OTA_REASON_INVALID_SIGNATURE;', src)
+        self.assertIn('failure_reason = OTA_REASON_INVALID_IMAGE_LENGTH;', src)
+        self.assertIn('ota_persist_state(OTA_STATE_FAILED, ret, NULL, release_version, NULL, failure_reason);', src)
+
 
 class SecurityProcessTests(unittest.TestCase):
     def test_key_management_doc_exists_with_required_sections(self):

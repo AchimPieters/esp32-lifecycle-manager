@@ -879,6 +879,7 @@ esp_err_t github_update_from_urls(const char *fw_url, const char *sig_url,
     ESP_LOGI(TAG, "Starting OTA from %s", fw_url);
     bool led_active = false;
     esp_err_t ret = ESP_OK;
+    const char *failure_reason = OTA_REASON_HTTP_FAILURE;
     led_blinking_start();
     led_active = true;
     ret = esp_https_ota(&ota_cfg);
@@ -896,6 +897,7 @@ esp_err_t github_update_from_urls(const char *fw_url, const char *sig_url,
     if (meta_res != ESP_OK) {
         ESP_LOGE(TAG, "Failed to get image metadata: %s", esp_err_to_name(meta_res));
         ret = meta_res;
+        failure_reason = OTA_REASON_INVALID_IMAGE_LENGTH;
         (void)ota_persist_state(OTA_STATE_FAILED, ret, NULL, release_version, NULL, OTA_REASON_INVALID_IMAGE_LENGTH);
         goto cleanup;
     }
@@ -906,6 +908,7 @@ esp_err_t github_update_from_urls(const char *fw_url, const char *sig_url,
     if (hash_res != ESP_OK) {
         ESP_LOGE(TAG, "Failed to compute image hash: %s", esp_err_to_name(hash_res));
         ret = hash_res;
+        failure_reason = OTA_REASON_INVALID_IMAGE_LENGTH;
         (void)ota_persist_state(OTA_STATE_FAILED, ret, NULL, release_version, NULL, OTA_REASON_INVALID_IMAGE_LENGTH);
         goto cleanup;
     }
@@ -913,6 +916,7 @@ esp_err_t github_update_from_urls(const char *fw_url, const char *sig_url,
     ret = verify_signature_blob(sig, sig_len, meta.image_len, actual);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Signature validation failed: %s", esp_err_to_name(ret));
+        failure_reason = OTA_REASON_INVALID_SIGNATURE;
         (void)ota_persist_state(OTA_STATE_FAILED, ret, NULL, release_version, NULL, OTA_REASON_INVALID_SIGNATURE);
         goto cleanup;
     }
@@ -958,7 +962,7 @@ esp_err_t github_update_from_urls(const char *fw_url, const char *sig_url,
 
 cleanup:
     if (ret != ESP_OK) {
-        (void)ota_persist_state(OTA_STATE_FAILED, ret, NULL, release_version, NULL, OTA_REASON_HTTP_FAILURE);
+        (void)ota_persist_state(OTA_STATE_FAILED, ret, NULL, release_version, NULL, failure_reason);
     }
     if (led_active) {
         led_blinking_stop();
