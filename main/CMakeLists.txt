@@ -1,3 +1,8 @@
+set(JSON_COMPONENT json)
+if(DEFINED IDF_VERSION_MAJOR AND IDF_VERSION_MAJOR GREATER_EQUAL 6)
+    set(JSON_COMPONENT cjson)
+endif()
+
 idf_component_register(
     SRCS
         "main.c"
@@ -26,7 +31,7 @@ idf_component_register(
         app_update
         spi_flash
         mbedtls
-        json
+        ${JSON_COMPONENT}
         EMBED_TXTFILES
             "content/index.html"
 )
