@@ -8,7 +8,7 @@ repository: "https://github.com/AchimPieters/esp32-lifecycle-manager"
 issues: "https://github.com/AchimPieters/esp32-lifecycle-manager/issues"
 license: "MIT"
 dependencies:
-  idf: ">=5.0"
+  idf: ">=5.0,<6.0"
   espressif/cjson: "*"
 targets:
   - "esp32"
