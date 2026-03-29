@@ -48,7 +48,7 @@
 #endif
 
 #ifndef CONFIG_LCM_REQUIRE_NVS_ENCRYPTION
-#define CONFIG_LCM_REQUIRE_NVS_ENCRYPTION 1
+#define CONFIG_LCM_REQUIRE_NVS_ENCRYPTION 0
 #endif
 
 static const char *TAG = "main";

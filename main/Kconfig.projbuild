@@ -22,7 +22,7 @@ config LCM_RESTART_COUNTER_TIMEOUT_MS
 
 config LCM_REQUIRE_NVS_ENCRYPTION
     bool "Require NVS encryption at runtime"
-    default y
+    default n
     help
         If enabled, startup aborts unless ESP-IDF NVS encryption is enabled
         in sdkconfig (`CONFIG_NVS_ENCRYPTION`).
