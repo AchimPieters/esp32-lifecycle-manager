@@ -7,6 +7,19 @@ application firmware, keeps it up to date, and offers recovery tools when
 something goes wrong. Even if you are new to ESP-IDF, LCM guides you from an
 unconfigured module to a fully managed device in a few straightforward steps.
 
+
+## Documentation map
+
+To make this repository easier to navigate:
+
+- **End users / installers / support**: see [`enduser.md`](./enduser.md) for onboarding, OTA operation, reset procedures, and troubleshooting.
+- **Developers / integrators**: continue with this `README.md` for build, signing, and flashing workflows.
+- **Security and operations detail**: see [`docs/security`](./docs/security) and [`docs/operations`](./docs/operations).
+
+### Important security warning
+
+This repository contains example key files (`ota_signing_private.pem` and `ota_signing_public.pem`) for demonstration purposes. Do **not** use these keys in production. Always generate and protect your own signing keys before shipping devices.
+
 ## How LCM operates
 
 At every boot LCM starts before your application. It evaluates whether the
