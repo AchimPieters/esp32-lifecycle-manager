@@ -42,6 +42,7 @@
 #include "led_indicator.h"
 #include "nvs_keys.h"
 #include "nvs_store.h"
+#include "lcm_key_provider.h"
 
 static const char *TAG = "github_update";
 
@@ -57,7 +58,7 @@ static const char *TAG = "github_update";
 
 #define INSTALLED_VER_MAX_LEN 32
 #define OTA_SIG_MAGIC 0x4C434D53UL
-#define OTA_SIG_VERSION 1U
+#define OTA_SIG_VERSION 2U
 #define OTA_SIG_ALGO_ECDSA_P256_SHA256 1U
 #define OTA_SIG_MAX_LEN 512U
 #define INSTALLED_LABEL_MAX_LEN (ESP_PARTITION_LABEL_MAX_LEN + 1)
@@ -80,6 +81,8 @@ static const char *OTA_REASON_INVALID_IMAGE_LENGTH = "invalid_image_length";
 static const char *OTA_REASON_PARTITION_UNAVAILABLE = "partition_unavailable";
 static const char *OTA_REASON_BOOT_PARTITION_SET_FAILURE = "boot_partition_set_failure";
 static const char *OTA_REASON_HTTP_FAILURE = "http_failure";
+static const char *OTA_REASON_TARGET_MISMATCH = "target_mismatch";
+static const char *OTA_REASON_INCOMPLETE_PACKAGE = "update_package_incomplete";
 
 static const char *ota_state_to_str(ota_state_t state) {
     switch (state) {
@@ -793,21 +796,56 @@ static esp_err_t partition_sha256(const esp_partition_t *part, uint32_t len, uin
     return ESP_OK;
 }
 
+
+
+static uint16_t lcm_current_target_id(void) {
+#if CONFIG_IDF_TARGET_ESP32
+    return 0x0001;
+#elif CONFIG_IDF_TARGET_ESP32C2
+    return 0x0002;
+#elif CONFIG_IDF_TARGET_ESP32C3
+    return 0x0003;
+#elif CONFIG_IDF_TARGET_ESP32S2
+    return 0x0004;
+#elif CONFIG_IDF_TARGET_ESP32S3
+    return 0x0005;
+#elif CONFIG_IDF_TARGET_ESP32C5
+    return 0x0006;
+#elif CONFIG_IDF_TARGET_ESP32C6
+    return 0x0007;
+#else
+    return 0xFFFF;
+#endif
+}
+
+static const char *lcm_current_target_name(void) {
+#if CONFIG_IDF_TARGET_ESP32
+    return "esp32";
+#elif CONFIG_IDF_TARGET_ESP32C2
+    return "esp32c2";
+#elif CONFIG_IDF_TARGET_ESP32C3
+    return "esp32c3";
+#elif CONFIG_IDF_TARGET_ESP32S2
+    return "esp32s2";
+#elif CONFIG_IDF_TARGET_ESP32S3
+    return "esp32s3";
+#elif CONFIG_IDF_TARGET_ESP32C5
+    return "esp32c5";
+#elif CONFIG_IDF_TARGET_ESP32C6
+    return "esp32c6";
+#else
+    return "unknown";
+#endif
+}
 typedef struct __attribute__((packed)) {
     uint32_t magic;
     uint8_t version;
     uint8_t algorithm;
-    uint16_t reserved;
+    uint16_t target_id;
     uint32_t firmware_length;
     uint8_t firmware_hash[32];
     uint16_t signature_length;
 } ota_sig_header_t;
-
-static const char OTA_PUBLIC_KEY_PEM[] =
-"-----BEGIN PUBLIC KEY-----\n"
-"MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAECoIqacNbCn1oWreXsb2QTz6c+hOj\n"
-"ezXGuO01nfuVl/+sH2iB8bvkGnwW+f14lzqsQQ6H8DMxIRJCNjGMNqrYjg==\n"
-"-----END PUBLIC KEY-----\n";
 
 static esp_err_t verify_signature_blob(const uint8_t *sig_blob, size_t sig_len,
                                        uint32_t image_len, const uint8_t image_hash[32]) {
@@ -828,6 +866,13 @@ static esp_err_t verify_signature_blob(const uint8_t *sig_blob, size_t sig_len,
     if (header->algorithm != OTA_SIG_ALGO_ECDSA_P256_SHA256) {
         ESP_LOGE(TAG, "Unsupported signature algorithm id: %u", (unsigned)header->algorithm);
         return ESP_ERR_NOT_SUPPORTED;
+    }
+
+    const uint16_t expected_target = lcm_current_target_id();
+    if (header->target_id != expected_target) {
+        ESP_LOGE(TAG, "Firmware target does not match device (sig target=0x%04x, device=%s/0x%04x)",
+                 (unsigned)header->target_id, lcm_current_target_name(), (unsigned)expected_target);
+        return ESP_ERR_INVALID_ARG;
     }
 
     if (header->firmware_length != image_len) {
@@ -853,8 +898,8 @@ static esp_err_t verify_signature_blob(const uint8_t *sig_blob, size_t sig_len,
     mbedtls_pk_init(&pk);
 
     int parse_res = mbedtls_pk_parse_public_key(&pk,
-            (const unsigned char *)OTA_PUBLIC_KEY_PEM,
-            strlen(OTA_PUBLIC_KEY_PEM) + 1);
+            (const unsigned char *)lcm_trusted_public_key_pem(),
+            strlen(lcm_trusted_public_key_pem()) + 1);
     if (parse_res != 0) {
         ESP_LOGE(TAG, "Public key parse failed: -0x%04x", -parse_res);
         mbedtls_pk_free(&pk);
@@ -871,7 +916,7 @@ static esp_err_t verify_signature_blob(const uint8_t *sig_blob, size_t sig_len,
         return ESP_ERR_INVALID_CRC;
     }
 
-    ESP_LOGI(TAG, "Cryptographic signature verified");
+    ESP_LOGI(TAG, "Cryptographic signature verified (mode=%s)", lcm_trusted_publisher_mode());
     return ESP_OK;
 }
 
@@ -948,9 +993,15 @@ esp_err_t github_update_from_urls(const char *fw_url, const char *sig_url,
 
     ret = verify_signature_blob(sig, sig_len, meta.image_len, actual);
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Signature validation failed: %s", esp_err_to_name(ret));
-        failure_reason = OTA_REASON_INVALID_SIGNATURE;
-        (void)ota_persist_state(OTA_STATE_FAILED, ret, NULL, release_version, NULL, OTA_REASON_INVALID_SIGNATURE);
+        if (ret == ESP_ERR_INVALID_ARG) {
+            ESP_LOGE(TAG, "firmware target does not match device");
+            failure_reason = OTA_REASON_TARGET_MISMATCH;
+            (void)ota_persist_state(OTA_STATE_FAILED, ret, NULL, release_version, NULL, OTA_REASON_TARGET_MISMATCH);
+        } else {
+            ESP_LOGE(TAG, "firmware not signed by trusted publisher");
+            failure_reason = OTA_REASON_INVALID_SIGNATURE;
+            (void)ota_persist_state(OTA_STATE_FAILED, ret, NULL, release_version, NULL, OTA_REASON_INVALID_SIGNATURE);
+        }
         goto cleanup;
     }
     led_blinking_stop();
@@ -1004,7 +1055,24 @@ cleanup:
 }
 
 esp_err_t github_update_if_needed(const char *repo, bool prerelease) {
+    (void)prerelease;
     (void)ota_persist_state(OTA_STATE_CHECKING_RELEASE, ESP_OK, repo, NULL, NULL, OTA_REASON_NONE);
+
+    if (!repo || repo[0] == '\0') {
+        ESP_LOGE(TAG, "update source is empty");
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    if (strncmp(repo, "http://", 7) == 0 || strncmp(repo, "https://", 8) == 0) {
+        char fw_url[384];
+        char sig_url[384];
+        snprintf(fw_url, sizeof(fw_url), "%s%smain.bin", repo, repo[strlen(repo)-1] == '/' ? "" : "/");
+        snprintf(sig_url, sizeof(sig_url), "%s%smain.bin.sig", repo, repo[strlen(repo)-1] == '/' ? "" : "/");
+        ESP_LOGI(TAG, "Using direct update source %s", repo);
+        return github_update_from_urls(fw_url, sig_url, NULL);
+    }
+
+    // GitHub repository mode (owner/repo)
     char api[256];
     snprintf(api, sizeof(api), "https://api.github.com/repos/%s/releases%s", repo,
              prerelease ? "?per_page=5" : "/latest");
@@ -1242,7 +1310,7 @@ esp_err_t github_update_if_needed(const char *repo, bool prerelease) {
             else if (!strcmp(name->valuestring, "main.bin.sig")) sig = url->valuestring;
         }
     }
-    if (!fw || !sig) { cJSON_Delete(json); ESP_LOGE(TAG, "Missing assets"); (void)ota_persist_state(OTA_STATE_FAILED, ESP_FAIL, repo, sanitized_version, NULL, OTA_REASON_MISSING_ASSET); return ESP_FAIL; }
+    if (!fw || !sig) { cJSON_Delete(json); ESP_LOGE(TAG, "Update package incomplete: missing main.bin or main.bin.sig"); (void)ota_persist_state(OTA_STATE_FAILED, ESP_FAIL, repo, sanitized_version, NULL, OTA_REASON_INCOMPLETE_PACKAGE); return ESP_FAIL; }
     ESP_LOGD(TAG, "Firmware URL: %s", fw);
     ESP_LOGD(TAG, "Signature URL: %s", sig);
     ESP_LOGI(TAG, "Release %s selected", cJSON_IsString(tag)?tag->valuestring:"?");

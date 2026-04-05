@@ -5,7 +5,7 @@ import re
 from pathlib import Path
 
 MAGIC = 0x4C434D53
-VERSION = 1
+VERSION = 2
 ALGO = 1
 HEADER_FMT = '<IBBHI32sH'
 HEADER_SIZE = struct.calcsize(HEADER_FMT)
@@ -84,6 +84,8 @@ def required_ota_failure_reasons():
         'partition_unavailable',
         'boot_partition_set_failure',
         'http_failure',
+        'target_mismatch',
+        'update_package_incomplete',
     }
 
 
@@ -100,7 +102,7 @@ def validate_sig_blob(blob: bytes, image: bytes):
     if len(blob) < HEADER_SIZE:
         return False, 'too_short'
 
-    magic, version, algo, _reserved, fw_len, fw_hash, sig_len = struct.unpack(HEADER_FMT, blob[:HEADER_SIZE])
+    magic, version, algo, _target_id, fw_len, fw_hash, sig_len = struct.unpack(HEADER_FMT, blob[:HEADER_SIZE])
     if magic != MAGIC:
         return False, 'bad_magic'
     if version != VERSION:
@@ -240,7 +242,7 @@ class OtaStateMachineTests(unittest.TestCase):
         reasons = required_ota_failure_reasons()
         self.assertIn('invalid_signature', reasons)
         self.assertIn('partition_unavailable', reasons)
-        self.assertEqual(len(reasons), 7)
+        self.assertEqual(len(reasons), 9)
 
 
 class PartitionLayoutTests(unittest.TestCase):
@@ -320,6 +322,7 @@ class SourceHardeningTests(unittest.TestCase):
         src = self._github_update_source()
         self.assertIn('const char *failure_reason = OTA_REASON_HTTP_FAILURE;', src)
         self.assertIn('failure_reason = OTA_REASON_INVALID_SIGNATURE;', src)
+        self.assertIn('failure_reason = OTA_REASON_TARGET_MISMATCH;', src)
         self.assertIn('failure_reason = OTA_REASON_INVALID_IMAGE_LENGTH;', src)
         self.assertIn('ota_persist_state(OTA_STATE_FAILED, ret, NULL, release_version, NULL, failure_reason);', src)
 

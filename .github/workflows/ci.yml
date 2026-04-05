@@ -29,7 +29,7 @@ jobs:
           openssl ecparam -name prime256v1 -genkey -noout -out keys/ota_signing_private.pem
           dd if=/dev/zero of=build/main.bin bs=1024 count=1
       - name: Generate signed metadata
-        run: ./generate_sig.sh build/main.bin keys/ota_signing_private.pem
+        run: ./scripts/sign_firmware.sh build/main.bin keys/ota_signing_private.pem esp32
       - name: Verify signature file exists
         run: test -f build/main.bin.sig
 
@@ -40,7 +40,7 @@ jobs:
       matrix:
         # Keep CI on targets that are currently validated to pass reliably.
         # Re-enable additional targets after dedicated per-target fixes land.
-        target: [esp32, esp32c2]
+        target: [esp32, esp32c2, esp32c3]
     steps:
       - uses: actions/checkout@v4
       - name: ESP-IDF build (${{ matrix.target }})
