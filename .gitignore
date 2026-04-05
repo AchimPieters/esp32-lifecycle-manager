@@ -53,3 +53,11 @@ dkms.conf
 
 # debug information files
 *.dwo
+
+# LCM signing secrets and local signing output
+keys/private/
+keys/custom_public_key.h
+keys/private/*.pem
+keys/private/*.key
+*.sig.tmp
+signing-output/
