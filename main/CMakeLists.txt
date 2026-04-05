@@ -15,10 +15,12 @@ idf_component_register(
         "lifecycle_reset.c"
         "lifecycle_restart_counter.c"
         "nvs_store.c"
+        "lcm_key_provider.c"
     INCLUDE_DIRS
         "."
         "include"
         "content"
+        "${CMAKE_CURRENT_LIST_DIR}/../keys"
     REQUIRES
         freertos
         esp_wifi
