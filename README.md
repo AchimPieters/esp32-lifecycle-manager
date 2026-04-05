@@ -21,26 +21,9 @@ In official mode, no key generation and no rebuild is needed.
 Use local scripts:
 
 ```bash
-# Official signing for standard LCM builds (default mode)
-export LCM_OFFICIAL_SIGNING_KEY=/secure/path/official_private.pem
-./scripts/sign_firmware.sh build/main.bin "" esp32c3 --official
-
-# Advanced/custom signing for custom-key LCM builds
 ./scripts/generate_keys.sh keys/private publisher
-./scripts/sign_firmware.sh build/main.bin keys/private/publisher_private.pem esp32c3 --custom
+./scripts/sign_firmware.sh build/main.bin keys/private/publisher_private.pem esp32c3
 ```
-
-For the easiest publisher flow, copy `scripts/sign.py` into your app `build/`
-directory and run it there:
-
-```bash
-cp /path/to/esp32-lifecycle-manager/scripts/sign.py .
-export LCM_OFFICIAL_SIGNING_KEY=/secure/path/official_private.pem
-python3 sign.py
-```
-
-This generates `main.bin.sig` next to `main.bin` and auto-detects target from
-`../sdkconfig`.
 
 Outputs:
 - private key (local only)
