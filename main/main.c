@@ -35,7 +35,6 @@
 #include <soc/soc_caps.h>
 #include <inttypes.h>
 #include "github_update.h"
-#include "lcm_key_provider.h"
 #include "led_indicator.h"
 #include "lifecycle_manager.h"
 #include "lifecycle_restart_counter.h"
@@ -281,7 +280,6 @@ static void lifecycle_factory_reset_and_reboot(void) {
 
 void app_main(void) {
     ESP_LOGI(TAG, "Application start");
-    ESP_LOGI(TAG, "LCM publisher mode: %s", lcm_trusted_publisher_mode());
     esp_err_t err = nvs_flash_init();
     if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         ESP_LOGW(TAG, "NVS init requires recovery (%s), erasing NVS partition",

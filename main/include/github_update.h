@@ -10,14 +10,3 @@ bool load_led_config(bool *enabled, int *gpio, bool *active_high);
 esp_err_t github_update_if_needed(const char *repo, bool prerelease);
 esp_err_t github_update_from_urls(const char *fw_url, const char *sig_url,
                                   const char *release_version);
-
-// Reserved for future manifest.json support.
-typedef struct {
-    const char *project;
-    const char *version;
-    const char *chip;
-    const char *firmware_path;
-    const char *signature_path;
-    const char *signer_id;
-    const char *minimum_lcm_version;
-} lcm_manifest_descriptor_t;

@@ -1,28 +1,5 @@
 menu "StudioPieters"
 
-choice LCM_PUBLISHER_MODE
-    prompt "Trusted publisher mode"
-    default LCM_PUBLISHER_MODE_OFFICIAL
-    help
-        Official mode is intended for end users and uses the built-in official
-        public verification key. Custom mode is intended for advanced users.
-
-config LCM_PUBLISHER_MODE_OFFICIAL
-    bool "Official publisher mode (default)"
-
-config LCM_PUBLISHER_MODE_CUSTOM
-    bool "Custom publisher mode"
-
-endchoice
-
-config LCM_OFFICIAL_KEY
-    bool
-    default y if LCM_PUBLISHER_MODE_OFFICIAL
-
-config LCM_CUSTOM_KEY
-    bool
-    default y if LCM_PUBLISHER_MODE_CUSTOM
-
 config ESP_LED_GPIO
     int "Set the GPIO for the LED"
     default 2
