@@ -89,6 +89,9 @@ For real deployments:
 4. Distribute only the matching public key to devices.
 5. Rotate keys immediately if exposure is suspected.
 
+For release signing automation in this repo, use
+`./scripts/sign_firmware.sh build/main.bin /path/to/private.pem esp32`.
+
 Also review the security audit report (`docs/security/code-audit-2026-04-06.md`)
 before running production rollouts with verbose/debug logging enabled.
 
