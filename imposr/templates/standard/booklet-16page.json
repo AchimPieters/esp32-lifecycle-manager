@@ -1,0 +1,9 @@
+{
+  "id": "booklet-16page",
+  "name": "Booklet 16 pagina",
+  "mode": "booklet",
+  "sheet": {
+    "width": 595,
+    "height": 842
+  }
+}
