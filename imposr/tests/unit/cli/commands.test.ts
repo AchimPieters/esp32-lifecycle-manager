@@ -28,5 +28,6 @@ describe('cli commands', () => {
     await expect(runCli('watch')).resolves.toBeTruthy();
     await expect(runCli('templates')).resolves.toBeTruthy();
     await expect(runCli('validate')).resolves.toBeTruthy();
+    await expect(runCli('beta')).resolves.toContain('READY_FOR_BETA=');
   });
 });
