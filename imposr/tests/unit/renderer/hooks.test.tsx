@@ -1,3 +1,4 @@
+/** @jest-environment jsdom */
 import { renderHook, act } from '@testing-library/react';
 import { usePDF } from '../../../src/renderer/hooks/usePDF';
 import { useTemplate } from '../../../src/renderer/hooks/useTemplate';
