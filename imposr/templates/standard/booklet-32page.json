@@ -1,6 +1,0 @@
-{
-  "id": "booklet-32page",
-  "name": "Booklet 32 pages",
-  "mode": "booklet",
-  "sheet": { "width": 420, "height": 297 }
-}

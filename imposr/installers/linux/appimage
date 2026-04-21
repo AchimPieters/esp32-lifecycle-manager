@@ -1,7 +1,0 @@
-#!/usr/bin/env bash
-set -euo pipefail
-
-echo "Building AppImage package for Imposr Pro beta"
-echo "- stage AppDir"
-echo "- include desktop entry"
-echo "- run appimagetool"

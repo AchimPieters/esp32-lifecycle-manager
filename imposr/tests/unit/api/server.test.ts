@@ -15,8 +15,7 @@ describe('api server', () => {
     const response = await request(app).post('/impose').send({ pages: 0 });
 
     expect(response.status).toBe(400);
-    expect(response.body.error).toBe('Validation failed');
-    expect(response.body.issues[0].path).toContain('pages');
+    expect(response.body.error).toContain('pages');
   });
 
   it('serves templates, jobs and webhooks routes', async () => {

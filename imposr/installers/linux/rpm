@@ -1,7 +1,0 @@
-#!/usr/bin/env bash
-set -euo pipefail
-
-echo "Building RPM package for Imposr Pro beta"
-echo "- prepare build root"
-echo "- copy binaries and templates"
-echo "- generate rpm spec and package"
