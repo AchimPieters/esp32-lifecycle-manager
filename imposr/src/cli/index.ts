@@ -1,10 +1,11 @@
 import { runBatch } from './commands/batch';
+import { runBeta } from './commands/beta';
 import { runImpose } from './commands/impose';
 import { runTemplates } from './commands/templates';
 import { runValidate } from './commands/validate';
 import { runWatch } from './commands/watch';
 
-export type CliCommand = 'impose' | 'batch' | 'watch' | 'templates' | 'validate';
+export type CliCommand = 'impose' | 'batch' | 'watch' | 'templates' | 'validate' | 'beta';
 
 /**
  * CLI dispatcher entrypoint.
@@ -21,6 +22,8 @@ export async function runCli(command: CliCommand): Promise<string | string[]> {
       return runTemplates(['2up-a4-a3']);
     case 'validate':
       return runValidate('input.pdf');
+    case 'beta':
+      return runBeta();
     default:
       throw new Error(`Unknown command: ${command}`);
   }
