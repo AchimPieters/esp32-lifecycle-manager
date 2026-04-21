@@ -1,0 +1,17 @@
+openapi: 3.0.3
+info:
+  title: Imposr Pro API
+  version: 1.0.0
+paths:
+  /impose:
+    post:
+      summary: Queue an imposition job
+      responses:
+        '202':
+          description: Job accepted
+  /templates:
+    get:
+      summary: List templates
+      responses:
+        '200':
+          description: Template list
