@@ -6,7 +6,8 @@ This document defines the minimum operational process for OTA signing keys and N
 
 ### 1) Key generation
 - Generate the private key on an offline workstation/HSM.
-- Keep private keys outside this repository.
+- For production, keep private keys outside this repository.
+- Note: this repo ships a default development keypair in `keys/` for out-of-box onboarding only.
 - Export only the public key material required by firmware verification.
 
 ### 2) Key storage
