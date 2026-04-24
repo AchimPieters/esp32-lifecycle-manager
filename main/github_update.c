@@ -805,8 +805,8 @@ typedef struct __attribute__((packed)) {
 
 static const char OTA_PUBLIC_KEY_PEM[] =
 "-----BEGIN PUBLIC KEY-----\n"
-"MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAECoIqacNbCn1oWreXsb2QTz6c+hOj\n"
-"ezXGuO01nfuVl/+sH2iB8bvkGnwW+f14lzqsQQ6H8DMxIRJCNjGMNqrYjg==\n"
+"MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAELpaqUF+4W/Dp/gFIW1N3QLR5jvoE\n"
+"HoNeU/zdv6O7cJf4JfeC7C/lUHBMSZJah9GD3l0HAKjY5CRNU3aFE/J45A==\n"
 "-----END PUBLIC KEY-----\n";
 
 static esp_err_t verify_signature_blob(const uint8_t *sig_blob, size_t sig_len,
