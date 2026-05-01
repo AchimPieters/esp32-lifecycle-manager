@@ -118,10 +118,6 @@ static esp_err_t nvs_load_wifi(char **out_ssid, char **out_pass) {
 
     nvs_handle_t handle;
     esp_err_t err = nvs_open("wifi_cfg", NVS_READONLY, &handle);
-    if (err == ESP_ERR_NVS_NOT_FOUND) {
-        ESP_LOGW(WIFI_TAG, "NVS namespace 'wifi_cfg' not found; provisioning required");
-        return err;
-    }
     if (err != ESP_OK) {
         ESP_LOGE(WIFI_TAG, "NVS open failed for namespace 'wifi_cfg': %s", esp_err_to_name(err));
         return err;
