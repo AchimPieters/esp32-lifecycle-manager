@@ -179,6 +179,8 @@ static esp_err_t ota_persist_state(ota_state_t state, esp_err_t last_error,
             nvs_store_close(h);
             return ESP_ERR_INVALID_STATE;
         }
+    } else if (current_err == ESP_ERR_NVS_INVALID_LENGTH) {
+        ESP_LOGW(TAG, "Ignoring legacy/invalid OTA state value and overwriting it");
     } else if (current_err != ESP_ERR_NVS_NOT_FOUND) {
         ESP_LOGW(TAG, "Failed to load current OTA state: %s", esp_err_to_name(current_err));
     }
