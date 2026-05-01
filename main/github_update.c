@@ -167,7 +167,7 @@ static esp_err_t ota_persist_state(ota_state_t state, esp_err_t last_error,
         return err;
     }
 
-    char current_state_str[16];
+    char current_state_str[32];
     size_t current_len = sizeof(current_state_str);
     esp_err_t current_err = nvs_store_get_str(h, NVS_KEY_OTA_STATE, current_state_str, &current_len);
     if (current_err == ESP_OK) {
