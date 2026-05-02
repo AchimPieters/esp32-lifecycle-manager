@@ -146,7 +146,20 @@ static void sysparam_init(void) {
         static bool initialized = false;
         if (!initialized) {
                 ESP_LOGD("wifi_config", "Initializing NVS for WiFi config");
-                esp_err_t err = nvs_store_open_rw(NVS_NS_WIFI_CFG, &wifi_cfg_handle);
+                esp_err_t err = nvs_flash_init();
+                if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+                        ESP_LOGW("wifi_config", "NVS init requires recovery (%s), erasing NVS partition", esp_err_to_name(err));
+                        esp_err_t erase_err = nvs_flash_erase();
+                        if (erase_err != ESP_OK) {
+                                ESP_LOGE("wifi_config", "nvs_flash_erase failed: %s", esp_err_to_name(erase_err));
+                        } else {
+                                err = nvs_flash_init();
+                        }
+                }
+                if (err != ESP_OK && err != ESP_ERR_NVS_INVALID_STATE) {
+                        ESP_LOGE("wifi_config", "nvs_flash_init failed: %s", esp_err_to_name(err));
+                }
+                err = nvs_store_open_rw(NVS_NS_WIFI_CFG, &wifi_cfg_handle);
                 if (err != ESP_OK) {
                         ESP_LOGE("wifi_config", "nvs_store_open_rw failed: %s", esp_err_to_name(err));
                 }
@@ -411,12 +424,12 @@ static void wifi_scan_task(void *arg)
                                         net = net->next;
                                 }
                                 if (!net) {
-                                        wifi_network_info_t *new_net = malloc(sizeof(wifi_network_info_t));
-                                        memset(new_net, 0, sizeof(*new_net));
-                                        strncpy(new_net->ssid, (char *)records[i].ssid, sizeof(new_net->ssid));
-                                        new_net->secure = records[i].authmode != WIFI_AUTH_OPEN;
-                                        new_net->next = wifi_networks;
-                                        wifi_networks = new_net;
+                                        wifi_network_info_t *net = malloc(sizeof(wifi_network_info_t));
+                                        memset(net, 0, sizeof(*net));
+                                        strncpy(net->ssid, (char *)records[i].ssid, sizeof(net->ssid));
+                                        net->secure = records[i].authmode != WIFI_AUTH_OPEN;
+                                        net->next = wifi_networks;
+                                        wifi_networks = net;
                                 }
                         }
 
@@ -792,7 +805,7 @@ static void http_task(void *arg) {
 
         struct sockaddr_in serv_addr;
         int listenfd = socket(AF_INET, SOCK_STREAM, 0);
-        memset(&serv_addr, 0, sizeof(serv_addr));
+        memset(&serv_addr, '0', sizeof(serv_addr));
         serv_addr.sin_family = AF_INET;
         serv_addr.sin_addr.s_addr = htonl(INADDR_ANY);
         serv_addr.sin_port = htons(WIFI_CONFIG_SERVER_PORT);
@@ -825,7 +838,6 @@ static void http_task(void *arg) {
         client_t *clients = NULL;
 
         fd_set fds;
-        FD_ZERO(&fds);
         int max_fd = listenfd;
 
         FD_SET(listenfd, &fds);
@@ -978,7 +990,7 @@ static void dns_task(void *arg)
         struct sockaddr_in serv_addr;
         int fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
 
-        memset(&serv_addr, 0, sizeof(serv_addr));
+        memset(&serv_addr, '0', sizeof(serv_addr));
         serv_addr.sin_family = AF_INET;
         serv_addr.sin_addr.s_addr = htonl(INADDR_ANY);
         serv_addr.sin_port = htons(53);
@@ -991,10 +1003,10 @@ static void dns_task(void *arg)
         }
 
         const struct timeval timeout = { 2, 0 }; /* 2 second timeout */
-        (void)setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
 
         const struct ifreq ifreq1 = { "en1" };
-        (void)setsockopt(fd, SOL_SOCKET, SO_BINDTODEVICE, &ifreq1, sizeof(ifreq1));
+        setsockopt(fd, SOL_SOCKET, SO_BINDTODEVICE, &ifreq1, sizeof(ifreq1));
 
         for (;;) {
                 char buffer[96];
@@ -1259,7 +1271,6 @@ static int wifi_config_station_connect() {
 
 void wifi_config_start() {
         ESP_LOGI("wifi_config", "Starting WiFi configuration");
-        sysparam_init();
         wifi_config_init_wifi();
         sdk_wifi_set_opmode(STATION_MODE);
 
@@ -1354,22 +1365,9 @@ void wifi_config_init(const char *ssid_prefix, const char *password, void (*on_w
         memset(context, 0, sizeof(*context));
 
         context->ssid_prefix = strndup(ssid_prefix, 33-7);
-        if (!context->ssid_prefix) {
-                ERROR("Failed to allocate SSID prefix");
-                free(context);
-                context = NULL;
-                return;
-        }
         INFO("Using SSID prefix %s", context->ssid_prefix);
         if (password) {
                 context->password = strdup(password);
-                if (!context->password) {
-                        ERROR("Failed to allocate password");
-                        free(context->ssid_prefix);
-                        free(context);
-                        context = NULL;
-                        return;
-                }
                 INFO("Using WiFi password of length %d", (int)strlen(password));
         }
 
@@ -1397,22 +1395,9 @@ void wifi_config_init2(const char *ssid_prefix, const char *password,
         memset(context, 0, sizeof(*context));
 
         context->ssid_prefix = strndup(ssid_prefix, 33-7);
-        if (!context->ssid_prefix) {
-                ERROR("Failed to allocate SSID prefix");
-                free(context);
-                context = NULL;
-                return;
-        }
         INFO("Using SSID prefix %s", context->ssid_prefix);
         if (password) {
                 context->password = strdup(password);
-                if (!context->password) {
-                        ERROR("Failed to allocate password");
-                        free(context->ssid_prefix);
-                        free(context);
-                        context = NULL;
-                        return;
-                }
                 INFO("Using WiFi password of length %d", (int)strlen(password));
         }
 
@@ -1477,11 +1462,6 @@ void wifi_config_shutdown(void) {
                 xTimerDelete(context->network_monitor_timer, 0);
                 context->network_monitor_timer = NULL;
         }
-
-        free(context->ssid_prefix);
-        free(context->password);
-        free(context);
-        context = NULL;
 
         INFO("WiFi provisioning services stopped");
 }

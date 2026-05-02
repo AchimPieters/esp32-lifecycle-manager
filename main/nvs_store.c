@@ -43,7 +43,7 @@ esp_err_t nvs_store_open_ro(const char *ns, nvs_handle_t *out_handle) {
         return ESP_ERR_INVALID_ARG;
     }
     esp_err_t err = nvs_open(ns, NVS_READONLY, out_handle);
-    if (err != ESP_OK && err != ESP_ERR_NVS_NOT_FOUND) {
+    if (err != ESP_OK) {
         ESP_LOGW(TAG, "nvs_open(ro:%s) failed: %s", ns, esp_err_to_name(err));
     }
     return err;
@@ -100,7 +100,7 @@ esp_err_t nvs_store_get_str(nvs_handle_t handle, const char *key, char *out_valu
         return ESP_ERR_INVALID_ARG;
     }
     esp_err_t err = nvs_get_str(handle, key, out_value, length);
-    if (err != ESP_OK && err != ESP_ERR_NVS_NOT_FOUND && err != ESP_ERR_NVS_INVALID_LENGTH) {
+    if (err != ESP_OK && err != ESP_ERR_NVS_NOT_FOUND) {
         ESP_LOGW(TAG, "nvs_get_str(%s) failed: %s", key, esp_err_to_name(err));
     }
     return err;

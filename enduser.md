@@ -78,20 +78,19 @@ hardware reset flow and return to onboarding mode.
 
 ## 7) Security note about keys in this repository
 
-This repository includes a default OTA keypair in `keys/` so onboarding works
-out-of-the-box for first-time users.
+This repository currently includes sample key material:
 
-- `keys/ota_signing_private.pem`
-- `keys/ota_signing_public.pem`
+- `ota_signing_private.pem`
+- `ota_signing_public.pem`
 
-This default pair is intended for easy setup and lab/demo use.
+These must be treated as **example-only** and **not trusted for production**.
 
 For real deployments:
 
 1. Generate your own key pair.
 2. Keep private keys out of Git and CI logs.
 3. Re-sign all release binaries using your private key.
-4. Compile LCM with the matching public key before flashing devices.
+4. Distribute only the matching public key to devices.
 5. Rotate keys immediately if exposure is suspected.
 
 ## 8) Where to find technical docs

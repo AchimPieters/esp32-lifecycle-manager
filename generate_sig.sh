@@ -16,8 +16,7 @@ fi
 
 if [ ! -f "$PRIVATE_KEY_PATH" ]; then
   echo "Private key not found: $PRIVATE_KEY_PATH" >&2
-  echo "Tip: use the bundled default key at keys/ota_signing_private.pem or pass your own path as arg 2." >&2
-  echo "Example: ./generate_sig.sh build/main.bin /path/to/custom_private.pem" >&2
+  echo "Generate one with: openssl ecparam -name prime256v1 -genkey -noout -out $PRIVATE_KEY_PATH" >&2
   exit 1
 fi
 

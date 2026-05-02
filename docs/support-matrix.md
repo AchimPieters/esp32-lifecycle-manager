@@ -1,15 +1,10 @@
 # Support matrix
 
 ## Supported chip families
-
-### CI-validated (full build + test coverage)
 - ESP32 series: `esp32` (minimum flash: 4MB)
 - ESP32-E series: mapped to ESP32 target compatibility profile (`esp32`) (minimum flash: 4MB)
 - ESP32-S series: `esp32s2`, `esp32s3` (minimum flash: 4MB)
-- ESP32-C series: `esp32c2`, `esp32c3` (minimum flash: 4MB)
-
-### Declared in component manifest, not yet CI-validated
-- ESP32-C series: `esp32c5`, `esp32c6` (minimum flash: 4MB) — bring-up possible, production support not guaranteed
+- ESP32-C series: `esp32c2`, `esp32c3`, `esp32c5`, `esp32c6` (minimum flash: 4MB)
 
 ## Explicitly not supported
 - ESP32-H series (not targeted in this repository)
