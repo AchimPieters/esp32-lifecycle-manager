@@ -170,7 +170,10 @@ static void led_indicator_apply(bool enabled, int gpio, bool active_high) {
     }
 
     if (previous_gpio >= 0 && previous_gpio != gpio) {
-        gpio_reset_pin(previous_gpio);
+        esp_err_t err = gpio_reset_pin(previous_gpio);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "gpio_reset_pin(%d) failed: %s", previous_gpio, esp_err_to_name(err));
+        }
     }
 
     if (gpio > LCM_MAX_GPIO_PIN) {
@@ -333,9 +336,6 @@ void wifi_ready(void)
 {
     ESP_LOGI("app", "WiFi ready; starting OTA check");
     esp_log_level_set("*", ESP_LOG_INFO);
-    esp_log_level_set("github_update", ESP_LOG_DEBUG);
-    esp_log_level_set("esp_https_ota", ESP_LOG_DEBUG);
-    esp_log_level_set("HTTP_CLIENT",   ESP_LOG_DEBUG);
 
     ESP_LOGI("app", "Starting SNTP synchronization");
     sntp_start_and_wait();

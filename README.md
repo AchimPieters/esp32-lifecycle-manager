@@ -117,8 +117,8 @@ this portal you can:
 ### Downloading and installing `main.bin`
 
 After provisioning, LCM downloads `main.bin` and the accompanying
-`main.bin.sig`. It validates the SHA-384 signature as well as the reported file
-size and only activates the firmware when the verification succeeds.
+`main.bin.sig`. It validates the ECDSA P-256 / SHA-256 signature as well as the
+reported file size and only activates the firmware when the verification succeeds.
 
 ### Software update (`ota_trigger`)
 
@@ -176,8 +176,9 @@ is running.
 
 - **Primary validated line:** ESP-IDF `v5.4.2` (full build + tests in CI).
 - **ESP-IDF `v6.0` status:** pending full CI validation; use staging before production rollout.
-- **Officially targeted by this repository:** `esp32`, `esp32s2`, `esp32s3`, `esp32c2`, `esp32c3`.
-- **Not currently targeted:** `esp32c5`, `esp32c6`, `esp32c61`.
+- **CI-validated targets:** `esp32`, `esp32s2`, `esp32s3`, `esp32c2`, `esp32c3`.
+- **Declared in component manifest, not yet CI-validated:** `esp32c5`, `esp32c6` — bring-up is possible but production support is not guaranteed.
+- **Not targeted:** `esp32c61`.
 
 ## Signing `main.bin`
 
@@ -256,9 +257,9 @@ python -m esptool --chip esp32c3 -b 460800 --before default_reset --after hard_r
 
 ### ESP32-C5 / ESP32-C6 / ESP32-C61
 
-These targets are currently **not part of the official targeted set** in this
-repository. Bring-up can be done experimentally, but production support is only
-claimed for the targets listed above.
+`esp32c5` and `esp32c6` are declared in the component manifest and can be built,
+but they are **not yet CI-validated**. Production use is at your own risk until
+full cross-target build checks pass. `esp32c61` is not targeted at all.
 
 ## Reset and recovery recap
 

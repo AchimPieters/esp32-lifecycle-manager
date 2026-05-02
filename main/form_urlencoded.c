@@ -30,22 +30,21 @@
 static const char *TAG = "form_urlencoded";
 
 
+static int ishex(int c) {
+        c = toupper(c);
+        return ('0' <= c && c <= '9') || ('A' <= c && c <= 'F');
+}
+
+static int hexvalue(int c) {
+        c = toupper(c);
+        if ('0' <= c && c <= '9')
+                return c - '0';
+        return c - 'A' + 10;
+}
+
 char *url_unescape(const char *buffer, size_t size) {
         ESP_LOGD(TAG, "Decoding URL-escaped string of size %d", (int)size);
         int len = 0;
-
-        int ishex(int c) {
-                c = toupper(c);
-                return ('0' <= c && c <= '9') || ('A' <= c && c <= 'F');
-        }
-
-        int hexvalue(int c) {
-                c = toupper(c);
-                if ('0' <= c && c <= '9')
-                        return c - '0';
-                else
-                        return c - 'A' + 10;
-        }
 
         int i = 0, j;
         while (i < size) {
@@ -103,6 +102,12 @@ form_param_t *form_params_parse(const char *s) {
                         return NULL;
                 }
                 param->name = url_unescape(s+pos, i-pos);
+                if (!param->name) {
+                        ESP_LOGE(TAG, "url_unescape failed for param name");
+                        free(param);
+                        form_params_free(params);
+                        return NULL;
+                }
                 param->value = NULL;
                 param->next = params;
                 params = param;
