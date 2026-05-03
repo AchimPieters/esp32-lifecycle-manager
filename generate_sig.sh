@@ -4,6 +4,7 @@ set -eu
 
 TARGET_PATH="${1:-build/main.bin}"
 PRIVATE_KEY_PATH="${2:-keys/ota_signing_private.pem}"
+DEFAULT_PRIVATE_KEY_PATH="keys/ota_signing_private.pem"
 
 if [ -d "$TARGET_PATH" ]; then
   TARGET_PATH="${TARGET_PATH%/}/main.bin"
@@ -16,7 +17,12 @@ fi
 
 if [ ! -f "$PRIVATE_KEY_PATH" ]; then
   echo "Private key not found: $PRIVATE_KEY_PATH" >&2
-  echo "Generate one with: openssl ecparam -name prime256v1 -genkey -noout -out $PRIVATE_KEY_PATH" >&2
+  if [ "$PRIVATE_KEY_PATH" = "$DEFAULT_PRIVATE_KEY_PATH" ]; then
+    echo "Expected demo key at: $DEFAULT_PRIVATE_KEY_PATH" >&2
+    echo "If you removed it, either restore it or provide your own private key as second argument." >&2
+  else
+    echo "Tip: omit the second argument to use the demo key ($DEFAULT_PRIVATE_KEY_PATH)." >&2
+  fi
   exit 1
 fi
 
