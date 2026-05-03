@@ -4,6 +4,13 @@ This document defines the minimum operational process for OTA signing keys and N
 
 ## OTA signing key lifecycle (ECDSA P-256)
 
+### Demo key behavior for local onboarding
+- This repository ships demo keys in `keys/` for out-of-the-box evaluation.
+- `generate_sig.sh` uses `keys/ota_signing_private.pem` by default.
+- Firmware verification uses a built-in demo public key unless overridden via config.
+- Never use demo keys for production deployments.
+
+
 ### 1) Key generation
 - Generate the private key on an offline workstation/HSM.
 - Keep private keys outside this repository.

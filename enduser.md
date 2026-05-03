@@ -78,10 +78,10 @@ hardware reset flow and return to onboarding mode.
 
 ## 7) Security note about keys in this repository
 
-This repository currently includes sample key material:
+This repository currently includes sample key material in `keys/`:
 
-- `ota_signing_private.pem`
-- `ota_signing_public.pem`
+- `keys/ota_signing_private.pem`
+- `keys/ota_signing_public.pem`
 
 These must be treated as **example-only** and **not trusted for production**.
 
