@@ -27,4 +27,19 @@ config LCM_REQUIRE_NVS_ENCRYPTION
         If enabled, startup aborts unless ESP-IDF NVS encryption is enabled
         in sdkconfig (`CONFIG_NVS_ENCRYPTION`).
 
+
+config LCM_USE_CUSTOM_OTA_PUBLIC_KEY
+    bool "Use custom OTA signing public key"
+    default n
+    help
+        Enable to override the built-in demo OTA signing public key.
+
+config LCM_CUSTOM_OTA_PUBLIC_KEY_PEM
+    string "Custom OTA public key (PEM, single-line with \n escapes)"
+    depends on LCM_USE_CUSTOM_OTA_PUBLIC_KEY
+    default ""
+    help
+        PEM encoded ECDSA P-256 public key used for OTA signature
+        verification. Use \n for line breaks.
+
 endmenu

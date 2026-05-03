@@ -803,11 +803,20 @@ typedef struct __attribute__((packed)) {
     uint16_t signature_length;
 } ota_sig_header_t;
 
-static const char OTA_PUBLIC_KEY_PEM[] =
+static const char OTA_DEFAULT_PUBLIC_KEY_PEM[] =
 "-----BEGIN PUBLIC KEY-----\n"
-"MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAECoIqacNbCn1oWreXsb2QTz6c+hOj\n"
-"ezXGuO01nfuVl/+sH2iB8bvkGnwW+f14lzqsQQ6H8DMxIRJCNjGMNqrYjg==\n"
+"MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAED8gOG1QP8TtSknLNBkxXV2I7zCUx\n"
+"cB7aCgI/dbedit40iHQXWHfiDfwxskMG1vrIy38vtjpe/mVvSZmTPQ8P8w==\n"
 "-----END PUBLIC KEY-----\n";
+
+static const char *ota_public_key_pem(void) {
+#if CONFIG_LCM_USE_CUSTOM_OTA_PUBLIC_KEY
+    if (strlen(CONFIG_LCM_CUSTOM_OTA_PUBLIC_KEY_PEM) > 0) {
+        return CONFIG_LCM_CUSTOM_OTA_PUBLIC_KEY_PEM;
+    }
+#endif
+    return OTA_DEFAULT_PUBLIC_KEY_PEM;
+}
 
 static esp_err_t verify_signature_blob(const uint8_t *sig_blob, size_t sig_len,
                                        uint32_t image_len, const uint8_t image_hash[32]) {
@@ -853,8 +862,8 @@ static esp_err_t verify_signature_blob(const uint8_t *sig_blob, size_t sig_len,
     mbedtls_pk_init(&pk);
 
     int parse_res = mbedtls_pk_parse_public_key(&pk,
-            (const unsigned char *)OTA_PUBLIC_KEY_PEM,
-            strlen(OTA_PUBLIC_KEY_PEM) + 1);
+            (const unsigned char *)ota_public_key_pem(),
+            strlen(ota_public_key_pem()) + 1);
     if (parse_res != 0) {
         ESP_LOGE(TAG, "Public key parse failed: -0x%04x", -parse_res);
         mbedtls_pk_free(&pk);
