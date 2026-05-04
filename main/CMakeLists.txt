@@ -31,9 +31,10 @@ idf_component_register(
         esp_http_client
         esp_https_ota
         app_update
-        spi_flash
         mbedtls
-        cjson
-        EMBED_TXTFILES
-            "content/index.html"
+        ${JSON_COMPONENT}
+    PRIV_REQUIRES
+        spi_flash
+    EMBED_TXTFILES
+        "content/index.html"
 )
