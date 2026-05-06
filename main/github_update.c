@@ -61,6 +61,7 @@ static const char *TAG = "github_update";
 #define OTA_SIG_ALGO_ECDSA_P256_SHA256 1U
 #define OTA_SIG_MAX_LEN 512U
 #define INSTALLED_LABEL_MAX_LEN (ESP_PARTITION_LABEL_MAX_LEN + 1)
+#define FACTORY_BOOTSTRAP_VERSION "0.0.0"
 typedef enum {
     OTA_STATE_IDLE = 0,
     OTA_STATE_CHECKING_RELEASE,
@@ -241,6 +242,13 @@ static int cmp_version(int aMaj, int aMin, int aPat,
     if (aMaj != bMaj) return aMaj - bMaj;
     if (aMin != bMin) return aMin - bMin;
     return aPat - bPat;
+}
+
+static bool running_from_factory_partition(void) {
+    const esp_partition_t *running = esp_ota_get_running_partition();
+    return running &&
+           running->type == ESP_PARTITION_TYPE_APP &&
+           running->subtype == ESP_PARTITION_SUBTYPE_APP_FACTORY;
 }
 
 static esp_err_t store_installed_version_if_needed(const char *version,
@@ -1040,12 +1048,24 @@ esp_err_t github_update_if_needed(const char *repo, bool prerelease) {
         }
     }
 
+    bool running_factory = running_from_factory_partition();
     const esp_app_desc_t *running_desc = esp_app_get_description();
     if (!curValid) {
-        curValid = parse_version(running_desc ? running_desc->version : NULL,
-                                 &curMaj, &curMin, &curPat);
-        if (!curValid) {
-            ESP_LOGE(TAG, "Invalid current firmware version, assuming 0.0.0");
+        if (running_factory) {
+            curMaj = 0;
+            curMin = 0;
+            curPat = 0;
+            curValid = true;
+            strlcpy(installed_version, FACTORY_BOOTSTRAP_VERSION, sizeof(installed_version));
+            ESP_LOGI(TAG,
+                     "No installed OTA firmware stored; using factory bootstrap version %s",
+                     FACTORY_BOOTSTRAP_VERSION);
+        } else {
+            curValid = parse_version(running_desc ? running_desc->version : NULL,
+                                     &curMaj, &curMin, &curPat);
+            if (!curValid) {
+                ESP_LOGE(TAG, "Invalid current firmware version, assuming 0.0.0");
+            }
         }
     }
 
