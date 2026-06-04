@@ -52,3 +52,24 @@ jobs:
           # into the insecure demo signing key. Real devices must instead set
           # LCM_USE_CUSTOM_OTA_PUBLIC_KEY with their own key.
           command: echo "CONFIG_LCM_ALLOW_INSECURE_DEMO_KEY=y" >> sdkconfig.defaults && idf.py set-target ${{ matrix.target }} && idf.py build
+
+  # Regression guard for the OTA signing-key gate: with neither a custom key nor
+  # the explicit demo-key opt-in, the build MUST fail (the public demo key
+  # provides no authenticity). This locks in the security property so it cannot
+  # be silently removed.
+  demo-key-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build must fail without an OTA key configured
+        uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: v5.4.2
+          target: esp32
+          command: >-
+            idf.py set-target esp32 &&
+            if idf.py build; then
+              echo "ERROR: build succeeded with no OTA key configured (gate is broken)" && exit 1;
+            else
+              echo "OK: build correctly refused the insecure demo key default";
+            fi
