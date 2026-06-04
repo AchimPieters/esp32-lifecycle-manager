@@ -35,6 +35,4 @@ idf_component_register(
         ${JSON_COMPONENT}
     PRIV_REQUIRES
         spi_flash
-    EMBED_TXTFILES
-        "content/index.html"
 )

@@ -30,52 +30,43 @@
 static const char *TAG = "form_urlencoded";
 
 
+static int ishex(int c) {
+        c = toupper((unsigned char)c);
+        return ('0' <= c && c <= '9') || ('A' <= c && c <= 'F');
+}
+
+static int hexvalue(int c) {
+        c = toupper((unsigned char)c);
+        if ('0' <= c && c <= '9')
+                return c - '0';
+        return c - 'A' + 10;
+}
+
 char *url_unescape(const char *buffer, size_t size) {
         ESP_LOGD(TAG, "Decoding URL-escaped string of size %d", (int)size);
-        int len = 0;
 
-        int ishex(int c) {
-                c = toupper(c);
-                return ('0' <= c && c <= '9') || ('A' <= c && c <= 'F');
-        }
-
-        int hexvalue(int c) {
-                c = toupper(c);
-                if ('0' <= c && c <= '9')
-                        return c - '0';
-                else
-                        return c - 'A' + 10;
-        }
-
-        int i = 0, j;
-        while (i < size) {
-                len++;
-                if (buffer[i] == '%') {
-                        i += 3;
-                } else {
-                        i++;
-                }
-        }
-
-        char *result = malloc(len+1);
+        // A URL-decoded string is never longer than its encoded form, so a
+        // buffer of size + 1 is always sufficient. Allocating up front (instead
+        // of a separate length-counting pass) guarantees that the counting and
+        // decoding logic can never disagree, which previously allowed a heap
+        // overflow on malformed percent-encodings such as a trailing '%'.
+        char *result = malloc(size + 1);
         if (!result) {
                 ESP_LOGE(TAG, "malloc failed in url_unescape");
                 return NULL;
         }
-        i = j = 0;
+
+        size_t i = 0, j = 0;
         while (i < size) {
                 if (buffer[i] == '+') {
                         result[j++] = ' ';
                         i++;
-                } else if (buffer[i] != '%') {
-                        result[j++] = buffer[i++];
+                } else if (buffer[i] == '%' && i + 2 < size &&
+                           ishex(buffer[i + 1]) && ishex(buffer[i + 2])) {
+                        result[j++] = hexvalue(buffer[i + 1]) * 16 + hexvalue(buffer[i + 2]);
+                        i += 3;
                 } else {
-                        if (i+2 < size && ishex(buffer[i+1]) && ishex(buffer[i+2])) {
-                                result[j++] = hexvalue(buffer[i+1])*16 + hexvalue(buffer[i+2]);
-                                i += 3;
-                        } else {
-                                result[j++] = buffer[i++];
-                        }
+                        result[j++] = buffer[i++];
                 }
         }
         result[j] = 0;

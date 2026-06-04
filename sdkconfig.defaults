@@ -12,8 +12,12 @@ CONFIG_LOG_DEFAULT_LEVEL_INFO=y
 CONFIG_ESP_CONSOLE_UART_DEFAULT=n
 
 # TLS cert bundle
+# The "common" set (most widely used roots, incl. the DigiCert/Sectigo roots
+# behind api.github.com and the GitHub release CDN) is considerably smaller than
+# the full bundle. If GitHub ever rotates to a root outside this set, OTA will
+# fail TLS until you switch back to CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL.
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
-CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=y
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_CMN=y
 
 # Partition table
 CONFIG_PARTITION_TABLE_CUSTOM=y

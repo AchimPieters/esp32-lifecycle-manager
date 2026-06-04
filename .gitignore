@@ -66,3 +66,13 @@ keys/private/*.pem
 keys/private/*.key
 *.sig.tmp
 signing-output/
+
+# ESP-IDF build output and local config (should never be committed)
+build/
+sdkconfig
+sdkconfig.old
+managed_components/
+dependencies.lock
+
+# macOS
+.DS_Store

@@ -21,6 +21,7 @@
 #define NVS_KEY_OTA_LAST_SEEN_VER "ota_last_seen"
 #define NVS_KEY_OTA_SOURCE_REPO "ota_src_repo"
 #define NVS_KEY_OTA_LAST_REASON "ota_last_reason"
+#define NVS_KEY_OTA_MIN_VER "ota_min_ver"
 
 #define NVS_KEY_WIFI_SSID "wifi_ssid"
 #define NVS_KEY_WIFI_PASSWORD "wifi_password"
