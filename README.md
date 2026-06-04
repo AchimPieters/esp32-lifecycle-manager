@@ -18,7 +18,14 @@ To make this repository easier to navigate:
 
 ### Important security warning
 
-This repository contains example key files (`ota_signing_private.pem` and `ota_signing_public.pem`) for demonstration purposes. Do **not** use these keys in production. Always generate and protect your own signing keys before shipping devices.
+This repository contains example key files (`ota_signing_private.pem` and `ota_signing_public.pem`) for demonstration purposes. Because the matching **private** key is committed here, it is public knowledge: anyone can sign firmware that a device built with the demo key would accept. The demo key therefore provides **no** authenticity.
+
+To stop this insecure default from shipping by accident, the firmware **does not build** with the demo key unless you explicitly opt in. You must either:
+
+- set `LCM_USE_CUSTOM_OTA_PUBLIC_KEY=y` and provide your own `LCM_CUSTOM_OTA_PUBLIC_KEY_PEM` (recommended for any real device), or
+- set `LCM_ALLOW_INSECURE_DEMO_KEY=y` to deliberately build with the demo key for local evaluation only.
+
+Always generate and protect your own signing keys before shipping devices. If you ever placed a *real* key in this repo, treat it as compromised, rotate it, and scrub it from git history (e.g. `git filter-repo`).
 
 ## How LCM operates
 
@@ -54,8 +61,11 @@ this portal you can:
 ### Downloading and installing `main.bin`
 
 After provisioning, LCM downloads `main.bin` and the accompanying
-`main.bin.sig`. It validates the SHA-384 signature as well as the reported file
-size and only activates the firmware when the verification succeeds.
+`main.bin.sig`. It validates the ECDSA P-256 / SHA-256 signature as well as the
+reported image length and only activates the firmware (switches the boot
+partition) when the verification succeeds. The download is staged to the
+inactive OTA partition; if signature verification fails the boot partition is
+left untouched, so an unverified image is never booted.
 
 ### Software update (`ota_trigger`)
 

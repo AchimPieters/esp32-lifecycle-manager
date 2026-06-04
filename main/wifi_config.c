@@ -187,6 +187,10 @@ static void sysparam_get_string(const char *key, char **value) {
         esp_err_t err = nvs_store_get_str(wifi_cfg_handle, key, NULL, &required);
         if (err == ESP_OK && required > 0) {
                 *value = malloc(required);
+                if (!*value) {
+                        ESP_LOGE("wifi_config", "malloc failed reading key %s", key);
+                        return;
+                }
                 err = nvs_store_get_str(wifi_cfg_handle, key, *value, &required);
                 if (err != ESP_OK) {
                         ESP_LOGE("wifi_config", "Failed to read key %s: %s", key, esp_err_to_name(err));
@@ -320,6 +324,10 @@ static void wifi_config_softap_stop();
 
 static client_t *client_new() {
         client_t *client = malloc(sizeof(client_t));
+        if (!client) {
+                ESP_LOGE("wifi_config", "Failed to allocate HTTP client");
+                return NULL;
+        }
         memset(client, 0, sizeof(client_t));
 
         http_parser_init(&client->parser, HTTP_REQUEST);
@@ -340,25 +348,6 @@ static void client_free(client_t *client) {
 static void client_send(client_t *client, const char *payload, size_t payload_size) {
         lwip_write(client->fd, payload, payload_size);
 }
-static void client_send_index(client_t *client) {
-        ESP_LOGI("wifi_config", "Serving captive portal response");
-        extern const uint8_t index_html_start[] asm ("_binary_index_html_start");
-        extern const uint8_t index_html_end[] asm ("_binary_index_html_end");
-
-        const char *header =
-                "HTTP/1.1 200 OK\r\n"
-                "Content-Type: text/html\r\n"
-                "Cache-Control: no-cache\r\n"
-                "Connection: close\r\n"
-                "\r\n";
-
-        client_send(client, header, strlen(header));
-        client_send(client, (const char *)index_html_start, index_html_end - index_html_start);
-}
-
-
-
-
 
 
 static void client_send_chunk(client_t *client, const char *payload) {
@@ -425,8 +414,13 @@ static void wifi_scan_task(void *arg)
                                 }
                                 if (!net) {
                                         wifi_network_info_t *net = malloc(sizeof(wifi_network_info_t));
+                                        if (!net) {
+                                                ESP_LOGE("wifi_config", "Failed to allocate scan result entry");
+                                                continue;
+                                        }
                                         memset(net, 0, sizeof(*net));
-                                        strncpy(net->ssid, (char *)records[i].ssid, sizeof(net->ssid));
+                                        strncpy(net->ssid, (char *)records[i].ssid, sizeof(net->ssid) - 1);
+                                        net->ssid[sizeof(net->ssid) - 1] = '\0';
                                         net->secure = records[i].authmode != WIFI_AUTH_OPEN;
                                         net->next = wifi_networks;
                                         wifi_networks = net;
@@ -495,6 +489,44 @@ static void wifi_config_send_led_preferences(client_t *client) {
         client_send_chunk(client, script);
 }
 
+// Escape a string for safe inclusion in HTML. SSIDs are attacker-controllable
+// (any nearby access point can broadcast an arbitrary SSID), so they must never
+// be emitted into the captive-portal markup unescaped, otherwise a crafted SSID
+// can inject script into the provisioning page (reflected XSS). Writes a
+// NUL-terminated, safely-truncated result into out.
+static void html_escape(const char *in, char *out, size_t out_size) {
+        if (out_size == 0) {
+                return;
+        }
+        size_t o = 0;
+        for (size_t i = 0; in && in[i] != '\0'; ++i) {
+                const char *rep = NULL;
+                char c = in[i];
+                switch (c) {
+                case '&': rep = "&amp;"; break;
+                case '<': rep = "&lt;"; break;
+                case '>': rep = "&gt;"; break;
+                case '"': rep = "&quot;"; break;
+                case '\'': rep = "&#39;"; break;
+                default: break;
+                }
+                if (rep) {
+                        size_t rlen = strlen(rep);
+                        if (o + rlen >= out_size) {
+                                break;
+                        }
+                        memcpy(out + o, rep, rlen);
+                        o += rlen;
+                } else {
+                        if (o + 1 >= out_size) {
+                                break;
+                        }
+                        out[o++] = c;
+                }
+        }
+        out[o] = '\0';
+}
+
 static void wifi_config_server_on_settings(client_t *client) {
         static const char http_prologue[] =
                 "HTTP/1.1 200 \r\n"
@@ -524,13 +556,17 @@ static void wifi_config_server_on_settings(client_t *client) {
         client_send_chunk(client, html_settings_body);
 
         if (xSemaphoreTake(wifi_networks_mutex, 5000 / portTICK_PERIOD_MS)) {
-                char buffer[64];
+                char buffer[256];
+                // Worst case: every one of the 32 SSID bytes expands to a 6-char
+                // entity (e.g. "&quot;"), plus the NUL terminator.
+                char ssid_escaped[6 * 32 + 1];
                 wifi_network_info_t *net = wifi_networks;
                 while (net) {
+                        html_escape(net->ssid, ssid_escaped, sizeof(ssid_escaped));
                         snprintf(
                                 buffer, sizeof(buffer),
                                 html_network_item,
-                                net->secure ? "secure" : "unsecure", net->ssid
+                                net->secure ? "secure" : "unsecure", ssid_escaped
                                 );
                         client_send_chunk(client, buffer);
 
@@ -882,14 +918,18 @@ static void http_task(void *arg) {
                                 (void)setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT, &maxpkt, sizeof(maxpkt));
 
                                 client_t *client = client_new();
-                                client->fd = fd;
-                                client->next = clients;
+                                if (!client) {
+                                        lwip_close(fd);
+                                } else {
+                                        client->fd = fd;
+                                        client->next = clients;
 
-                                clients = client;
+                                        clients = client;
 
-                                FD_SET(fd, &fds);
-                                if (fd > max_fd)
-                                        max_fd = fd;
+                                        FD_SET(fd, &fds);
+                                        if (fd > max_fd)
+                                                max_fd = fd;
+                                }
                         }
 
                         triggered_nfds--;
@@ -1012,13 +1052,24 @@ static void dns_task(void *arg)
                 char buffer[96];
                 struct sockaddr src_addr;
                 socklen_t src_addr_len = sizeof(src_addr);
-                size_t count = recvfrom(fd, buffer, sizeof(buffer), 0, (struct sockaddr*)&src_addr, &src_addr_len);
+                ssize_t received = recvfrom(fd, buffer, sizeof(buffer), 0, (struct sockaddr*)&src_addr, &src_addr_len);
 
-                /* Drop messages that are too large to send a response in the buffer */
-                if (count > 0 && count <= sizeof(buffer) - 16 && src_addr.sa_family == AF_INET) {
-                        size_t qname_len = strlen(buffer + 12) + 1;
-                        uint32_t reply_len = 2 + 10 + qname_len + 16 + 4;
+                /* Locate the QNAME terminator within the bytes we actually
+                 * received — never run strlen() past the datagram, otherwise an
+                 * unterminated query would read (and below, overwrite) out of
+                 * bounds. qname_end == count means "no terminator / malformed". */
+                size_t count = (received > 0) ? (size_t)received : 0;
+                size_t qname_end = 12;
+                while (qname_end < count && buffer[qname_end] != '\0') {
+                        qname_end++;
+                }
+                size_t qname_len = qname_end - 12 + 1; /* include the NUL */
+                uint32_t reply_len = 2 + 10 + qname_len + 16 + 4;
 
+                /* Require a 12-byte header followed by a NUL-terminated QNAME, an
+                 * IPv4 source, and that the in-place response still fits buffer. */
+                if (received > 12 && qname_end < count &&
+                    src_addr.sa_family == AF_INET && reply_len <= sizeof(buffer)) {
                         char *head = buffer + 2;
                         *head++ = 0x80; // Flags
                         *head++ = 0x00;
@@ -1465,6 +1516,3 @@ void wifi_config_shutdown(void) {
 
         INFO("WiFi provisioning services stopped");
 }
-
-
-__attribute__((used)) static void *linker_keep_client_send_index = (void *)&client_send_index;

@@ -81,6 +81,7 @@ static const char *OTA_REASON_INVALID_IMAGE_LENGTH = "invalid_image_length";
 static const char *OTA_REASON_PARTITION_UNAVAILABLE = "partition_unavailable";
 static const char *OTA_REASON_BOOT_PARTITION_SET_FAILURE = "boot_partition_set_failure";
 static const char *OTA_REASON_HTTP_FAILURE = "http_failure";
+static const char *OTA_REASON_ROLLBACK_BLOCKED = "rollback_blocked";
 
 static const char *ota_state_to_str(ota_state_t state) {
     switch (state) {
@@ -249,6 +250,47 @@ static bool running_from_factory_partition(void) {
     return running &&
            running->type == ESP_PARTITION_TYPE_APP &&
            running->subtype == ESP_PARTITION_SUBTYPE_APP_FACTORY;
+}
+
+// Anti-rollback floor: the highest firmware version this device has ever
+// installed. Releases below the floor are refused so a controlled feed cannot
+// push an older, still-validly-signed (and potentially vulnerable) build. Note
+// this floor lives in NVS and is therefore cleared by a factory reset; hardware
+// anti-rollback (Secure Boot v2 secure_version) is required for a guarantee
+// that survives a reset.
+static bool load_rollback_floor(int *maj, int *min, int *pat) {
+    nvs_handle_t h;
+    if (nvs_store_open_ro(NVS_NS_FWCFG, &h) != ESP_OK) {
+        return false;
+    }
+    char buf[INSTALLED_VER_MAX_LEN];
+    size_t len = sizeof(buf);
+    esp_err_t err = nvs_store_get_str(h, NVS_KEY_OTA_MIN_VER, buf, &len);
+    nvs_store_close(h);
+    if (err != ESP_OK) {
+        return false;
+    }
+    return parse_version(buf, maj, min, pat);
+}
+
+static void raise_rollback_floor(int maj, int min, int pat) {
+    int cMaj, cMin, cPat;
+    if (load_rollback_floor(&cMaj, &cMin, &cPat) &&
+        cmp_version(maj, min, pat, cMaj, cMin, cPat) <= 0) {
+        return; // floor is already at least this high
+    }
+    char buf[INSTALLED_VER_MAX_LEN];
+    snprintf(buf, sizeof(buf), "%d.%d.%d", maj, min, pat);
+    nvs_handle_t h;
+    if (nvs_store_open_rw(NVS_NS_FWCFG, &h) != ESP_OK) {
+        return;
+    }
+    if (nvs_store_set_str(h, NVS_KEY_OTA_MIN_VER, buf) == ESP_OK) {
+        (void)nvs_store_commit_and_close(h);
+        ESP_LOGI(TAG, "Anti-rollback floor raised to %s", buf);
+    } else {
+        nvs_store_close(h);
+    }
 }
 
 static esp_err_t store_installed_version_if_needed(const char *version,
@@ -817,6 +859,10 @@ static const char OTA_DEFAULT_PUBLIC_KEY_PEM[] =
 "cB7aCgI/dbedit40iHQXWHfiDfwxskMG1vrIy38vtjpe/mVvSZmTPQ8P8w==\n"
 "-----END PUBLIC KEY-----\n";
 
+#if !defined(CONFIG_LCM_USE_CUSTOM_OTA_PUBLIC_KEY) && !defined(CONFIG_LCM_ALLOW_INSECURE_DEMO_KEY)
+#error "No OTA signing key configured. The built-in demo key's private key is public (see keys/ota_signing_private.pem), so it provides no authenticity. Set LCM_USE_CUSTOM_OTA_PUBLIC_KEY=y with your own key, or LCM_ALLOW_INSECURE_DEMO_KEY=y to deliberately build with the insecure demo key (never in production)."
+#endif
+
 static const char *ota_public_key_pem(void) {
 #if CONFIG_LCM_USE_CUSTOM_OTA_PUBLIC_KEY
     if (strlen(CONFIG_LCM_CUSTOM_OTA_PUBLIC_KEY_PEM) > 0) {
@@ -930,12 +976,42 @@ esp_err_t github_update_from_urls(const char *fw_url, const char *sig_url,
     bool led_active = false;
     esp_err_t ret = ESP_OK;
     const char *failure_reason = OTA_REASON_HTTP_FAILURE;
+    esp_https_ota_handle_t ota_handle = NULL;
+    bool ota_open = false;
     led_blinking_start();
     led_active = true;
-    ret = esp_https_ota(&ota_cfg);
-    ESP_LOGD(TAG, "esp_https_ota -> %s", esp_err_to_name(ret));
+
+    // Use the streaming OTA API instead of the one-shot esp_https_ota(). The
+    // one-shot helper switches the boot partition itself before returning, which
+    // would activate the new image *before* our signature check runs. With
+    // begin/perform we only stage the image to flash; the boot-partition switch
+    // happens exclusively in esp_https_ota_finish(), which we defer until after
+    // the signature has been verified. A failed verification therefore never
+    // leaves an unverified image bootable (fail-closed).
+    ret = esp_https_ota_begin(&ota_cfg, &ota_handle);
+    if (ret != ESP_OK || ota_handle == NULL) {
+        ESP_LOGE(TAG, "esp_https_ota_begin failed: %s", esp_err_to_name(ret));
+        if (ret == ESP_OK) {
+            ret = ESP_FAIL;
+        }
+        failure_reason = OTA_REASON_HTTP_FAILURE;
+        goto cleanup;
+    }
+    ota_open = true;
+
+    do {
+        ret = esp_https_ota_perform(ota_handle);
+    } while (ret == ESP_ERR_HTTPS_OTA_IN_PROGRESS);
+
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "OTA failed: %s", esp_err_to_name(ret));
+        ESP_LOGE(TAG, "OTA download failed: %s", esp_err_to_name(ret));
+        failure_reason = OTA_REASON_HTTP_FAILURE;
+        goto cleanup;
+    }
+    if (!esp_https_ota_is_complete_data_received(ota_handle)) {
+        ESP_LOGE(TAG, "OTA data incomplete");
+        ret = ESP_FAIL;
+        failure_reason = OTA_REASON_HTTP_FAILURE;
         goto cleanup;
     }
     ESP_LOGI(TAG, "OTA download complete");
@@ -948,7 +1024,6 @@ esp_err_t github_update_from_urls(const char *fw_url, const char *sig_url,
         ESP_LOGE(TAG, "Failed to get image metadata: %s", esp_err_to_name(meta_res));
         ret = meta_res;
         failure_reason = OTA_REASON_INVALID_IMAGE_LENGTH;
-        (void)ota_persist_state(OTA_STATE_FAILED, ret, NULL, release_version, NULL, OTA_REASON_INVALID_IMAGE_LENGTH);
         goto cleanup;
     }
     (void)ota_persist_state(OTA_STATE_STAGING, ESP_OK, NULL, release_version, NULL, OTA_REASON_NONE);
@@ -959,7 +1034,6 @@ esp_err_t github_update_from_urls(const char *fw_url, const char *sig_url,
         ESP_LOGE(TAG, "Failed to compute image hash: %s", esp_err_to_name(hash_res));
         ret = hash_res;
         failure_reason = OTA_REASON_INVALID_IMAGE_LENGTH;
-        (void)ota_persist_state(OTA_STATE_FAILED, ret, NULL, release_version, NULL, OTA_REASON_INVALID_IMAGE_LENGTH);
         goto cleanup;
     }
 
@@ -967,7 +1041,15 @@ esp_err_t github_update_from_urls(const char *fw_url, const char *sig_url,
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Signature validation failed: %s", esp_err_to_name(ret));
         failure_reason = OTA_REASON_INVALID_SIGNATURE;
-        (void)ota_persist_state(OTA_STATE_FAILED, ret, NULL, release_version, NULL, OTA_REASON_INVALID_SIGNATURE);
+        goto cleanup;
+    }
+
+    // Signature verified: only now commit the staged image as the boot target.
+    ret = esp_https_ota_finish(ota_handle);
+    ota_open = false;
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "esp_https_ota_finish failed: %s", esp_err_to_name(ret));
+        failure_reason = OTA_REASON_BOOT_PARTITION_SET_FAILURE;
         goto cleanup;
     }
     led_blinking_stop();
@@ -997,6 +1079,10 @@ esp_err_t github_update_from_urls(const char *fw_url, const char *sig_url,
             ESP_LOGW(TAG, "Failed to persist installed version %s: %s",
                      version_to_store, esp_err_to_name(store_err));
         }
+        int vMaj, vMin, vPat;
+        if (parse_version(version_to_store, &vMaj, &vMin, &vPat)) {
+            raise_rollback_floor(vMaj, vMin, vPat);
+        }
     } else {
         ESP_LOGW(TAG, "Skipping persistence of installed version because no value is available");
     }
@@ -1011,6 +1097,12 @@ esp_err_t github_update_from_urls(const char *fw_url, const char *sig_url,
     return ESP_OK;
 
 cleanup:
+    // Abort any open OTA session. esp_https_ota_abort() releases the handle
+    // without switching the boot partition, so a failed/aborted update keeps the
+    // currently running firmware as the boot target.
+    if (ota_open && ota_handle) {
+        (void)esp_https_ota_abort(ota_handle);
+    }
     if (ret != ESP_OK) {
         (void)ota_persist_state(OTA_STATE_FAILED, ret, NULL, release_version, NULL, failure_reason);
     }
@@ -1205,6 +1297,16 @@ esp_err_t github_update_if_needed(const char *repo, bool prerelease) {
     ESP_LOGI(TAG, "Latest release version %d.%d.%d", relMaj, relMin, relPat);
     if (!relValid) {
         ESP_LOGE(TAG, "Invalid release version, assuming 0.0.0");
+    }
+    int floorMaj, floorMin, floorPat;
+    if (relValid && load_rollback_floor(&floorMaj, &floorMin, &floorPat) &&
+        cmp_version(relMaj, relMin, relPat, floorMaj, floorMin, floorPat) < 0) {
+        ESP_LOGW(TAG, "Refusing release %d.%d.%d below anti-rollback floor %d.%d.%d",
+                 relMaj, relMin, relPat, floorMaj, floorMin, floorPat);
+        cJSON_Delete(json);
+        (void)ota_persist_state(OTA_STATE_FAILED, ESP_FAIL, repo, sanitized_version, NULL,
+                                OTA_REASON_ROLLBACK_BLOCKED);
+        return ESP_FAIL;
     }
     if (relValid && curValid && cmp_version(relMaj, relMin, relPat, curMaj, curMin, curPat) <= 0) {
         const esp_partition_t *release_partition = find_partition_for_version(relMaj, relMin, relPat);

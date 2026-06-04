@@ -318,7 +318,12 @@ void app_main(void) {
 static void sntp_start_and_wait(void){
     ESP_LOGD(TAG, "Starting SNTP");
     esp_sntp_setoperatingmode(SNTP_OPMODE_POLL);
+    // TLS certificate validity (expiry / not-before) depends on a correct clock.
+    // SNTP is unauthenticated, so a network attacker can influence time; multiple
+    // independent servers add resilience against a single bad/unreachable source.
     esp_sntp_setservername(0, "pool.ntp.org");
+    esp_sntp_setservername(1, "time.google.com");
+    esp_sntp_setservername(2, "time.cloudflare.com");
     esp_sntp_init();
     time_t now=0; struct tm tm={0};
     for (int i=0; i<20 && tm.tm_year < (2016-1900); ++i) {
@@ -333,9 +338,11 @@ void wifi_ready(void)
 {
     ESP_LOGI("app", "WiFi ready; starting OTA check");
     esp_log_level_set("*", ESP_LOG_INFO);
+#if CONFIG_LCM_VERBOSE_OTA_LOG
     esp_log_level_set("github_update", ESP_LOG_DEBUG);
     esp_log_level_set("esp_https_ota", ESP_LOG_DEBUG);
     esp_log_level_set("HTTP_CLIENT",   ESP_LOG_DEBUG);
+#endif
 
     ESP_LOGI("app", "Starting SNTP synchronization");
     sntp_start_and_wait();
