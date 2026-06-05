@@ -5,6 +5,17 @@
 # General Optimization
 CONFIG_COMPILER_OPTIMIZATION_SIZE=y
 
+# Smaller printf/scanf. This example's own code uses no float/64-bit/positional
+# format specifiers and printf is not on any hot path, so behaviour and speed
+# are unchanged. (Third-party component debug logs that print 64-bit/float
+# values would format them differently, but that is cosmetic and suppressed at
+# INFO log level.)
+CONFIG_NEWLIB_NANO_FORMAT=y
+
+# Silent assertions: assert()/configASSERT still evaluate and abort identically;
+# only the file/line message strings are dropped, saving string data.
+CONFIG_COMPILER_OPTIMIZATION_ASSERTIONS_SILENT=y
+
 
 # Binary Size Reduction
 CONFIG_LOG_DEFAULT_LEVEL_INFO=y
@@ -21,7 +32,9 @@ CONFIG_HEAP_TRACING_OFF=y
 #
 CONFIG_HOMEKIT_MAX_CLIENTS=16
 CONFIG_HOMEKIT_SMALL=y
-CONFIG_HOMEKIT_DEBUG=y
+# HomeKit debug logging adds code and string data and slows pairing; disabled
+# for a lean image (no functional change). Re-enable for protocol debugging.
+CONFIG_HOMEKIT_DEBUG=n
 # end of HomeKit
 
 #
