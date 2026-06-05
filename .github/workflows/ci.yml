@@ -73,3 +73,18 @@ jobs:
             else
               echo "OK: build correctly refused the insecure demo key default";
             fi
+
+  # Verify the bundled LED application example compiles, so changes to the
+  # application-side lifecycle glue (esp32-lcm.c) and its build config are
+  # caught. Pulls the HomeKit/button/mdns managed components from the registry.
+  example-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build LED example (esp32)
+        uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: v5.4.2
+          target: esp32
+          path: examples/led
+          command: idf.py set-target esp32 && idf.py build

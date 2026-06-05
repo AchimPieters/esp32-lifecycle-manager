@@ -51,6 +51,22 @@
 
 #include "esp32-lcm.h"
 
+// LCM NVS contract (application side). These namespace/key names are the wire
+// contract with the Lifecycle Manager firmware that boots this application.
+// They MUST stay identical to main/include/nvs_keys.h in the
+// esp32-lifecycle-manager repository, otherwise provisioning, OTA triggering and
+// version reporting break silently (no compile error — the two are separate
+// images). They are kept inline here so esp32-lcm.{c,h} remain a self-contained
+// drop-in plugin with no extra files.
+#define NVS_NS_LCM "lcm"
+#define NVS_NS_FWCFG "fwcfg"
+#define NVS_NS_WIFI_CFG "wifi_cfg"
+#define NVS_KEY_RESTART_COUNT "restart_count"
+#define NVS_KEY_DO_UPDATE "do_update"
+#define NVS_KEY_INSTALLED_VER "installed_ver"
+#define NVS_KEY_WIFI_SSID "wifi_ssid"
+#define NVS_KEY_WIFI_PASSWORD "wifi_password"
+
 static const char *WIFI_TAG = "WIFI";
 static const char *LIFECYCLE_TAG = "LIFECYCLE";
 
@@ -68,7 +84,10 @@ static esp_netif_t *s_wifi_netif = NULL;
 
 static const uint32_t k_post_reset_magic = 0xC0DEC0DE;
 #ifndef CONFIG_LCM_RESTART_COUNTER_TIMEOUT_MS
-#define CONFIG_LCM_RESTART_COUNTER_TIMEOUT_MS 5000
+// Keep this aligned with the Lifecycle Manager core default (main/Kconfig.projbuild
+// -> LCM_RESTART_COUNTER_TIMEOUT_MS, default 10000) so the shared 'restart_count'
+// NVS counter is interpreted with the same window on both sides.
+#define CONFIG_LCM_RESTART_COUNTER_TIMEOUT_MS 10000
 #endif
 
 #if CONFIG_LCM_RESTART_COUNTER_TIMEOUT_MS <= 0
@@ -79,8 +98,8 @@ static const uint64_t k_restart_counter_timeout_us =
     ((uint64_t)CONFIG_LCM_RESTART_COUNTER_TIMEOUT_MS) * 1000ULL;
 static const uint64_t k_restart_counter_timeout_ms =
     k_restart_counter_timeout_us / 1000ULL;
-static const char *k_restart_counter_namespace = "lcm";
-static const char *k_restart_counter_key = "restart_count";
+static const char *k_restart_counter_namespace = NVS_NS_LCM;
+static const char *k_restart_counter_key = NVS_KEY_RESTART_COUNT;
 
 RTC_DATA_ATTR static struct {
     uint32_t magic;
@@ -117,7 +136,7 @@ static esp_err_t nvs_load_wifi(char **out_ssid, char **out_pass) {
     }
 
     nvs_handle_t handle;
-    esp_err_t err = nvs_open("wifi_cfg", NVS_READONLY, &handle);
+    esp_err_t err = nvs_open(NVS_NS_WIFI_CFG, NVS_READONLY, &handle);
     if (err != ESP_OK) {
         if (err == ESP_ERR_NVS_NOT_FOUND) {
             ESP_LOGI(WIFI_TAG, "Wi-Fi credentials not provisioned yet (namespace 'wifi_cfg' missing)");
@@ -129,7 +148,7 @@ static esp_err_t nvs_load_wifi(char **out_ssid, char **out_pass) {
 
     size_t len_ssid = 0;
     size_t len_pass = 0;
-    err = nvs_get_str(handle, "wifi_ssid", NULL, &len_ssid);
+    err = nvs_get_str(handle, NVS_KEY_WIFI_SSID, NULL, &len_ssid);
     if (err != ESP_OK) {
         if (err == ESP_ERR_NVS_NOT_FOUND) {
             ESP_LOGI(WIFI_TAG, "Wi-Fi credentials not provisioned yet (key 'wifi_ssid' missing)");
@@ -140,7 +159,7 @@ static esp_err_t nvs_load_wifi(char **out_ssid, char **out_pass) {
         return err;
     }
 
-    err = nvs_get_str(handle, "wifi_password", NULL, &len_pass);
+    err = nvs_get_str(handle, NVS_KEY_WIFI_PASSWORD, NULL, &len_pass);
     if (err == ESP_ERR_NVS_NOT_FOUND) {
         len_pass = 1;
     } else if (err != ESP_OK) {
@@ -158,7 +177,7 @@ static esp_err_t nvs_load_wifi(char **out_ssid, char **out_pass) {
         return ESP_ERR_NO_MEM;
     }
 
-    err = nvs_get_str(handle, "wifi_ssid", ssid, &len_ssid);
+    err = nvs_get_str(handle, NVS_KEY_WIFI_SSID, ssid, &len_ssid);
     if (err != ESP_OK) {
         ESP_LOGE(WIFI_TAG, "Failed to read wifi_ssid: %s", esp_err_to_name(err));
         free(ssid);
@@ -170,7 +189,7 @@ static esp_err_t nvs_load_wifi(char **out_ssid, char **out_pass) {
     if (len_pass == 1) {
         pass[0] = '\0';
     } else {
-        err = nvs_get_str(handle, "wifi_password", pass, &len_pass);
+        err = nvs_get_str(handle, NVS_KEY_WIFI_PASSWORD, pass, &len_pass);
         if (err != ESP_OK) {
             ESP_LOGE(WIFI_TAG, "Failed to read wifi_password: %s", esp_err_to_name(err));
             free(ssid);
@@ -391,8 +410,8 @@ static void lifecycle_restart_counter_timeout(void *arg) {
 
     if (s_post_reset_state.restart_count != 0U) {
         ESP_LOGI(tag,
-                "[lifecycle] No restart detected within %llu ms; clearing counter",
-                (unsigned long long)k_restart_counter_timeout_ms);
+                "[lifecycle] No restart detected within %" PRIu32 " ms; clearing counter",
+                (uint32_t)k_restart_counter_timeout_ms);
     }
 
     lifecycle_reset_restart_counter();
@@ -433,8 +452,8 @@ static void lifecycle_schedule_restart_counter_timeout(const char *log_tag) {
     }
 
     ESP_LOGD(tag,
-            "[lifecycle] Restart counter timeout armed for %llu ms",
-            (unsigned long long)k_restart_counter_timeout_ms);
+            "[lifecycle] Restart counter timeout armed for %" PRIu32 " ms",
+            (uint32_t)k_restart_counter_timeout_ms);
 }
 
 void lifecycle_log_post_reset_state(const char *log_tag) {
@@ -708,15 +727,15 @@ esp_err_t lifecycle_init_firmware_revision(homekit_characteristic_t *revision,
     }
 
     nvs_handle_t handle;
-    esp_err_t err = nvs_open("fwcfg", NVS_READWRITE, &handle);
+    esp_err_t err = nvs_open(NVS_NS_FWCFG, NVS_READWRITE, &handle);
     if (err == ESP_OK) {
         size_t required = sizeof(s_fw_revision);
-        err = nvs_get_str(handle, "installed_ver", s_fw_revision, &required);
+        err = nvs_get_str(handle, NVS_KEY_INSTALLED_VER, s_fw_revision, &required);
         if (err == ESP_OK && s_fw_revision[0] != '\0') {
             used_stored_value = true;
         } else if (err == ESP_ERR_NVS_NOT_FOUND || s_fw_revision[0] == '\0') {
             strlcpy(s_fw_revision, current_version, sizeof(s_fw_revision));
-            esp_err_t set_err = nvs_set_str(handle, "installed_ver", s_fw_revision);
+            esp_err_t set_err = nvs_set_str(handle, NVS_KEY_INSTALLED_VER, s_fw_revision);
             if (set_err != ESP_OK) {
                 ESP_LOGW(LIFECYCLE_TAG, "Failed to store firmware revision: %s",
                          esp_err_to_name(set_err));
@@ -819,11 +838,11 @@ void lifecycle_request_update_and_reboot(void) {
     ESP_LOGI(LIFECYCLE_TAG, "Requesting Lifecycle Manager update and reboot");
 
     nvs_handle_t handle;
-    esp_err_t err = nvs_open("lcm", NVS_READWRITE, &handle);
+    esp_err_t err = nvs_open(NVS_NS_LCM, NVS_READWRITE, &handle);
     if (err != ESP_OK) {
         ESP_LOGE(LIFECYCLE_TAG, "Failed to open NVS namespace 'lcm': %s", esp_err_to_name(err));
     } else {
-        err = nvs_set_u8(handle, "do_update", 1);
+        err = nvs_set_u8(handle, NVS_KEY_DO_UPDATE, 1);
         if (err != ESP_OK) {
             ESP_LOGE(LIFECYCLE_TAG, "Failed to set do_update flag: %s", esp_err_to_name(err));
         } else {
@@ -903,18 +922,18 @@ static void erase_wifi_credentials(void) {
     }
 
     nvs_handle_t handle;
-    esp_err_t err = nvs_open("wifi_cfg", NVS_READWRITE, &handle);
+    esp_err_t err = nvs_open(NVS_NS_WIFI_CFG, NVS_READWRITE, &handle);
     if (err != ESP_OK) {
         ESP_LOGW(LIFECYCLE_TAG, "Failed to open wifi_cfg namespace: %s", esp_err_to_name(err));
         return;
     }
 
-    esp_err_t erase_err = nvs_erase_key(handle, "wifi_ssid");
+    esp_err_t erase_err = nvs_erase_key(handle, NVS_KEY_WIFI_SSID);
     if (erase_err != ESP_OK && erase_err != ESP_ERR_NVS_NOT_FOUND) {
         ESP_LOGW(LIFECYCLE_TAG, "Failed to erase wifi_ssid: %s", esp_err_to_name(erase_err));
     }
 
-    erase_err = nvs_erase_key(handle, "wifi_password");
+    erase_err = nvs_erase_key(handle, NVS_KEY_WIFI_PASSWORD);
     if (erase_err != ESP_OK && erase_err != ESP_ERR_NVS_NOT_FOUND) {
         ESP_LOGW(LIFECYCLE_TAG, "Failed to erase wifi_password: %s", esp_err_to_name(erase_err));
     }
@@ -980,11 +999,11 @@ static void clear_nvs_namespace(const char *namespace, const char *description) 
 }
 
 static void clear_lcm_namespace(void) {
-    clear_nvs_namespace("lcm", "Lifecycle Manager state");
+    clear_nvs_namespace(NVS_NS_LCM, "Lifecycle Manager state");
 }
 
 static void clear_fwcfg_namespace(void) {
-    clear_nvs_namespace("fwcfg", "firmware configuration");
+    clear_nvs_namespace(NVS_NS_FWCFG, "firmware configuration");
 }
 
 static void erase_otadata_partition(void) {
