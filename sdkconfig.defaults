@@ -5,6 +5,17 @@
 # General Optimization
 CONFIG_COMPILER_OPTIMIZATION_SIZE=y
 
+# Smaller printf/scanf implementation. Safe here: no floating-point, 64-bit or
+# positional format specifiers are used anywhere in the firmware, so behaviour is
+# unchanged. printf is not on any hot path, so there is no speed impact.
+CONFIG_NEWLIB_NANO_FORMAT=y
+
+# Silent assertions: assert()/configASSERT still evaluate and still abort on a
+# failed invariant (identical protective behaviour and speed), but the file/line
+# message strings are dropped, removing a large amount of string data pulled in
+# from ESP-IDF components.
+CONFIG_COMPILER_OPTIMIZATION_ASSERTIONS_SILENT=y
+
 
 # Binary Size Reduction
 # Enable info-level logging so runtime messages like WiFi readiness are visible
