@@ -20,10 +20,11 @@ To make this repository easier to navigate:
 
 This repository contains example key files (`ota_signing_private.pem` and `ota_signing_public.pem`) for demonstration purposes. Because the matching **private** key is committed here, it is public knowledge: anyone can sign firmware that a device built with the demo key would accept. The demo key therefore provides **no** authenticity.
 
-To stop this insecure default from shipping by accident, the firmware **does not build** with the demo key unless you explicitly opt in. You must either:
+So the project works out of the box, the firmware **builds with this demo key by default**. The firmware logs a warning at runtime whenever the demo key is in use. This is intended for evaluation and development only.
 
-- set `LCM_USE_CUSTOM_OTA_PUBLIC_KEY=y` and provide your own `LCM_CUSTOM_OTA_PUBLIC_KEY_PEM` (recommended for any real device), or
-- set `LCM_ALLOW_INSECURE_DEMO_KEY=y` to deliberately build with the demo key for local evaluation only.
+For any real device, switch to your own key:
+
+- set `LCM_USE_CUSTOM_OTA_PUBLIC_KEY=y` and provide your own `LCM_CUSTOM_OTA_PUBLIC_KEY_PEM` (recommended), and sign firmware with the matching private key.
 
 Always generate and protect your own signing keys before shipping devices. If you ever placed a *real* key in this repo, treat it as compromised, rotate it, and scrub it from git history (e.g. `git filter-repo`).
 

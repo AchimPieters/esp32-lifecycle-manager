@@ -859,16 +859,19 @@ static const char OTA_DEFAULT_PUBLIC_KEY_PEM[] =
 "cB7aCgI/dbedit40iHQXWHfiDfwxskMG1vrIy38vtjpe/mVvSZmTPQ8P8w==\n"
 "-----END PUBLIC KEY-----\n";
 
-#if !defined(CONFIG_LCM_USE_CUSTOM_OTA_PUBLIC_KEY) && !defined(CONFIG_LCM_ALLOW_INSECURE_DEMO_KEY)
-#error "No OTA signing key configured. The built-in demo key's private key is public (see keys/ota_signing_private.pem), so it provides no authenticity. Set LCM_USE_CUSTOM_OTA_PUBLIC_KEY=y with your own key, or LCM_ALLOW_INSECURE_DEMO_KEY=y to deliberately build with the insecure demo key (never in production)."
-#endif
-
 static const char *ota_public_key_pem(void) {
 #if CONFIG_LCM_USE_CUSTOM_OTA_PUBLIC_KEY
     if (strlen(CONFIG_LCM_CUSTOM_OTA_PUBLIC_KEY_PEM) > 0) {
         return CONFIG_LCM_CUSTOM_OTA_PUBLIC_KEY_PEM;
     }
 #endif
+    static bool demo_key_warned = false;
+    if (!demo_key_warned) {
+        demo_key_warned = true;
+        ESP_LOGW(TAG, "Using the built-in demo OTA signing key: its private key is "
+                      "public, so signatures provide no authenticity. Configure "
+                      "LCM_USE_CUSTOM_OTA_PUBLIC_KEY for production devices.");
+    }
     return OTA_DEFAULT_PUBLIC_KEY_PEM;
 }
 

@@ -48,31 +48,25 @@ jobs:
         with:
           esp_idf_version: v5.4.2
           target: ${{ matrix.target }}
-          # CI only verifies that the firmware compiles, so it explicitly opts
-          # into the insecure demo signing key. Real devices must instead set
+          # CI verifies the firmware compiles out of the box with the bundled
+          # demo signing key. Real devices must instead set
           # LCM_USE_CUSTOM_OTA_PUBLIC_KEY with their own key.
-          command: echo "CONFIG_LCM_ALLOW_INSECURE_DEMO_KEY=y" >> sdkconfig.defaults && idf.py set-target ${{ matrix.target }} && idf.py build
+          command: idf.py set-target ${{ matrix.target }} && idf.py build
 
-  # Regression guard for the OTA signing-key gate: with neither a custom key nor
-  # the explicit demo-key opt-in, the build MUST fail (the public demo key
-  # provides no authenticity). This locks in the security property so it cannot
-  # be silently removed.
-  demo-key-gate:
+  # Regression guard for the demo-key default: with no custom key configured the
+  # firmware MUST still build (the bundled demo key keeps the out-of-the-box
+  # evaluation flow working). This locks in the property that the default build
+  # is not accidentally broken again.
+  demo-key-default:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Build must fail without an OTA key configured
+      - name: Build must succeed with the default demo key
         uses: espressif/esp-idf-ci-action@v1
         with:
           esp_idf_version: v5.4.2
           target: esp32
-          command: >-
-            idf.py set-target esp32 &&
-            if idf.py build; then
-              echo "ERROR: build succeeded with no OTA key configured (gate is broken)" && exit 1;
-            else
-              echo "OK: build correctly refused the insecure demo key default";
-            fi
+          command: idf.py set-target esp32 && idf.py build
 
   # Verify the bundled LED application example compiles, so changes to the
   # application-side lifecycle glue (esp32-lcm.c) and its build config are
