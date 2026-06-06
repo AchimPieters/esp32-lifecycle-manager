@@ -17,9 +17,10 @@
   partition and the boot partition is only switched (via
   `esp_https_ota_finish`) after the signature verifies. A failed/aborted update
   leaves the running firmware as the boot target (no boot switch, no reboot).
-- The public demo key is gated at build time: the firmware does not compile with
-  it unless `LCM_ALLOW_INSECURE_DEMO_KEY=y` is set, forcing real devices to
-  configure their own key (its private key is published in this repo).
+- The firmware builds with the bundled demo key by default for out-of-the-box
+  evaluation, but logs a runtime warning whenever that key is in use (its
+  private key is published in this repo, so it provides no authenticity). Real
+  devices must set `LCM_USE_CUSTOM_OTA_PUBLIC_KEY=y` with their own key.
 - Lightweight anti-rollback floor in NVS refuses releases below the highest
   version ever installed. Note: this floor is cleared by a factory reset;
   hardware anti-rollback (Secure Boot v2 secure_version) is required for a

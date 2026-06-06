@@ -40,22 +40,15 @@ config LCM_USE_CUSTOM_OTA_PUBLIC_KEY
     bool "Use custom OTA signing public key"
     default n
     help
-        Enable to override the built-in demo OTA signing public key.
+        Enable to override the built-in demo OTA signing public key with your
+        own key (recommended for any real device).
 
-config LCM_ALLOW_INSECURE_DEMO_KEY
-    bool "Allow building with the public demo OTA signing key (INSECURE)"
-    depends on !LCM_USE_CUSTOM_OTA_PUBLIC_KEY
-    default n
-    help
-        The built-in default OTA public key has a matching private key that is
-        published in this repository (keys/ota_signing_private.pem). Anyone can
-        therefore sign firmware that a device built with the demo key will
-        accept, so OTA signing provides no real authenticity in this mode.
-
-        To prevent shipping this insecure default by accident, the build fails
-        unless you either provide your own key via LCM_USE_CUSTOM_OTA_PUBLIC_KEY
-        or explicitly acknowledge the risk by enabling this option. Never enable
-        this in production.
+        When disabled, the firmware builds with the bundled demo key so it
+        works out of the box for evaluation. That demo key's private half is
+        published in this repository (keys/ota_signing_private.pem), so OTA
+        signatures provide no authenticity in that mode. The firmware logs a
+        warning at runtime whenever the demo key is in use. Never ship the demo
+        key in production.
 
 config LCM_CUSTOM_OTA_PUBLIC_KEY_PEM
     string "Custom OTA public key (PEM, single-line with \n escapes)"
